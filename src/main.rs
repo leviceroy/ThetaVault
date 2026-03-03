@@ -1348,6 +1348,8 @@ fn all_spread_type_strings() -> Vec<String> {
         "short_diagonal_spread".to_string(),
         "long_call_vertical".to_string(),
         "long_put_vertical".to_string(),
+        "zebra".to_string(),
+        "custom".to_string(),
     ]
 }
 

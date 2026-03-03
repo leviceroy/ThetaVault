@@ -522,13 +522,20 @@ impl Storage {
         Ok(())
     }
 
-    /// One-time migration: update Zebra playbooks from spread_type='custom' → 'zebra'.
+    /// One-time migration: update Zebra playbooks from any spread_type → 'zebra'.
+    /// Uses Rust-side name check for reliability regardless of case/spacing.
     pub fn migrate_zebra_type(&self) -> Result<()> {
-        self.conn.execute(
-            "UPDATE playbook_strategies SET spread_type = 'zebra'
-             WHERE spread_type = 'custom' AND (name LIKE '%Zebra%' OR name LIKE '%zebra%')",
-            [],
-        )?;
+        let pbs = self.get_all_playbooks()?;
+        for pb in pbs {
+            if pb.name.to_lowercase().contains("zebra")
+                && pb.spread_type.as_deref() != Some("zebra")
+            {
+                self.conn.execute(
+                    "UPDATE playbook_strategies SET spread_type = 'zebra' WHERE id = ?1",
+                    params![pb.id],
+                )?;
+            }
+        }
         Ok(())
     }
 
