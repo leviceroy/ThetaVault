@@ -1,0 +1,28 @@
+[package]
+name = "theta-vault-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal-based options trading journal inspired by sandbox-quant"
+default-run = "theta-vault-rust"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+tabled = "0.16" # For easy table formatting if needed
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

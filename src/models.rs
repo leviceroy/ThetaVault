@@ -1,0 +1,528 @@
+use serde::{Deserialize, Serialize};
+use chrono::{DateTime, NaiveDate, Utc};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Strategy Types  (match OptionsTradingJournal exactly — snake_case strings)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyType {
+    ShortPutVertical,
+    ShortCallVertical,
+    IronCondor,
+    IronButterfly,
+    Strangle,
+    Straddle,
+    CalendarSpread,
+    CashSecuredPut,
+    CoveredCall,
+    Pmcc,
+    LongDiagonalSpread,
+    ShortDiagonalSpread,
+    LongCallVertical,
+    LongPutVertical,
+    Custom,
+}
+
+impl StrategyType {
+    /// Human-readable label matching OTJ STRATEGY_LABELS
+    pub fn label(&self) -> &'static str {
+        match self {
+            StrategyType::ShortPutVertical    => "Short Put Vertical",
+            StrategyType::ShortCallVertical   => "Short Call Vertical",
+            StrategyType::IronCondor          => "Iron Condor",
+            StrategyType::IronButterfly       => "Iron Butterfly",
+            StrategyType::Strangle            => "Strangle",
+            StrategyType::Straddle            => "Straddle",
+            StrategyType::CalendarSpread      => "Calendar Spread",
+            StrategyType::CashSecuredPut      => "Cash Secured Put",
+            StrategyType::CoveredCall         => "Covered Call",
+            StrategyType::Pmcc                => "Poor Man's Covered Call",
+            StrategyType::LongDiagonalSpread  => "Long Diagonal Spread",
+            StrategyType::ShortDiagonalSpread => "Short Diagonal Spread",
+            StrategyType::LongCallVertical    => "Long Call Vertical",
+            StrategyType::LongPutVertical     => "Long Put Vertical",
+            StrategyType::Custom              => "Custom / Ratio Spread",
+        }
+    }
+
+    /// Short badge matching OTJ STRATEGY_BADGES
+    pub fn badge(&self) -> &'static str {
+        match self {
+            StrategyType::ShortPutVertical    => "SPV",
+            StrategyType::ShortCallVertical   => "SCV",
+            StrategyType::IronCondor          => "IC",
+            StrategyType::IronButterfly       => "IB",
+            StrategyType::Strangle            => "STR",
+            StrategyType::Straddle            => "STD",
+            StrategyType::CalendarSpread      => "CAL",
+            StrategyType::CashSecuredPut      => "CSP",
+            StrategyType::CoveredCall         => "CC",
+            StrategyType::Pmcc                => "PMCC",
+            StrategyType::LongDiagonalSpread  => "LDS",
+            StrategyType::ShortDiagonalSpread => "SDS",
+            StrategyType::LongCallVertical    => "LCV",
+            StrategyType::LongPutVertical     => "LPV",
+            StrategyType::Custom              => "CUST",
+        }
+    }
+
+    /// Parse from snake_case string (for SQLite reads)
+    pub fn from_str(s: &str) -> StrategyType {
+        match s {
+            "short_put_vertical"    => StrategyType::ShortPutVertical,
+            "short_call_vertical"   => StrategyType::ShortCallVertical,
+            "iron_condor"           => StrategyType::IronCondor,
+            "iron_butterfly"        => StrategyType::IronButterfly,
+            "strangle"              => StrategyType::Strangle,
+            "straddle"              => StrategyType::Straddle,
+            "calendar_spread"       => StrategyType::CalendarSpread,
+            "cash_secured_put"      => StrategyType::CashSecuredPut,
+            "covered_call"          => StrategyType::CoveredCall,
+            "pmcc"                  => StrategyType::Pmcc,
+            "long_diagonal_spread"  => StrategyType::LongDiagonalSpread,
+            "short_diagonal_spread" => StrategyType::ShortDiagonalSpread,
+            "long_call_vertical"    => StrategyType::LongCallVertical,
+            "long_put_vertical"     => StrategyType::LongPutVertical,
+            _                       => StrategyType::Custom,
+        }
+    }
+
+    /// Serialize to snake_case string (for SQLite writes)
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StrategyType::ShortPutVertical    => "short_put_vertical",
+            StrategyType::ShortCallVertical   => "short_call_vertical",
+            StrategyType::IronCondor          => "iron_condor",
+            StrategyType::IronButterfly       => "iron_butterfly",
+            StrategyType::Strangle            => "strangle",
+            StrategyType::Straddle            => "straddle",
+            StrategyType::CalendarSpread      => "calendar_spread",
+            StrategyType::CashSecuredPut      => "cash_secured_put",
+            StrategyType::CoveredCall         => "covered_call",
+            StrategyType::Pmcc                => "pmcc",
+            StrategyType::LongDiagonalSpread  => "long_diagonal_spread",
+            StrategyType::ShortDiagonalSpread => "short_diagonal_spread",
+            StrategyType::LongCallVertical    => "long_call_vertical",
+            StrategyType::LongPutVertical     => "long_put_vertical",
+            StrategyType::Custom              => "custom",
+        }
+    }
+
+    /// Default profit-take target (%) when no per-trade override is set.
+    /// Matches Tom Sosnoff / tastytrade rules per strategy type.
+    pub fn default_profit_target_pct(&self) -> f64 {
+        match self {
+            StrategyType::CashSecuredPut | StrategyType::CoveredCall => 85.0,
+            StrategyType::CalendarSpread | StrategyType::IronButterfly => 25.0,
+            _ => 50.0,
+        }
+    }
+}
+
+impl std::fmt::Display for StrategyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Leg Types  (matching OTJ TradeLeg exactly)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum LegType {
+    #[serde(rename = "short_put")]
+    ShortPut,
+    #[serde(rename = "long_put")]
+    LongPut,
+    #[serde(rename = "short_call")]
+    ShortCall,
+    #[serde(rename = "long_call")]
+    LongCall,
+}
+
+impl LegType {
+    pub fn is_short(&self) -> bool {
+        matches!(self, LegType::ShortPut | LegType::ShortCall)
+    }
+    pub fn is_call(&self) -> bool {
+        matches!(self, LegType::ShortCall | LegType::LongCall)
+    }
+    pub fn is_put(&self) -> bool {
+        matches!(self, LegType::ShortPut | LegType::LongPut)
+    }
+
+    /// Parse from human-readable label (for SELECT field round-trips)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "short_put"  | "Short Put"   => Some(LegType::ShortPut),
+            "long_put"   | "Long Put"    => Some(LegType::LongPut),
+            "short_call" | "Short Call"  => Some(LegType::ShortCall),
+            "long_call"  | "Long Call"   => Some(LegType::LongCall),
+            _ => None,
+        }
+    }
+
+    /// Human-readable label used in SELECT options
+    pub fn label(&self) -> &'static str {
+        match self {
+            LegType::ShortPut  => "Short Put",
+            LegType::LongPut   => "Long Put",
+            LegType::ShortCall => "Short Call",
+            LegType::LongCall  => "Long Call",
+        }
+    }
+
+    /// All four option labels in the canonical SELECT order
+    pub fn all_options() -> Vec<String> {
+        vec![
+            "Short Put".to_string(),
+            "Long Put".to_string(),
+            "Short Call".to_string(),
+            "Long Call".to_string(),
+        ]
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Strategy leg templates  (exact port of OTJ shared/schema.ts legTemplates)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Returns the canonical leg types for a given strategy (in display order).
+/// Custom returns an empty vec — caller manages legs freely.
+pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
+    match strategy {
+        StrategyType::ShortPutVertical    => vec![LegType::ShortPut,  LegType::LongPut],
+        StrategyType::ShortCallVertical   => vec![LegType::ShortCall, LegType::LongCall],
+        StrategyType::IronCondor          => vec![LegType::ShortPut,  LegType::LongPut,  LegType::ShortCall, LegType::LongCall],
+        StrategyType::IronButterfly       => vec![LegType::ShortPut,  LegType::LongPut,  LegType::ShortCall, LegType::LongCall],
+        StrategyType::Strangle            => vec![LegType::ShortPut,  LegType::ShortCall],
+        StrategyType::Straddle            => vec![LegType::ShortPut,  LegType::ShortCall],
+        StrategyType::CalendarSpread      => vec![LegType::ShortCall, LegType::LongCall],
+        StrategyType::CashSecuredPut      => vec![LegType::ShortPut],
+        StrategyType::CoveredCall         => vec![LegType::ShortCall],
+        StrategyType::Pmcc                => vec![LegType::LongCall,  LegType::ShortCall],
+        StrategyType::LongDiagonalSpread  => vec![LegType::LongCall,  LegType::ShortCall],
+        StrategyType::ShortDiagonalSpread => vec![LegType::ShortCall, LegType::LongCall],
+        StrategyType::LongCallVertical    => vec![LegType::LongCall,  LegType::ShortCall],
+        StrategyType::LongPutVertical     => vec![LegType::LongPut,   LegType::ShortPut],
+        StrategyType::Custom              => vec![],
+    }
+}
+
+/// Merge existing legs into a new strategy template — exact port of OTJ mergeLegsForStrategyChange().
+/// Returns (merged_legs, removed_legs).
+/// - Custom: keeps all existing legs unchanged.
+/// - Standard: preserves matching leg types, creates empty for missing, drops extras.
+pub fn merge_legs_for_strategy_change(
+    existing_legs: &[TradeLeg],
+    new_strategy: &StrategyType,
+) -> (Vec<TradeLeg>, Vec<TradeLeg>) {
+    if *new_strategy == StrategyType::Custom {
+        return (existing_legs.to_vec(), vec![]);
+    }
+
+    let template = strategy_leg_template(new_strategy);
+    let mut merged: Vec<TradeLeg> = Vec::new();
+    let mut matched_indices: Vec<usize> = Vec::new();
+
+    for leg_type in &template {
+        // Prefer first unmatched existing leg of the same type
+        let found = existing_legs.iter().enumerate().find(|(idx, l)| {
+            &l.leg_type == leg_type && !matched_indices.contains(idx)
+        });
+        if let Some((idx, leg)) = found {
+            matched_indices.push(idx);
+            merged.push(leg.clone());
+        } else {
+            merged.push(TradeLeg {
+                leg_type: leg_type.clone(),
+                strike: 0.0,
+                premium: 0.0,
+                close_premium: None,
+                expiration_date: None,
+                quantity: None,
+            });
+        }
+    }
+
+    let removed: Vec<TradeLeg> = existing_legs.iter().enumerate()
+        .filter(|(idx, _)| !matched_indices.contains(idx))
+        .map(|(_, l)| l.clone())
+        .collect();
+
+    (merged, removed)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Trade Leg  (matches OTJ TradeLeg interface exactly)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TradeLeg {
+    #[serde(rename = "type")]
+    pub leg_type: LegType,
+    pub strike: f64,
+    pub premium: f64,
+    #[serde(rename = "closePremium")]
+    pub close_premium: Option<f64>,
+    #[serde(rename = "expirationDate", skip_serializing_if = "Option::is_none")]
+    pub expiration_date: Option<String>,  // ISO date string
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<i32>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Trade  (matches OTJ trades table schema exactly)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Trade {
+    pub id: i32,
+    pub ticker: String,
+    pub strategy: StrategyType,        // snake_case string in DB
+
+    pub quantity: i32,
+
+    // Strike prices (for quick access without parsing legs)
+    pub short_strike: f64,
+    pub long_strike: f64,
+
+    // Premiums per-leg (entry)
+    pub short_premium: f64,
+    pub long_premium: f64,
+
+    /// Net credit per spread at entry (short_premium - long_premium)
+    pub credit_received: f64,
+
+    // Timestamps
+    pub entry_date: DateTime<Utc>,
+    pub exit_date: Option<DateTime<Utc>>,
+    pub expiration_date: DateTime<Utc>,
+    pub trade_date: DateTime<Utc>,
+    pub back_month_expiration: Option<DateTime<Utc>>,
+
+    // P&L
+    pub pnl: Option<f64>,
+    pub debit_paid: Option<f64>,        // net debit to close (positive = paid to close)
+
+    // Greeks at entry
+    pub delta: Option<f64>,
+    pub theta: Option<f64>,
+    pub gamma: Option<f64>,
+    pub vega: Option<f64>,
+    pub pop: Option<f64>,               // probability of profit 0-100
+
+    // Underlying / IV data
+    pub underlying_price: Option<f64>,          // at entry
+    pub underlying_price_at_close: Option<f64>, // at exit
+    pub iv_rank: Option<f64>,
+    pub vix_at_entry: Option<f64>,
+    pub implied_volatility: Option<f64>,
+
+    // Trade metadata
+    pub commission: Option<f64>,
+    pub entry_reason: Option<String>,
+    pub exit_reason: Option<String>,
+    pub management_rule: Option<String>,
+    pub target_profit_pct: Option<f64>,
+
+    // Computed fields
+    pub spread_width: Option<f64>,
+    pub bpr: Option<f64>,               // Buying Power Reduction
+    pub entry_dte: Option<i32>,         // DTE at entry
+    pub dte_at_close: Option<i32>,      // DTE at close
+
+    // Relationships
+    pub playbook_id: Option<i32>,
+    pub rolled_from_id: Option<i32>,
+
+    // Status flags
+    pub is_earnings_play: bool,
+    pub is_tested: bool,
+
+    // Earnings date (next expected earnings for the underlying)
+    pub next_earnings: Option<NaiveDate>,
+
+    // Grading
+    pub trade_grade: Option<String>,    // A, B, C, D, F
+    pub grade_notes: Option<String>,
+
+    // Structured legs (JSON array in DB)
+    pub legs: Vec<TradeLeg>,
+
+    // Tags
+    pub tags: Vec<String>,
+
+    // Notes
+    pub notes: Option<String>,
+}
+
+impl Trade {
+    /// True if the trade is still open
+    pub fn is_open(&self) -> bool {
+        self.exit_date.is_none() && self.pnl.is_none()
+    }
+
+    /// Spread type string (snake_case)
+    pub fn spread_type(&self) -> &'static str {
+        self.strategy.as_str()
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Playbook Strategy Entry Criteria
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EntryCriteria {
+    #[serde(rename = "minIVR")]
+    pub min_ivr: Option<f64>,
+    #[serde(rename = "maxIVR")]
+    pub max_ivr: Option<f64>,
+    #[serde(rename = "minDelta")]
+    pub min_delta: Option<f64>,
+    #[serde(rename = "maxDelta")]
+    pub max_delta: Option<f64>,
+    #[serde(rename = "minDTE")]
+    pub min_dte: Option<i32>,
+    #[serde(rename = "maxDTE")]
+    pub max_dte: Option<i32>,
+    #[serde(rename = "maxAllocationPct")]
+    pub max_allocation_pct: Option<f64>,
+    #[serde(rename = "targetProfitPct")]
+    pub target_profit_pct: Option<f64>,
+    #[serde(rename = "managementRule")]
+    pub management_rule: Option<String>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Playbook Strategy
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlaybookStrategy {
+    pub id: i32,
+    pub name: String,
+    pub description: Option<String>,
+    pub spread_type: Option<String>,
+    pub entry_criteria: Option<EntryCriteria>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Portfolio Stats (displayed in Dashboard)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct PortfolioStats {
+    // Core P&L
+    pub total_pnl: f64,
+    pub realized_pnl: f64,     // closed trades only
+    pub win_rate: f64,
+
+    // Trade counts
+    pub open_trades: usize,
+    pub closed_trades: usize,
+    pub total_trades: usize,
+
+    // Performance metrics
+    pub avg_roc: f64,           // average ROC% on closed trades
+    pub avg_pnl_per_trade: f64,
+    pub best_trade_pnl: f64,
+    pub worst_trade_pnl: f64,
+
+    // Drawdown
+    pub max_drawdown: f64,
+    pub max_drawdown_pct: f64,
+
+    // Streak
+    pub current_streak: i64,    // positive=win streak, negative=loss streak
+    pub max_win_streak: usize,
+    pub max_loss_streak: usize,
+
+    // Greeks
+    pub net_beta_weighted_delta: f64,   // BWD = Σ delta × beta × (underlying/SPY) × qty × 100
+    pub net_theta: f64,         // total daily theta on open positions
+    pub spy_price: Option<f64>,         // reference SPY price used for BWD calc
+
+    // OTJ Dashboard metrics
+    pub account_size: f64,
+    pub balance: f64,              // account_size + realized_pnl
+    pub alloc_pct: f64,            // total_open_bpr / account_size × 100
+    pub total_open_bpr: f64,
+    pub undefined_risk_bpr: f64,   // BPR in undefined-risk strategies (CSP, CC, STR, STD)
+    pub defined_risk_bpr: f64,     // BPR in defined-risk strategies
+    pub undefined_risk_pct: f64,   // % of open BPR that is undefined
+    pub defined_risk_pct: f64,     // % of open BPR that is defined
+    pub target_undefined_pct: f64, // target allocation (default 75.0)
+    pub drift: f64,                // undefined_risk_pct - target_undefined_pct
+    pub avg_pop: f64,              // avg POP% across open trades
+    pub vix: Option<f64>,          // current VIX (fetched at startup from Yahoo)
+    pub unrealized_pnl: f64,       // estimated unrealized P&L (theta × days_held × 100 × qty)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Performance Stats (displayed in Performance tab)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct StrategyBreakdown {
+    pub strategy: StrategyType,
+    pub trades: usize,
+    pub wins: usize,
+    pub total_pnl: f64,
+    pub avg_pnl: f64,
+    pub avg_roc: f64,
+    pub win_rate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonthlyPnl {
+    pub year: i32,
+    pub month: u32,
+    pub pnl: f64,
+    pub trade_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerformanceStats {
+    // Win/Loss quality
+    pub avg_win: f64,
+    pub avg_loss: f64,
+    pub profit_factor: f64,
+    pub expected_value: f64,
+
+    // Risk-adjusted return
+    pub sharpe_ratio: f64,
+
+    // Exit quality
+    pub avg_dte_at_close: Option<f64>,
+    pub avg_pct_max_captured: Option<f64>,
+
+    // Trade frequency
+    pub trades_per_week: f64,
+    pub trades_per_month: f64,
+    pub avg_held_days: f64,
+
+    // Strategy breakdown (sorted by trade count desc)
+    pub strategy_breakdown: Vec<StrategyBreakdown>,
+
+    // Monthly P&L (sorted chronologically)
+    pub monthly_pnl: Vec<MonthlyPnl>,
+
+    // Balance history: account_size then account_size + running_pnl per trade
+    pub balance_history: Vec<f64>,
+}
+
+impl Default for PerformanceStats {
+    fn default() -> Self {
+        Self {
+            avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0,
+            sharpe_ratio: 0.0, avg_dte_at_close: None, avg_pct_max_captured: None,
+            trades_per_week: 0.0, trades_per_month: 0.0, avg_held_days: 0.0,
+            strategy_breakdown: vec![], monthly_pnl: vec![], balance_history: vec![],
+        }
+    }
+}

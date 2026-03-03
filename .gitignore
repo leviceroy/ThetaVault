@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+
+# SQLite database (personal trading data — never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Schwab transaction export files (personal financial data)
+*.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# macOS metadata
+.DS_Store
+
+# Environment / secrets
+.env
+*.env
