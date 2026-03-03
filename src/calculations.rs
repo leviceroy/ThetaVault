@@ -693,11 +693,12 @@ pub fn build_portfolio_stats(
     let mut pop_sum         = 0.0_f64;
     let mut pop_count       = 0usize;
 
-    // Build cumulative balance history for drawdown
-    let mut balance_history: Vec<f64> = vec![0.0];
-    let mut running = 0.0_f64;
+    // Collect (exit_date, pnl) pairs — sorted later for accurate drawdown
+    let mut closed_pnl_series: Vec<(chrono::NaiveDate, f64)> = Vec::new();
 
-    let all_refs: Vec<&Trade> = trades.iter().collect();
+    // Sort by exit_date so streak and drawdown are chronological
+    let mut all_refs: Vec<&Trade> = trades.iter().collect();
+    all_refs.sort_by_key(|t| t.exit_date);
 
     for trade in trades {
         if let Some(pnl) = trade.pnl {
@@ -716,8 +717,9 @@ pub fn build_portfolio_stats(
                 }
             }
 
-            running += pnl;
-            balance_history.push(running);
+            if let Some(exit) = trade.exit_date {
+                closed_pnl_series.push((exit.date_naive(), pnl));
+            }
         } else {
             open_count += 1;
 
@@ -792,6 +794,15 @@ pub fn build_portfolio_stats(
         0.0
     };
 
+    // Build sorted balance history anchored at account_size for accurate drawdown %
+    closed_pnl_series.sort_by_key(|(d, _)| *d);
+    let mut balance_history: Vec<f64> = Vec::with_capacity(closed_pnl_series.len() + 1);
+    balance_history.push(account_size);
+    let mut bh_running = account_size;
+    for (_, pnl) in &closed_pnl_series {
+        bh_running += pnl;
+        balance_history.push(bh_running);
+    }
     let (max_drawdown, max_drawdown_pct, _) = calculate_drawdown(&balance_history);
 
     let (current_streak, max_win_streak, max_loss_streak) =

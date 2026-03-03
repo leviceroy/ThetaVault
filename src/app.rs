@@ -97,6 +97,7 @@ pub enum AppMode {
     EditPlaybook,
     AdminSettings,  // editing admin/risk management settings
     AnalyzeTrade,   // payoff-at-expiration chart (activated with 'a')
+    DatePicker,     // calendar overlay over EditTrade / CloseTrade
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +112,7 @@ pub enum FieldKind {
     Select(Vec<String>),  // value is the selected index as a string
     Button(String),       // label string, e.g. "[+ Add Leg]"; activated with Enter
     Multiline,            // long text rendered word-wrapped across multiple lines
+    Date,                 // stored as "YYYY-MM-DD"; Enter opens calendar popup
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +143,9 @@ impl EditField {
     }
     pub fn multiline(label: &str, value: &str) -> Self {
         Self { label: label.to_string(), value: value.to_string(), kind: FieldKind::Multiline, section_header: None }
+    }
+    pub fn date(label: &str, value: &str) -> Self {
+        Self { label: label.to_string(), value: value.to_string(), kind: FieldKind::Date, section_header: None }
     }
     pub fn with_section(mut self, header: &str) -> Self {
         self.section_header = Some(header.to_string());

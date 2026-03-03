@@ -65,11 +65,16 @@ pub fn draw_ui(
     playbook_edit_scroll:    u16,
     alerts:                  &[crate::actions::TradeAlert],
     actions_list_state:      &mut ListState,
+    collapsed_action_kinds:  &HashSet<crate::actions::AlertKind>,
+    pulse_on:                bool,
     dash_kpi_popup:          bool,
     max_heat_pct:            f64,
     admin_fields:            &[EditField],
     admin_field_idx:         usize,
     admin_scroll:            u16,
+    cal_year:                i32,
+    cal_month:               u32,
+    cal_day:                 u32,
 ) {
     let area = f.area();
     let chunks = Layout::default()
@@ -122,7 +127,7 @@ pub fn draw_ui(
             f, chunks[1], playbooks, playbook_state, thesis_scroll,
             app_mode, playbook_edit_fields, playbook_edit_field_idx, playbook_edit_scroll,
         ),
-        3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state),
+        3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct),
         5 => draw_performance(f, chunks[1], stats, perf_stats, perf_scroll),
         _ => {}
@@ -135,11 +140,12 @@ pub fn draw_ui(
         (1, AppMode::CloseTrade)    => " ↑↓/Tab:Field  Ctrl+S:Save  Esc:Cancel ",
         (1, AppMode::ConfirmDelete) => " Y/Enter:Confirm Delete  Any other key:Cancel ",
         (1, AppMode::AnalyzeTrade)  => " Esc:Close  (Payoff at Expiration — ASCII chart) ",
+        (_, AppMode::DatePicker)    => " ←→:Day  ↑↓:Week  [/]:Month  Enter:Confirm  Esc:Cancel ",
         (1, _) => " Q:Quit  ↑↓:Nav  Enter:Detail  f:Filter  /:Search  s:Sort  e:Edit  c:Close  a:Analyze  x:Del  R:Refresh ",
         (0, _) => " Q:Quit  Tab:Switch  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit ",
-        (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:→Journal  R:Refresh ",
+        (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  R:Refresh ",
         (4, AppMode::AdminSettings) => " ↑↓/Tab:Field  Ctrl+S:Save  Esc:Cancel ",
         (4, _)                     => " Q:Quit  E:Edit Settings  R:Refresh ",
         (5, _)                     => " Q:Quit  ↑↓/j/k:Scroll  Tab:Switch  R:Refresh ",
@@ -158,6 +164,11 @@ pub fn draw_ui(
     // ── KPI info popup (Dashboard tab, i key)
     if dash_kpi_popup && selected_tab == 0 {
         draw_kpi_popup(f, chunks[1], stats, max_heat_pct);
+    }
+
+    // ── Date picker overlay — always on top
+    if app_mode == AppMode::DatePicker {
+        draw_date_picker(f, chunks[1], cal_year, cal_month, cal_day);
     }
 }
 
@@ -243,7 +254,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         ("N/A".to_string(), C_GRAY)
     } else {
         let v = stats.net_beta_weighted_delta;
-        let c = if v > 5.0 { C_GREEN } else if v < -5.0 { C_RED } else { C_YELLOW };
+        let abs_v = v.abs();
+        let c = if abs_v <= 5.0 { C_GREEN } else if abs_v <= 15.0 { C_YELLOW } else { C_RED };
         (format!("{:+.1}", v), c)
     };
     f.render_widget(
@@ -272,7 +284,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
                 Style::default().fg(heat_color).add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![Span::styled(
-                format!(" max {:.0}%", max_heat_pct),
+                format!(" ${:.0}k / max{:.0}%", stats.total_open_bpr / 1000.0, max_heat_pct),
                 Style::default().fg(C_GRAY),
             )]),
         ])
@@ -425,14 +437,15 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         ]),
         {
             let bwd_val = stats.net_beta_weighted_delta;
+            // tastytrade goal: delta-neutral (BWD near 0). Near 0 = green, far = red.
             let (bwd_str, bwd_color) = if stats.spy_price.is_none() {
                 ("N/A".to_string(), C_GRAY)
-            } else if bwd_val > 0.1 {
-                (format!("{:+.1} Δ", bwd_val), C_GREEN)
-            } else if bwd_val < -0.1 {
-                (format!("{:+.1} Δ", bwd_val), C_RED)
             } else {
-                (format!("{:+.1} Δ", bwd_val), C_GRAY)
+                let abs_bwd = bwd_val.abs();
+                let c = if abs_bwd <= 5.0 { C_GREEN }
+                         else if abs_bwd <= 15.0 { C_YELLOW }
+                         else { C_RED };
+                (format!("{:+.1} Δ", bwd_val), c)
             };
             Line::from(vec![
                 Span::styled("  β-WΔ     ", Style::default().fg(C_GRAY)),
@@ -443,11 +456,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
             Span::styled("  Max DD   ", Style::default().fg(C_GRAY)),
             Span::styled(
                 format!("-${:.0} ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct),
-                Style::default().fg(
-                    if stats.max_drawdown_pct > 20.0 { C_RED }
-                    else if stats.max_drawdown_pct > 10.0 { C_YELLOW }
-                    else { C_GREEN }
-                ),
+                Style::default().fg(if stats.max_drawdown > 0.0 { C_RED } else { C_GREEN }),
             ),
         ]),
         Line::from(vec![
@@ -840,23 +849,22 @@ fn draw_trade_table(
             match t.next_earnings {
                 Some(ed) => {
                     let days = (ed - today).num_days();
-                    let label = if days >= 0 {
-                        format!("ER {}d", days)
+                    if days < 0 {
+                        // Earnings already passed — show nothing
+                        ("—".to_string(), Style::default().fg(C_GRAY))
                     } else {
-                        "ER —".to_string()
-                    };
-                    let style = if days < 0 {
-                        Style::default().fg(C_GRAY)
-                    } else if days <= 4 {
-                        Style::default().fg(C_RED).add_modifier(Modifier::SLOW_BLINK)
-                    } else if days <= 7 {
-                        Style::default().fg(c_orange)
-                    } else if days <= 14 {
-                        Style::default().fg(C_YELLOW)
-                    } else {
-                        Style::default().fg(C_GRAY)
-                    };
-                    (label, style)
+                        let label = format!("ER {}d", days);
+                        let style = if days <= 4 {
+                            Style::default().fg(C_RED).add_modifier(Modifier::SLOW_BLINK)
+                        } else if days <= 7 {
+                            Style::default().fg(c_orange)
+                        } else if days <= 14 {
+                            Style::default().fg(C_YELLOW)
+                        } else {
+                            Style::default().fg(C_GRAY)
+                        };
+                        (label, style)
+                    }
                 }
                 None => ("—".to_string(), Style::default().fg(C_GRAY)),
             }
@@ -1057,23 +1065,42 @@ fn draw_edit_pane(
             continue;
         }
 
-        let display_val = match &field.kind {
+        let (display_val, placeholder) = match &field.kind {
             FieldKind::Bool => {
-                if field.value == "true" { "✓ Yes".to_string() } else { "○ No ".to_string() }
+                let v = if field.value == "true" { "✓ Yes".to_string() } else { "○ No ".to_string() };
+                (v, false)
             }
             FieldKind::Select(opts) => {
                 let idx = field.value.parse::<usize>().unwrap_or(0);
-                opts.get(idx).cloned().unwrap_or_default()
+                (opts.get(idx).cloned().unwrap_or_default(), false)
             }
-            _ => field.value.clone(),
+            FieldKind::Date => {
+                if field.value.is_empty() {
+                    ("YYYY-MM-DD".to_string(), true)
+                } else {
+                    (field.value.clone(), false)
+                }
+            }
+            _ => (field.value.clone(), false),
+        };
+
+        // Dim the value style for placeholder text
+        let effective_val_style = if placeholder && !is_focused {
+            Style::default().fg(Color::Rgb(51, 65, 85))
+        } else {
+            val_style
         };
 
         let cursor = if is_focused { "▌" } else { " " };
 
-        lines.push(Line::from(vec![
+        let mut field_spans = vec![
             Span::styled(format!("  {:22}", field.label), lbl_style),
-            Span::styled(format!("{}{}", display_val, cursor), val_style),
-        ]));
+            Span::styled(format!("{}{}", display_val, cursor), effective_val_style),
+        ];
+        if is_focused && matches!(field.kind, FieldKind::Date) {
+            field_spans.push(Span::styled("  ⏎ calendar", Style::default().fg(Color::Rgb(71, 85, 105))));
+        }
+        lines.push(Line::from(field_spans));
     }
 
     // Convert field-based scroll offset to line-based scroll offset
@@ -1220,6 +1247,113 @@ fn draw_close_pane(
             pv,
         );
     }
+}
+
+// ── Date picker overlay ───────────────────────────────────────────────────────
+
+const MONTH_NAMES: [&str; 12] = [
+    "January","February","March","April","May","June",
+    "July","August","September","October","November","December",
+];
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    use chrono::NaiveDate;
+    NaiveDate::from_ymd_opt(year, month + 1, 1)
+        .or_else(|| NaiveDate::from_ymd_opt(year + 1, 1, 1))
+        .and_then(|d| d.pred_opt())
+        .map(|d| { use chrono::Datelike; d.day() })
+        .unwrap_or(28)
+}
+
+fn draw_date_picker(f: &mut Frame, area: Rect, year: i32, month: u32, day: u32) {
+    use chrono::{Datelike, NaiveDate, Utc};
+
+    let w: u16 = 34;
+    let h: u16 = 13;
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let dialog = Rect::new(x, y, w.min(area.width), h.min(area.height));
+
+    f.render_widget(Clear, dialog);
+
+    let today    = Utc::now().date_naive();
+    let month_nm = MONTH_NAMES.get((month as usize).saturating_sub(1)).unwrap_or(&"");
+    let dim      = days_in_month(year, month);
+
+    // Day of week for the 1st of the month (0=Mon … 6=Sun)
+    let first_wd = NaiveDate::from_ymd_opt(year, month, 1)
+        .map(|d| d.weekday().num_days_from_monday())
+        .unwrap_or(0) as u32;
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // ── Month / year header
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  ◀  {:^14}  ▶", format!("{} {}", month_nm, year)),
+            Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    // ── Day-of-week header
+    lines.push(Line::from(vec![
+        Span::styled("  Mo  Tu  We  Th  Fr  Sa  Su", Style::default().fg(C_GRAY)),
+    ]));
+
+    // ── Calendar grid — build rows of 7 days
+    let mut col: u32 = first_wd; // offset of first day
+    let mut row_spans: Vec<Span> = vec![Span::raw("  ")];
+    // fill leading blanks
+    for _ in 0..first_wd {
+        row_spans.push(Span::raw("    "));
+    }
+    for d in 1..=dim {
+        let cur = NaiveDate::from_ymd_opt(year, month, d);
+        let is_selected = d == day;
+        let is_today    = cur.map(|c| c == today).unwrap_or(false);
+
+        let txt = if is_selected {
+            format!("[{:2}]", d)
+        } else {
+            format!(" {:2} ", d)
+        };
+        let style = if is_selected {
+            Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)
+        } else if is_today {
+            Style::default().fg(C_YELLOW).add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(C_WHITE)
+        };
+        row_spans.push(Span::styled(txt, style));
+        col += 1;
+        if col == 7 {
+            lines.push(Line::from(std::mem::replace(&mut row_spans, vec![Span::raw("  ")])));
+            col = 0;
+        }
+    }
+    // flush any remaining partial row
+    if col > 0 {
+        lines.push(Line::from(row_spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ←→:Day  ↑↓:Week  [/]:Month", Style::default().fg(C_GRAY)),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(C_BLUE))
+                    .title(Span::styled(
+                        " 📅 Date  Enter:OK  Esc:Cancel ",
+                        Style::default().fg(C_CYAN),
+                    )),
+            ),
+        dialog,
+    );
 }
 
 // ── Confirm delete overlay ────────────────────────────────────────────────────
@@ -1554,6 +1688,83 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16) {
             ),
         area,
     );
+}
+
+/// Count how many lines `draw_trade_detail` would push for `trade`.
+/// Must stay in sync with every `lines.push(...)` in that function.
+pub fn count_detail_lines(trade: &crate::models::Trade) -> usize {
+    let mut n = 0usize;
+
+    n += 1; // header  (ticker + badge + strategy + status)
+    n += 1; // blank after header
+    n += 1; // description / qty
+    n += 1; // entry date / expiry
+
+    if trade.exit_date.is_some() { n += 1; } // exit date line
+
+    n += 1; // blank after exit block (always pushed)
+    n += 1; // credit / max profit / max loss
+
+    if trade.pnl.is_some() {
+        n += 1; // P&L line
+        if trade.debit_paid.is_some() { n += 1; } // debit paid
+    }
+
+    n += 1; // breakeven
+
+    if trade.delta.is_some() || trade.theta.is_some() {
+        n += 1; // blank
+        n += 1; // Greeks line
+    }
+
+    if trade.underlying_price.is_some() || trade.iv_rank.is_some() {
+        n += 1; // blank
+        n += 1; // entry conditions line
+        if trade.underlying_price_at_close.is_some() { n += 1; } // close price
+    }
+
+    let has_misc = trade.commission.is_some()
+        || trade.bpr.is_some()
+        || trade.spread_width.is_some()
+        || trade.is_earnings_play
+        || trade.is_tested;
+    if has_misc { n += 2; } // blank + misc line
+
+    if trade.management_rule.is_some() { n += 1; }
+    if trade.target_profit_pct.is_some() { n += 1; }
+
+    if trade.trade_grade.is_some() {
+        n += 1; // blank
+        n += 1; // grade line
+    }
+
+    if trade.entry_reason.is_some() { n += 1; }
+
+    if trade.rolled_from_id.is_some() {
+        n += 1; // blank
+        n += 1; // rolled-from line
+    }
+
+    if !trade.tags.is_empty() {
+        n += 1; // blank
+        n += 1; // tags line
+    }
+
+    if let Some(ref notes) = trade.notes {
+        if !notes.is_empty() {
+            n += 1; // blank
+            n += 1; // "Notes:" header
+            n += notes.split('\n').count(); // one line per segment
+        }
+    }
+
+    if !trade.legs.is_empty() {
+        n += 1; // blank
+        n += 1; // "Legs (N):" header
+        n += trade.legs.len(); // one line per leg
+    }
+
+    n
 }
 
 // ── Playbook ──────────────────────────────────────────────────────────────────
@@ -2157,8 +2368,8 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pc
         Line::from(vec![Span::styled("  Balance  ", Style::default().fg(C_YELLOW)), Span::styled(format!("account_size + realized_pnl = ${:.2}", stats.balance), Style::default().fg(C_WHITE))]),
         Line::from(vec![Span::styled("  P&L      ", Style::default().fg(C_YELLOW)), Span::styled(format!("realized P&L from closed trades = ${:+.2}", stats.realized_pnl), Style::default().fg(C_WHITE))]),
         Line::from(vec![Span::styled("  Unreal   ", Style::default().fg(C_YELLOW)), Span::styled(format!("est. θ×days×100×qty = ${:+.0} (theta heuristic)", stats.unrealized_pnl), Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  BWD      ", Style::default().fg(C_YELLOW)), Span::styled(format!("Σ(δ×β×underlying/SPY×qty×100) = {:+.1}Δ  [{}]", stats.net_beta_weighted_delta, bwd_source), Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  Heat     ", Style::default().fg(C_YELLOW)), Span::styled(format!("total_open_bpr/account = {:.1}%  (max {:.0}%)", stats.alloc_pct, max_heat_pct), Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::styled("  BWD      ", Style::default().fg(C_YELLOW)), Span::styled(format!("Σ(δ×β×price/SPY×qty×100) = {:+.1}Δ  [{}]. Goal: near 0 (delta-neutral). Green ≤5, Yellow ≤15, Red >15.", stats.net_beta_weighted_delta, bwd_source), Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::styled("  Heat     ", Style::default().fg(C_YELLOW)), Span::styled(format!("${:.0} BPR / ${:.0} acct = {:.1}% allocated (max {:.0}%). >100% = using margin. TastyTrade target: <50%.", stats.total_open_bpr, stats.account_size, stats.alloc_pct, max_heat_pct), Style::default().fg(C_WHITE))]),
         Line::from(vec![Span::styled("  Risk     ", Style::default().fg(C_YELLOW)), Span::styled(format!("undefined/defined BPR split = {:.0}/{:.0}  (tgt {:.0}/{:.0})", stats.undefined_risk_pct, stats.defined_risk_pct, stats.target_undefined_pct, 100.0 - stats.target_undefined_pct), Style::default().fg(C_WHITE))]),
         Line::from(vec![Span::styled("  VIX      ", Style::default().fg(C_YELLOW)), Span::styled(stats.vix.map_or("unavailable".to_string(), |v| { let lbl = if v > 30.0 { "HIGH fear — sell premium, reduce size 50%" } else if v > 20.0 { "elevated — normal sizing" } else { "LOW — prefer defined risk, trade smaller" }; format!("{:.2}  {}", v, lbl) }), Style::default().fg(C_WHITE))]),
         Line::from(vec![Span::styled("  POP      ", Style::default().fg(C_YELLOW)), Span::styled(format!("avg probability of profit = {:.1}%  across {} open positions", stats.avg_pop, stats.open_trades), Style::default().fg(C_WHITE))]),
@@ -2265,12 +2476,14 @@ fn draw_admin(
 // ── Daily Actions ─────────────────────────────────────────────────────────────
 
 fn draw_daily_actions(
-    f:           &mut Frame,
-    area:        Rect,
-    alerts:      &[crate::actions::TradeAlert],
-    list_state:  &mut ListState,
+    f:          &mut Frame,
+    area:       Rect,
+    alerts:     &[crate::actions::TradeAlert],
+    list_state: &mut ListState,
+    collapsed:  &HashSet<crate::actions::AlertKind>,
+    pulse_on:   bool,
 ) {
-    use crate::actions::AlertKind;
+    use crate::actions::{AlertKind, ActionRow, build_action_rows};
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2303,32 +2516,65 @@ fn draw_daily_actions(
         chunks[0],
     );
 
-    // ── Alert list ────────────────────────────────────────────────────────────
-    let items: Vec<ListItem> = alerts.iter().map(|alert| {
-        let (badge_color, kind_label) = match alert.kind {
-            AlertKind::Defense => (C_RED,          alert.kind.badge()),
-            AlertKind::Warning => (C_YELLOW,        alert.kind.badge()),
-            AlertKind::Manage  => (C_YELLOW,        alert.kind.badge()),
-            AlertKind::Close   => (C_GREEN,         alert.kind.badge()),
-            AlertKind::Roll    => (C_BLUE,          alert.kind.badge()),
-            AlertKind::Sizing  => (Color::Magenta,  alert.kind.badge()),
-            AlertKind::Ok      => (C_GRAY,          alert.kind.badge()),
-        };
-
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(format!(" [{}] ", kind_label), Style::default().fg(badge_color).add_modifier(Modifier::BOLD)),
-                Span::styled(alert.headline.clone(), Style::default().fg(C_WHITE)),
-            ]),
-        ];
-        if let Some(ref d) = alert.detail {
-            lines.push(Line::from(vec![
-                Span::raw("        "),
-                Span::styled(format!("↳ {}", d), Style::default().fg(C_GRAY)),
-            ]));
+    // ── Alert list — collapsible groups ───────────────────────────────────────
+    let rows = build_action_rows(alerts, collapsed);
+    let items: Vec<ListItem> = rows.iter().map(|row| {
+        match row {
+            ActionRow::GroupHeader { kind, count } => {
+                let is_collapsed = collapsed.contains(kind);
+                let toggle = if is_collapsed { "▶" } else { "▼" };
+                let (color, label) = match kind {
+                    AlertKind::Defense => (C_RED,          "DEFENSE"),
+                    AlertKind::Warning => (C_YELLOW,        "WARNING"),
+                    AlertKind::Manage  => (C_YELLOW,        "MANAGE"),
+                    AlertKind::Close   => (C_GREEN,         "CLOSE"),
+                    AlertKind::Roll    => (C_BLUE,          "ROLL"),
+                    AlertKind::Sizing  => (Color::Magenta,  "SIZING"),
+                    AlertKind::Ok      => (C_GRAY,          "OK"),
+                };
+                let suffix = if *count == 1 { "alert" } else { "alerts" };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {} ", toggle), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} ", label), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("({} {})", count, suffix), Style::default().fg(C_GRAY)),
+                ]))
+            }
+            ActionRow::Alert(alert) => {
+                let badge_color = match alert.kind {
+                    AlertKind::Defense => C_RED,
+                    AlertKind::Warning => C_YELLOW,
+                    AlertKind::Manage  => C_YELLOW,
+                    AlertKind::Close   => C_GREEN,
+                    AlertKind::Roll    => C_BLUE,
+                    AlertKind::Sizing  => Color::Magenta,
+                    AlertKind::Ok      => C_GRAY,
+                };
+                let badge_style = if alert.kind == AlertKind::Defense {
+                    if pulse_on {
+                        Style::default().fg(Color::White).bg(C_RED).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(C_RED).add_modifier(Modifier::BOLD)
+                    }
+                } else {
+                    Style::default().fg(badge_color).add_modifier(Modifier::BOLD)
+                };
+                let kind_label = alert.kind.badge();
+                let mut lines = vec![
+                    Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(format!(" [{}] ", kind_label), badge_style),
+                        Span::styled(alert.headline.clone(), Style::default().fg(C_WHITE)),
+                    ]),
+                ];
+                if let Some(ref d) = alert.detail {
+                    lines.push(Line::from(vec![
+                        Span::raw("           "),
+                        Span::styled(format!("↳ {}", d), Style::default().fg(C_GRAY)),
+                    ]));
+                }
+                ListItem::new(lines)
+            }
         }
-
-        ListItem::new(lines)
     }).collect();
 
     let list = List::new(items)
@@ -2454,7 +2700,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     }
 
     let pnl_color = if stats.realized_pnl >= 0.0 { C_GREEN } else { C_RED };
-    let wr_color = if stats.win_rate >= 65.0 { C_GREEN } else if stats.win_rate >= 50.0 { C_YELLOW } else { C_RED };
+    let wr_color = if stats.win_rate >= 0.65 { C_GREEN } else if stats.win_rate >= 0.50 { C_YELLOW } else { C_RED };
     let pf_color = if perf.profit_factor >= 1.5 { C_GREEN } else if perf.profit_factor >= 1.0 { C_YELLOW } else { C_RED };
     let ev_color = if perf.expected_value >= 0.0 { C_GREEN } else { C_RED };
 
@@ -2464,7 +2710,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled(format!("{:+.2}", stats.realized_pnl), Style::default().fg(pnl_color)),
         Span::raw("   "),
         Span::styled("Win Rate: ", Style::default().fg(C_GRAY)),
-        Span::styled(format!("{:.1}%", stats.win_rate), Style::default().fg(wr_color)),
+        Span::styled(format!("{:.1}%", stats.win_rate * 100.0), Style::default().fg(wr_color)),
         Span::raw("   "),
         Span::styled("Profit Factor: ", Style::default().fg(C_GRAY)),
         Span::styled(
@@ -2490,7 +2736,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     ]));
 
     let sharpe_color = if perf.sharpe_ratio >= 1.0 { C_GREEN } else if perf.sharpe_ratio >= 0.0 { C_YELLOW } else { C_RED };
-    let dd_color = if stats.max_drawdown_pct.abs() < 10.0 { C_GREEN } else if stats.max_drawdown_pct.abs() < 20.0 { C_YELLOW } else { C_RED };
+    let dd_color = if stats.max_drawdown > 0.0 { C_RED } else { C_GREEN };
     let streak_color = if stats.current_streak >= 0 { C_GREEN } else { C_RED };
     let streak_str = if stats.current_streak >= 0 {
         format!("+{}W", stats.current_streak)
@@ -2504,7 +2750,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::raw("   "),
         Span::styled("Max Drawdown: ", Style::default().fg(C_GRAY)),
         Span::styled(
-            format!("{:+.0} ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct),
+            format!("-{:.0} ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct),
             Style::default().fg(dd_color),
         ),
         Span::raw("   "),

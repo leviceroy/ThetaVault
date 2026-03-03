@@ -31,6 +31,8 @@ pub struct AppState {
     pub live_prices:          std::collections::HashMap<String, f64>,
     pub alerts:               Vec<theta_vault_rust::actions::TradeAlert>,
     pub actions_list_state:   ListState,
+    pub collapsed_action_kinds: HashSet<theta_vault_rust::actions::AlertKind>,
+    pub pulse_on:             bool,
 
     // Dashboard KPI popup
     pub dash_kpi_popup: bool,
@@ -51,10 +53,19 @@ pub struct AppState {
     pub visual_rows:      Vec<VisualRowKind>,
 
     // Scrolling
-    pub thesis_scroll:    u16,
-    pub detail_scroll:    u16,
-    pub dash_open_scroll: usize,
+    pub thesis_scroll:      u16,
+    pub detail_scroll:      u16,
+    pub detail_total_lines: usize,
+    pub dash_open_scroll:   usize,
     pub perf_scroll:      u16,
+
+    // Calendar popup state
+    pub cal_year:      i32,
+    pub cal_month:     u32,
+    pub cal_day:       u32,
+    pub cal_field_idx: usize,
+    pub cal_is_edit:   bool,    // true = edit_fields, false = close_fields
+    pub cal_from_mode: AppMode,
 
     // Mode flags
     pub show_detail: bool,
@@ -141,6 +152,8 @@ impl AppState {
             live_prices,
             alerts,
             actions_list_state,
+            collapsed_action_kinds: HashSet::new(),
+            pulse_on:             false,
             dash_kpi_popup:  false,
             admin_fields:    Vec::new(),
             admin_field_idx: 0,
@@ -151,10 +164,17 @@ impl AppState {
             collapsed_years:  HashSet::new(),
             collapsed_months: HashSet::new(),
             visual_rows:      Vec::new(),
-            thesis_scroll:    0,
-            detail_scroll:    0,
-            dash_open_scroll: 0,
+            thesis_scroll:      0,
+            detail_scroll:      0,
+            detail_total_lines: 0,
+            dash_open_scroll:   0,
             perf_scroll:      0,
+            cal_year:      0,
+            cal_month:     0,
+            cal_day:       0,
+            cal_field_idx: 0,
+            cal_is_edit:   false,
+            cal_from_mode: AppMode::Normal,
             show_detail:      false,
             app_mode:         AppMode::Normal,
             filter_status:    FilterStatus::All,
@@ -338,7 +358,9 @@ impl AppState {
                         self.close_field_idx += 1;
                     }
                 } else if self.show_detail {
-                    self.detail_scroll = self.detail_scroll.saturating_add(1);
+                    let total = self.detail_total_lines.max(1);
+                    let next  = self.detail_scroll as usize + 1;
+                    self.detail_scroll = (if next >= total { 0 } else { next }) as u16;
                 } else {
                     let len = self.visual_rows.len();
                     if len == 0 { return; }
@@ -355,7 +377,10 @@ impl AppState {
                 self.thesis_scroll = 0;
             }
             3 => {
-                let len = self.alerts.len();
+                let rows = theta_vault_rust::actions::build_action_rows(
+                    &self.alerts, &self.collapsed_action_kinds,
+                );
+                let len = rows.len();
                 if len == 0 { return; }
                 let i = self.actions_list_state.selected().unwrap_or(0);
                 self.actions_list_state.select(Some(if i + 1 >= len { 0 } else { i + 1 }));
@@ -384,7 +409,12 @@ impl AppState {
                         self.close_field_idx -= 1;
                     }
                 } else if self.show_detail {
-                    self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                    let total = self.detail_total_lines.max(1);
+                    self.detail_scroll = if self.detail_scroll == 0 {
+                        total.saturating_sub(1) as u16
+                    } else {
+                        self.detail_scroll - 1
+                    };
                 } else {
                     let len = self.visual_rows.len();
                     if len == 0 { return; }
@@ -401,7 +431,10 @@ impl AppState {
                 self.thesis_scroll = 0;
             }
             3 => {
-                let len = self.alerts.len();
+                let rows = theta_vault_rust::actions::build_action_rows(
+                    &self.alerts, &self.collapsed_action_kinds,
+                );
+                let len = rows.len();
                 if len == 0 { return; }
                 let i = self.actions_list_state.selected().unwrap_or(0);
                 self.actions_list_state.select(Some(if i == 0 { len - 1 } else { i - 1 }));
@@ -478,7 +511,7 @@ impl AppState {
                         field.value = if cur == 0 { (opts.len() - 1).to_string() } else { (cur - 1).to_string() };
                     }
                 }
-                FieldKind::Number | FieldKind::Text | FieldKind::Multiline => {
+                FieldKind::Number | FieldKind::Text | FieldKind::Multiline | FieldKind::Date => {
                     field.value.push(c);
                 }
                 FieldKind::Button(_) => {} // no-op: buttons are activated with Enter
@@ -541,7 +574,7 @@ impl AppState {
             EditField::number(&format!("Leg {} Strike", new_n), "0.00"),
             EditField::number(&format!("Leg {} Premium", new_n), "0.0000"),
             EditField::number(&format!("Leg {} Close", new_n), ""),
-            EditField::text(&format!("Leg {} Expiry", new_n), ""),
+            EditField::date(&format!("Leg {} Expiry", new_n), ""),
             EditField::number(&format!("Leg {} Qty", new_n), "1"),
         ];
         for (i, fld) in new_fields.into_iter().enumerate() {
@@ -621,6 +654,61 @@ impl AppState {
         if let Some(field) = self.close_fields.get_mut(self.close_field_idx) {
             field.value.pop();
         }
+    }
+
+    // ── Calendar / date picker helpers ───────────────────────────────────────
+
+    pub fn open_date_picker(&mut self, is_edit: bool) {
+        let value = {
+            let fields = if is_edit { &self.edit_fields } else { &self.close_fields };
+            let idx    = if is_edit { self.edit_field_idx } else { self.close_field_idx };
+            fields.get(idx).map(|f| f.value.clone()).unwrap_or_default()
+        };
+        let nd = chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+            .unwrap_or_else(|_| chrono::Utc::now().date_naive());
+        use chrono::Datelike;
+        self.cal_year      = nd.year();
+        self.cal_month     = nd.month();
+        self.cal_day       = nd.day();
+        self.cal_field_idx = if is_edit { self.edit_field_idx } else { self.close_field_idx };
+        self.cal_is_edit   = is_edit;
+        self.cal_from_mode = self.app_mode;
+        self.app_mode      = AppMode::DatePicker;
+    }
+
+    pub fn cal_move_days(&mut self, delta: i64) {
+        use chrono::{Datelike, Duration, NaiveDate};
+        if let Some(nd) = NaiveDate::from_ymd_opt(self.cal_year, self.cal_month, self.cal_day) {
+            let next = nd + Duration::days(delta);
+            self.cal_year  = next.year();
+            self.cal_month = next.month();
+            self.cal_day   = next.day();
+        }
+    }
+
+    pub fn cal_move_months(&mut self, delta: i32) {
+        use chrono::{Datelike, NaiveDate};
+        let total = self.cal_year * 12 + self.cal_month as i32 - 1 + delta;
+        let year  = total / 12;
+        let month = ((total % 12) + 1) as u32;
+        // clamp day to valid range for the new month
+        let max_day = NaiveDate::from_ymd_opt(year, month + 1, 1)
+            .or_else(|| NaiveDate::from_ymd_opt(year + 1, 1, 1))
+            .and_then(|d| d.pred_opt())
+            .map(|d| d.day())
+            .unwrap_or(28);
+        self.cal_year  = year;
+        self.cal_month = month;
+        self.cal_day   = self.cal_day.min(max_day);
+    }
+
+    pub fn cal_confirm_selection(&mut self) {
+        let value = format!("{:04}-{:02}-{:02}", self.cal_year, self.cal_month, self.cal_day);
+        let fields = if self.cal_is_edit { &mut self.edit_fields } else { &mut self.close_fields };
+        if let Some(f) = fields.get_mut(self.cal_field_idx) {
+            f.value = value;
+        }
+        self.app_mode = self.cal_from_mode;
     }
 
     /// Build a partially-updated Trade for closing (sets exit, pnl, legs).
@@ -835,7 +923,7 @@ fn build_leg_fields_for_strategy(legs: &[models::TradeLeg], strategy: &models::S
         if show_expiry {
             let val = leg.expiration_date.as_deref().unwrap_or_default();
             let clean_val = val.split('T').next().unwrap_or(val);
-            f.push(EditField::text(&format!("Leg {} Expiry", n), clean_val));
+            f.push(EditField::date(&format!("Leg {} Expiry", n), clean_val));
         }
         if show_qty {
             f.push(EditField::number(&format!("Leg {} Qty", n),
@@ -917,16 +1005,16 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
         .with_section("── Core ─────────────────────────────────────────────────────────"));
     f.push(EditField::text("Ticker",      &t.ticker));
     f.push(EditField::number("Quantity",  &t.quantity.to_string()));
-    f.push(EditField::text("Trade Date",  &t.trade_date.format("%Y-%m-%d").to_string()));
-    f.push(EditField::text("Expiration",  &t.expiration_date.format("%Y-%m-%d").to_string()));
-    f.push(EditField::text("Back Month Exp",
+    f.push(EditField::date("Trade Date",  &t.trade_date.format("%Y-%m-%d").to_string()));
+    f.push(EditField::date("Expiration",  &t.expiration_date.format("%Y-%m-%d").to_string()));
+    f.push(EditField::date("Back Month Exp",
         &t.back_month_expiration.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()));
 
     // ── Legs (strategy-aware: type SELECT, optional expiry/qty, add button)
     f.extend(build_leg_fields_for_strategy(&t.legs, &t.strategy));
 
     // ── Exit
-    f.push(EditField::text("Exit Date",
+    f.push(EditField::date("Exit Date",
         &t.exit_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default())
         .with_section("── Exit ──────────────────────────────────────────────────────────"));
     let exit_reasons = vec!["".to_string(), "closed".to_string(), "expired".to_string(), "rolled".to_string(), "stopped".to_string()];
@@ -969,7 +1057,7 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::text("Grade Notes",         &t.grade_notes.clone().unwrap_or_default()));
     f.push(EditField::text("Entry Reason",         &t.entry_reason.clone().unwrap_or_default()));
     f.push(EditField::text("Exit Reason (notes)",  &t.exit_reason.clone().unwrap_or_default()));
-    f.push(EditField::text("Earnings Date",
+    f.push(EditField::date("Earnings Date",
         &t.next_earnings.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()));
     f.push(EditField::text("Tags (comma)",         &t.tags.join(",")));
     f.push(EditField::text("Notes",                &t.notes.clone().unwrap_or_default()));
@@ -1149,7 +1237,7 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
     let today = Utc::now().format("%Y-%m-%d").to_string();
     let mut f: Vec<EditField> = Vec::new();
 
-    f.push(EditField::text("Exit Date", &today).with_section("── Close Trade ───────────────────────────────────────────────────"));
+    f.push(EditField::date("Exit Date", &today).with_section("── Close Trade ───────────────────────────────────────────────────"));
 
     let exit_reasons = vec!["closed".to_string(), "expired".to_string(), "rolled".to_string(), "stopped".to_string()];
     f.push(EditField::select("Exit Reason", "0", exit_reasons));
@@ -1456,6 +1544,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Compute trade count for display (Trade rows only, not headers)
         let display_count = app.visual_rows.iter().filter(|r| matches!(r, VisualRowKind::Trade(_))).count();
 
+        // Refresh detail line count for wrap-around scrolling
+        if app.show_detail {
+            if let Some(i) = app.table_state.selected() {
+                if let Some(VisualRowKind::Trade(ti)) = app.visual_rows.get(i) {
+                    app.detail_total_lines = theta_vault_rust::ui::count_detail_lines(&app.trades[*ti]);
+                }
+            }
+        }
+
         term.draw(|f| ui::draw_ui(
             f,
             display_count,
@@ -1489,13 +1586,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.playbook_edit_scroll,
             &app.alerts,
             &mut app.actions_list_state,
+            &app.collapsed_action_kinds,
+            app.pulse_on,
             app.dash_kpi_popup,
             app.max_heat_pct,
             &app.admin_fields,
             app.admin_field_idx,
             app.admin_scroll,
+            app.cal_year,
+            app.cal_month,
+            app.cal_day,
         ))?;
 
+        let has_event = event::poll(std::time::Duration::from_millis(750))?;
+        if !has_event {
+            app.pulse_on = !app.pulse_on;
+            continue;
+        }
         if let Event::Key(key) = event::read()? {
             // ── Filter input mode ────────────────────────────────────────────
             if app.app_mode == AppMode::FilterInput {
@@ -1526,6 +1633,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
+            // ── Date picker mode ─────────────────────────────────────────────
+            if app.app_mode == AppMode::DatePicker {
+                match key.code {
+                    KeyCode::Esc                         => { app.app_mode = app.cal_from_mode; }
+                    KeyCode::Enter                       => app.cal_confirm_selection(),
+                    KeyCode::Left  | KeyCode::Char('h') => app.cal_move_days(-1),
+                    KeyCode::Right | KeyCode::Char('l') => app.cal_move_days(1),
+                    KeyCode::Up    | KeyCode::Char('k') => app.cal_move_days(-7),
+                    KeyCode::Down  | KeyCode::Char('j') => app.cal_move_days(7),
+                    KeyCode::Char('[') | KeyCode::PageUp   => app.cal_move_months(-1),
+                    KeyCode::Char(']') | KeyCode::PageDown => app.cal_move_months(1),
+                    _ => {}
+                }
+                continue;
+            }
+
             // ── Edit trade mode ──────────────────────────────────────────────
             if app.app_mode == AppMode::EditTrade {
                 match key.code {
@@ -1533,12 +1656,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     KeyCode::Tab | KeyCode::Down => app.nav_down(),
                     KeyCode::BackTab | KeyCode::Up => app.nav_up(),
                     KeyCode::Enter => {
-                        if let Some(f) = app.edit_fields.get_mut(app.edit_field_idx) {
-                            match f.kind {
-                                FieldKind::Multiline => f.value.push('\n'),
-                                FieldKind::Button(_) => app.add_leg_to_edit_fields(),
-                                _ => {}
-                            }
+                        let kind = app.edit_fields.get(app.edit_field_idx).map(|f| f.kind.clone());
+                        match kind {
+                            Some(FieldKind::Date)      => app.open_date_picker(true),
+                            Some(FieldKind::Multiline) => { if let Some(f) = app.edit_fields.get_mut(app.edit_field_idx) { f.value.push('\n'); } }
+                            Some(FieldKind::Button(_)) => app.add_leg_to_edit_fields(),
+                            _ => {}
                         }
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1560,7 +1683,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Backspace => {
                         if let Some(f) = app.edit_fields.get_mut(app.edit_field_idx) {
-                            if matches!(f.kind, FieldKind::Text | FieldKind::Number | FieldKind::Multiline) {
+                            if matches!(f.kind, FieldKind::Text | FieldKind::Number | FieldKind::Multiline | FieldKind::Date) {
                                 f.value.pop();
                             }
                         }
@@ -1596,6 +1719,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 app.reload(&storage);
                             }
                         }
+                    }
+                    KeyCode::Enter => {
+                        let kind = app.close_fields.get(app.close_field_idx).map(|f| f.kind.clone());
+                        if matches!(kind, Some(FieldKind::Date)) { app.open_date_picker(false); }
                     }
                     KeyCode::Backspace => app.close_key_backspace(),
                     KeyCode::Char(c)   => app.close_key_char(c),
@@ -1733,7 +1860,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         idx.to_string()
                                     };
                                 }
-                                FieldKind::Text | FieldKind::Number | FieldKind::Multiline => {
+                                FieldKind::Text | FieldKind::Number | FieldKind::Multiline | FieldKind::Date => {
                                     f.value.push(c);
                                 }
                                 FieldKind::Button(_) => {}
@@ -1914,9 +2041,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match key.code {
                         KeyCode::Enter => {
                             if let Some(idx) = app.actions_list_state.selected() {
-                                if let Some(alert) = app.alerts.get(idx) {
-                                    let trade_id = alert.trade_id;
-                                    if trade_id > 0 {
+                                let rows = theta_vault_rust::actions::build_action_rows(
+                                    &app.alerts, &app.collapsed_action_kinds,
+                                );
+                                match rows.get(idx) {
+                                    Some(theta_vault_rust::actions::ActionRow::GroupHeader { kind, .. }) => {
+                                        let kind = kind.clone();
+                                        if app.collapsed_action_kinds.contains(&kind) {
+                                            app.collapsed_action_kinds.remove(&kind);
+                                        } else {
+                                            app.collapsed_action_kinds.insert(kind);
+                                        }
+                                    }
+                                    Some(theta_vault_rust::actions::ActionRow::Alert(alert)) if alert.trade_id > 0 => {
+                                        let trade_id = alert.trade_id;
                                         app.selected_tab    = 1;
                                         app.filter_status   = FilterStatus::Open;
                                         app.filter_ticker   = String::new();
@@ -1928,6 +2066,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         });
                                         app.table_state.select(row_idx.or(Some(0)));
                                     }
+                                    _ => {}
                                 }
                             }
                         }
