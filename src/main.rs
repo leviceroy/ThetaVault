@@ -99,6 +99,9 @@ pub struct AppState {
     pub playbook_edit_fields:    Vec<EditField>,
     pub playbook_edit_field_idx: usize,
     pub playbook_edit_scroll:    u16,
+
+    // Thesis in-place editor buffer
+    pub thesis_edit_buf: String,
 }
 
 impl AppState {
@@ -194,6 +197,7 @@ impl AppState {
             playbook_edit_fields:    Vec::new(),
             playbook_edit_field_idx: 0,
             playbook_edit_scroll:    0,
+            thesis_edit_buf:         String::new(),
         };
         app.rebuild_visual_rows();
         app
@@ -793,6 +797,32 @@ impl AppState {
         self.app_mode                = AppMode::EditPlaybook;
     }
 
+    pub fn start_thesis_edit(&mut self) {
+        if let Some(idx) = self.playbook_state.selected() {
+            if let Some(pb) = self.playbooks.get(idx) {
+                self.thesis_edit_buf = pb.description.clone().unwrap_or_default();
+                self.thesis_scroll   = 0;
+                self.app_mode        = AppMode::EditThesis;
+            }
+        }
+    }
+
+    pub fn save_thesis(&mut self, storage: &storage::Storage) {
+        if let Some(idx) = self.playbook_state.selected() {
+            if let Some(pb) = self.playbooks.get(idx).cloned() {
+                let mut updated = pb.clone();
+                updated.description = if self.thesis_edit_buf.is_empty() {
+                    None
+                } else {
+                    Some(self.thesis_edit_buf.clone())
+                };
+                let _ = storage.update_playbook(pb.id, &updated);
+                self.app_mode = AppMode::Normal;
+                self.reload(storage);
+            }
+        }
+    }
+
     pub fn build_playbook_from_edit_fields(&self) -> models::PlaybookStrategy {
         build_playbook_from_edit_fields_fn(&self.playbook_edit_fields)
     }
@@ -818,6 +848,7 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::ShortDiagonalSpread,
         models::StrategyType::LongCallVertical,
         models::StrategyType::LongPutVertical,
+        models::StrategyType::Zebra,
         models::StrategyType::Custom,
     ]
 }
@@ -829,12 +860,15 @@ fn strategy_shows_per_leg_expiry(strategy: &models::StrategyType) -> bool {
         models::StrategyType::LongDiagonalSpread |
         models::StrategyType::ShortDiagonalSpread |
         models::StrategyType::Pmcc |
+        models::StrategyType::Zebra |
         models::StrategyType::Custom)
 }
 
-/// True for custom — per-leg quantity fields.
+/// True for custom / zebra — per-leg quantity fields.
 fn strategy_shows_per_leg_qty(strategy: &models::StrategyType) -> bool {
-    *strategy == models::StrategyType::Custom
+    matches!(strategy,
+        models::StrategyType::Zebra |
+        models::StrategyType::Custom)
 }
 
 /// Read the Strategy SELECT field and return the StrategyType.
@@ -1473,6 +1507,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // ── DB init (before TUI — keeps terminal output readable)
     let db_path = std::env::args().nth(1).unwrap_or_else(|| "trades.db".to_string());
     let storage = storage::Storage::new(&db_path)?;
+    // One-time migrations / seed data
+    let _ = storage.migrate_zebra_type();
+    let _ = storage.ensure_ratio_spread_playbook();
     let mut app = AppState::new(&storage);
 
     // ── Yahoo Finance startup fetch (10 s timeout)
@@ -1596,6 +1633,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.cal_year,
             app.cal_month,
             app.cal_day,
+            &app.thesis_edit_buf,
         ))?;
 
         let has_event = event::poll(std::time::Duration::from_millis(750))?;
@@ -1791,6 +1829,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                     }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ── Edit thesis mode ─────────────────────────────────────────────
+            if app.app_mode == AppMode::EditThesis {
+                match key.code {
+                    KeyCode::Esc => { app.app_mode = AppMode::Normal; }
+                    KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.save_thesis(&storage);
+                    }
+                    KeyCode::Enter => { app.thesis_edit_buf.push('\n'); }
+                    KeyCode::Backspace => { app.thesis_edit_buf.pop(); }
+                    KeyCode::Char(c) => { app.thesis_edit_buf.push(c); }
                     _ => {}
                 }
                 continue;
@@ -2084,6 +2137,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('n') | KeyCode::Char('N') => app.start_new_playbook(),
                         KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
                             if !app.playbooks.is_empty() { app.start_edit_playbook(); }
+                        }
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            if !app.playbooks.is_empty() { app.start_thesis_edit(); }
                         }
                         KeyCode::Down | KeyCode::Char('j') => app.nav_down(),
                         KeyCode::Up   | KeyCode::Char('k') => app.nav_up(),

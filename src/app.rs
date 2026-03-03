@@ -95,6 +95,7 @@ pub enum AppMode {
     CloseTrade,
     ConfirmDelete,
     EditPlaybook,
+    EditThesis,     // in-place editing of the selected playbook's thesis text
     AdminSettings,  // editing admin/risk management settings
     AnalyzeTrade,   // payoff-at-expiration chart (activated with 'a')
     DatePicker,     // calendar overlay over EditTrade / CloseTrade

@@ -22,6 +22,7 @@ pub enum StrategyType {
     ShortDiagonalSpread,
     LongCallVertical,
     LongPutVertical,
+    Zebra,
     Custom,
 }
 
@@ -43,6 +44,7 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "Short Diagonal Spread",
             StrategyType::LongCallVertical    => "Long Call Vertical",
             StrategyType::LongPutVertical     => "Long Put Vertical",
+            StrategyType::Zebra               => "Zebra Spread",
             StrategyType::Custom              => "Custom / Ratio Spread",
         }
     }
@@ -64,6 +66,7 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "SDS",
             StrategyType::LongCallVertical    => "LCV",
             StrategyType::LongPutVertical     => "LPV",
+            StrategyType::Zebra               => "ZBR",
             StrategyType::Custom              => "CUST",
         }
     }
@@ -85,6 +88,7 @@ impl StrategyType {
             "short_diagonal_spread" => StrategyType::ShortDiagonalSpread,
             "long_call_vertical"    => StrategyType::LongCallVertical,
             "long_put_vertical"     => StrategyType::LongPutVertical,
+            "zebra"                 => StrategyType::Zebra,
             _                       => StrategyType::Custom,
         }
     }
@@ -106,6 +110,7 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "short_diagonal_spread",
             StrategyType::LongCallVertical    => "long_call_vertical",
             StrategyType::LongPutVertical     => "long_put_vertical",
+            StrategyType::Zebra               => "zebra",
             StrategyType::Custom              => "custom",
         }
     }
@@ -208,6 +213,7 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::ShortDiagonalSpread => vec![LegType::ShortCall, LegType::LongCall],
         StrategyType::LongCallVertical    => vec![LegType::LongCall,  LegType::ShortCall],
         StrategyType::LongPutVertical     => vec![LegType::LongPut,   LegType::ShortPut],
+        StrategyType::Zebra               => vec![],  // user builds legs freely
         StrategyType::Custom              => vec![],
     }
 }
@@ -220,7 +226,7 @@ pub fn merge_legs_for_strategy_change(
     existing_legs: &[TradeLeg],
     new_strategy: &StrategyType,
 ) -> (Vec<TradeLeg>, Vec<TradeLeg>) {
-    if *new_strategy == StrategyType::Custom {
+    if *new_strategy == StrategyType::Custom || *new_strategy == StrategyType::Zebra {
         return (existing_legs.to_vec(), vec![]);
     }
 

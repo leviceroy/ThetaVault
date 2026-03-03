@@ -75,6 +75,7 @@ pub fn draw_ui(
     cal_year:                i32,
     cal_month:               u32,
     cal_day:                 u32,
+    thesis_edit_buf:         &str,
 ) {
     let area = f.area();
     let chunks = Layout::default()
@@ -126,6 +127,7 @@ pub fn draw_ui(
         2 => draw_playbook(
             f, chunks[1], playbooks, playbook_state, thesis_scroll,
             app_mode, playbook_edit_fields, playbook_edit_field_idx, playbook_edit_scroll,
+            thesis_edit_buf,
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct),
@@ -143,8 +145,9 @@ pub fn draw_ui(
         (_, AppMode::DatePicker)    => " ←→:Day  ↑↓:Week  [/]:Month  Enter:Confirm  Esc:Cancel ",
         (1, _) => " Q:Quit  ↑↓:Nav  Enter:Detail  f:Filter  /:Search  s:Sort  e:Edit  c:Close  a:Analyze  x:Del  R:Refresh ",
         (0, _) => " Q:Quit  Tab:Switch  ↑↓:Scroll  i:KPI Info  R:Refresh ",
+        (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit ",
+        (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  R:Refresh ",
         (4, AppMode::AdminSettings) => " ↑↓/Tab:Field  Ctrl+S:Save  Esc:Cancel ",
         (4, _)                     => " Q:Quit  E:Edit Settings  R:Refresh ",
@@ -1779,6 +1782,7 @@ fn draw_playbook(
     playbook_edit_fields:    &[EditField],
     playbook_edit_field_idx: usize,
     playbook_edit_scroll:    u16,
+    thesis_edit_buf:         &str,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1810,7 +1814,40 @@ fn draw_playbook(
         state,
     );
 
-    if app_mode == AppMode::EditPlaybook {
+    if app_mode == AppMode::EditThesis {
+        let line_count = thesis_edit_buf.split('\n').count();
+        // Scroll so the last line (cursor) is always visible
+        let inner_h = chunks[1].height.saturating_sub(2) as usize;
+        let scroll = if line_count > inner_h { (line_count - inner_h) as u16 } else { 0 };
+        let lines: Vec<Line> = thesis_edit_buf
+            .split('\n')
+            .enumerate()
+            .map(|(i, ln)| {
+                if i == line_count - 1 {
+                    Line::from(vec![Span::styled(
+                        format!("{}▌", ln),
+                        Style::default().fg(C_WHITE),
+                    )])
+                } else {
+                    Line::from(Span::styled(ln, Style::default().fg(C_WHITE)))
+                }
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(lines)
+                .scroll((scroll, 0))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(C_YELLOW))
+                        .title(Span::styled(
+                            " Thesis  (Ctrl+S: Save   Esc: Cancel) ",
+                            Style::default().fg(C_YELLOW),
+                        )),
+                ),
+            chunks[1],
+        );
+    } else if app_mode == AppMode::EditPlaybook {
         draw_edit_pane(f, chunks[1], playbook_edit_fields, playbook_edit_field_idx, playbook_edit_scroll, None);
     } else if let Some(idx) = state.selected() {
         if let Some(pb) = playbooks.get(idx) {
@@ -2313,6 +2350,7 @@ fn badge_color(spread_type: &str) -> Color {
         "calendar_spread" | "pmcc"                     => C_YELLOW,
         "long_diagonal_spread" | "short_diagonal_spread" => Color::Rgb(249, 115, 22),
         "long_call_vertical" | "long_put_vertical"    => C_CYAN,
+        "zebra"                                        => Color::Rgb(168, 85, 247),  // purple
         _                                              => C_GRAY,
     }
 }

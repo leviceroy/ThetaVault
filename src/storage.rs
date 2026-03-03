@@ -522,6 +522,96 @@ impl Storage {
         Ok(())
     }
 
+    /// One-time migration: update Zebra playbooks from spread_type='custom' → 'zebra'.
+    pub fn migrate_zebra_type(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playbook_strategies SET spread_type = 'zebra'
+             WHERE spread_type = 'custom' AND (name LIKE '%Zebra%' OR name LIKE '%zebra%')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Seed the Ratio Spread playbook if it does not already exist.
+    pub fn ensure_ratio_spread_playbook(&self) -> Result<()> {
+        let count: i64 = self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM playbook_strategies WHERE name = 'Ratio Spread'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if count > 0 {
+            return Ok(());
+        }
+
+        let thesis = "\
+Overview:
+Omnidirectional undefined-risk trade: long put spread funded by an extra short put, entered for a net credit. No risk to the upside; max profit is at the short strike. Also known as a put ratio spread.
+
+Setup:
+1. Buy an ATM or OTM put (long leg)
+2. Sell two further OTM puts for a net credit
+
+Max Profit: Width of Long Spread + Credit Received
+Max Loss: Breakeven Price × 100 (undefined to the downside)
+Profit Target: 50% of Credit Received or 25% of Long Spread Width
+Breakeven: Short Put Strike – (Long Spread Width + Credit Received)
+
+Greeks:
+Delta: Long / Dynamic
+Vega: Short (benefits from vol contraction)
+Theta: Long (benefits from time decay)
+Gamma: Dynamic
+
+How The Trade Works:
+Ideal: The stock moves toward the short strikes near expiration. Ratio spreads are omnidirectional — they profit from a stock price increase or a move down toward the short strikes. Max profit occurs when the long spread is fully ITM exactly at the short strike.
+
+Not Ideal: The stock moves well below the short strikes and through our breakeven. This pushes us into the loss zone because the uncovered short put has undefined downside risk.
+
+Defensive Tactics:
+The naked short put is where the risk lives. Rolling it out in time for a credit adds extrinsic value and more time without adding risk. The long put spread will be near max value when we are seeing losses — it can be closed for an additional credit against the remaining short put.
+
+Volatility:
+If Volatility Expands: We may hold. An extrinsic value loss is possible if paired with a bearish move in price. Extrinsic value goes to zero by expiration regardless.
+
+If Volatility Contracts: The spread can lose value when contraction pairs with a bullish move. Options: close for a profit, or buy an OTM put to convert to a symmetrical butterfly. If the put costs less than the original credit, we lock in a guaranteed profit and remove buying power risk.
+
+Expiration:
+If Partially ITM: We can likely sell the long put spread for a profit. Consider closing the whole trade.
+
+If ITM: Close the long put spread to secure value, then roll or close the remaining short put.
+
+If OTM: All strikes expire worthless. Keep the credit received on entry as profit.
+
+Takeaways:
+We need extrinsic value close to zero before realizing intrinsic value on the long spread. Moving ITM too early can produce extrinsic losses even when inside the max-profit zone. Hold ratio spreads closer to expiration to avoid passing through the profit zone before hitting the loss zone.
+
+For earnings plays, use the weekly cycle — we need the stock to move toward our spread AND extrinsic value to be near zero to capture the long spread's intrinsic value.";
+
+        use crate::models::{EntryCriteria, PlaybookStrategy};
+        let ec = EntryCriteria {
+            min_ivr:            Some(30.0),
+            max_ivr:            Some(100.0),
+            min_delta:          Some(0.20),
+            max_delta:          Some(0.40),
+            min_dte:            Some(15),
+            max_dte:            Some(45),
+            max_allocation_pct: Some(5.0),
+            target_profit_pct:  Some(50.0),
+            management_rule:    Some("profit_target_50".to_string()),
+        };
+        let pb = PlaybookStrategy {
+            id:             0,
+            name:           "Ratio Spread".to_string(),
+            description:    Some(thesis.to_string()),
+            spread_type:    Some("custom".to_string()),
+            entry_criteria: Some(ec),
+        };
+        self.insert_playbook(&pb)?;
+        Ok(())
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // Settings key-value store
     // ────────────────────────────────────────────────────────────────────────
