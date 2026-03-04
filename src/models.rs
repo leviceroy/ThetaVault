@@ -492,6 +492,17 @@ pub struct StrategyBreakdown {
 }
 
 #[derive(Debug, Clone)]
+pub struct TickerBreakdown {
+    pub ticker: String,
+    pub trades: usize,
+    pub wins: usize,
+    pub total_pnl: f64,
+    pub avg_pnl: f64,
+    pub avg_roc: f64,
+    pub win_rate: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct MonthlyPnl {
     pub year: i32,
     pub month: u32,
@@ -525,6 +536,9 @@ pub struct PerformanceStats {
     // Strategy breakdown (sorted by trade count desc)
     pub strategy_breakdown: Vec<StrategyBreakdown>,
 
+    // Ticker breakdown (sorted by trade count desc)
+    pub ticker_breakdown: Vec<TickerBreakdown>,
+
     // Monthly P&L (sorted chronologically)
     pub monthly_pnl: Vec<MonthlyPnl>,
 
@@ -539,7 +553,7 @@ impl Default for PerformanceStats {
             sharpe_ratio: 0.0, sortino_ratio: 0.0, calmar_ratio: 0.0, avg_annualized_roc: 0.0,
             avg_dte_at_close: None, avg_pct_max_captured: None,
             trades_per_week: 0.0, trades_per_month: 0.0, avg_held_days: 0.0,
-            strategy_breakdown: vec![], monthly_pnl: vec![], balance_history: vec![],
+            strategy_breakdown: vec![], ticker_breakdown: vec![], monthly_pnl: vec![], balance_history: vec![],
         }
     }
 }

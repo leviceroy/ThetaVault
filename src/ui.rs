@@ -1803,6 +1803,7 @@ pub fn count_perf_lines(
     + perf_advanced_lines(stats, width).len()
     + perf_chart_lines(stats, perf, width).len()
     + perf_strategy_lines(perf, width).len()
+    + perf_ticker_lines(perf, width).len()
     + perf_monthly_lines(perf, &std::collections::HashMap::new(), width).len()
     + 1  // trailing blank line pushed in draw_performance
 }
@@ -2737,6 +2738,7 @@ fn draw_performance(
     lines.extend(perf_advanced_lines(stats, width));
     lines.extend(perf_chart_lines(stats, perf, width));
     lines.extend(perf_strategy_lines(perf, width));
+    lines.extend(perf_ticker_lines(perf, width));
     lines.extend(perf_monthly_lines(perf, spy_monthly, width));
     lines.push(Line::from(""));
 
@@ -3117,6 +3119,47 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
         Span::raw("  "),
         Span::styled(format!("{:>+8.0}", avg_pnl_total), Style::default().fg(total_pnl_color).add_modifier(Modifier::BOLD)),
     ]));
+    lines
+}
+
+fn perf_ticker_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        perf_section_header("🎯 TICKER BREAKDOWN", width),
+        Line::from(""),
+    ];
+    if perf.ticker_breakdown.is_empty() {
+        lines.push(Line::from(vec![Span::styled("  No closed trades yet.", Style::default().fg(C_GRAY))]));
+        return lines;
+    }
+
+    lines.push(Line::from(vec![Span::styled(
+        "  Ticker                   Trades  Win%    P&L        Avg P&L  Avg ROC",
+        Style::default().fg(C_GRAY),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        "  ─────────────────────────────────────────────────────────────────────",
+        Style::default().fg(C_DARK),
+    )]));
+
+    for tb in &perf.ticker_breakdown {
+        let wr_color  = if tb.win_rate  >= 65.0 { C_GREEN } else if tb.win_rate  >= 50.0 { C_YELLOW } else { C_RED };
+        let pnl_color = if tb.total_pnl >= 0.0  { C_GREEN } else { C_RED };
+        let roc_color = if tb.avg_roc   >= 5.0  { C_GREEN } else if tb.avg_roc   >= 0.0  { C_YELLOW } else { C_RED };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{:<24}", tb.ticker), Style::default().fg(C_CYAN)),
+            Span::styled(format!("{:>6}", tb.trades), Style::default().fg(C_WHITE)),
+            Span::raw("  "),
+            Span::styled(format!("{:>5.0}%", tb.win_rate), Style::default().fg(wr_color)),
+            Span::raw("  "),
+            Span::styled(format!("{:>+10.0}", tb.total_pnl), Style::default().fg(pnl_color)),
+            Span::raw("  "),
+            Span::styled(format!("{:>+8.0}", tb.avg_pnl), Style::default().fg(pnl_color)),
+            Span::raw("  "),
+            Span::styled(format!("{:>7.1}%", tb.avg_roc), Style::default().fg(roc_color)),
+        ]));
+    }
     lines
 }
 

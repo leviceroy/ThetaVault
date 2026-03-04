@@ -1130,7 +1130,7 @@ fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max
 
 pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::models::PerformanceStats {
     use chrono::Datelike;
-    use crate::models::{PerformanceStats, StrategyBreakdown, MonthlyPnl};
+    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl};
 
     // Step 1: filter and sort closed trades by exit_date ascending
     let mut sorted_closed: Vec<&Trade> = trades.iter()
@@ -1168,6 +1168,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
     // strategy_map: StrategyType -> (trades, wins, total_pnl, roc_sum, roc_count)
     let mut strategy_map: HashMap<String, (usize, usize, f64, f64, u32)> = HashMap::new();
+
+    // ticker_map: ticker -> (trades, wins, total_pnl, roc_sum, roc_count)
+    let mut ticker_map: HashMap<String, (usize, usize, f64, f64, u32)> = HashMap::new();
 
     // balance history: start at account_size, push running after each trade
     let mut balance_history: Vec<f64> = vec![account_size];
@@ -1234,6 +1237,16 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
             se.4 += 1;
         }
 
+        // Ticker breakdown
+        let te = ticker_map.entry(t.ticker.clone()).or_insert((0, 0, 0.0, 0.0, 0));
+        te.0 += 1;
+        if pnl > 0.0 { te.1 += 1; }
+        te.2 += pnl;
+        if let Some(roc) = roc_opt {
+            te.3 += roc;
+            te.4 += 1;
+        }
+
         // Balance history
         running += pnl;
         balance_history.push(running);
@@ -1285,6 +1298,22 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     }).collect();
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
 
+    // Step 7a: ticker breakdown
+    let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, total_pnl, roc_sum, roc_count))| {
+        let w = wins as f64;
+        let tc = trades as f64;
+        TickerBreakdown {
+            ticker,
+            trades,
+            wins,
+            total_pnl,
+            avg_pnl: if tc > 0.0 { total_pnl / tc } else { 0.0 },
+            avg_roc: if roc_count > 0 { roc_sum / roc_count as f64 } else { 0.0 },
+            win_rate: if tc > 0.0 { w / tc * 100.0 } else { 0.0 },
+        }
+    }).collect();
+    ticker_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
+
     // Step 7: monthly P&L
     let mut monthly_pnl: Vec<MonthlyPnl> = monthly_map.into_iter().map(|((year, month), (pnl, trade_count))| {
         MonthlyPnl { year, month, pnl, trade_count }
@@ -1312,6 +1341,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         trades_per_month,
         avg_held_days,
         strategy_breakdown,
+        ticker_breakdown,
         monthly_pnl,
         balance_history,
     }
