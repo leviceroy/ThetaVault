@@ -1770,6 +1770,20 @@ pub fn count_detail_lines(trade: &crate::models::Trade) -> usize {
     n
 }
 
+pub fn count_perf_lines(
+    stats: &crate::models::PortfolioStats,
+    perf:  &crate::models::PerformanceStats,
+    width: usize,
+) -> usize {
+    perf_health_lines(stats, width).len()
+    + perf_returns_lines(stats, perf, width).len()
+    + perf_advanced_lines(stats, width).len()
+    + perf_chart_lines(stats, perf, width).len()
+    + perf_strategy_lines(perf, width).len()
+    + perf_monthly_lines(perf, width).len()
+    + 1  // trailing blank line pushed in draw_performance
+}
+
 // ── Playbook ──────────────────────────────────────────────────────────────────
 
 fn draw_playbook(

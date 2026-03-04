@@ -58,6 +58,7 @@ pub struct AppState {
     pub detail_total_lines: usize,
     pub dash_open_scroll:   usize,
     pub perf_scroll:      u16,
+    pub perf_max_scroll:  u16,
 
     // Calendar popup state
     pub cal_year:      i32,
@@ -172,6 +173,7 @@ impl AppState {
             detail_total_lines: 0,
             dash_open_scroll:   0,
             perf_scroll:      0,
+            perf_max_scroll:  u16::MAX,
             cal_year:      0,
             cal_month:     0,
             cal_day:       0,
@@ -394,7 +396,9 @@ impl AppState {
                 self.dash_open_scroll = self.dash_open_scroll.saturating_add(1);
             }
             5 => {
-                self.perf_scroll = self.perf_scroll.saturating_add(1);
+                if self.perf_scroll < self.perf_max_scroll {
+                    self.perf_scroll = self.perf_scroll.saturating_add(1);
+                }
             }
             _ => {}
         }
@@ -1582,6 +1586,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // Compute trade count for display (Trade rows only, not headers)
         let display_count = app.visual_rows.iter().filter(|r| matches!(r, VisualRowKind::Trade(_))).count();
+
+        // Refresh perf scroll limit
+        if app.selected_tab == 5 {
+            if let Ok(size) = term.size() {
+                let content_w = size.width.saturating_sub(2) as usize;
+                let visible_h = size.height.saturating_sub(6) as usize; // tab_bar(3)+footer(1)+borders(2)
+                let total = theta_vault_rust::ui::count_perf_lines(&app.stats, &app.perf_stats, content_w);
+                app.perf_max_scroll = total.saturating_sub(visible_h) as u16;
+            }
+        }
 
         // Refresh detail line count for wrap-around scrolling
         if app.show_detail {
