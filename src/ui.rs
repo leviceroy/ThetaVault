@@ -2652,7 +2652,7 @@ fn draw_daily_actions(
         .split(area);
 
     // ── Stats bar: count by kind ──────────────────────────────────────────────
-    let defense = alerts.iter().filter(|a| a.kind == AlertKind::Defense || a.kind == AlertKind::MaxLoss).count();
+    let defense = alerts.iter().filter(|a| matches!(a.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::Drawdown)).count();
     let warning = alerts.iter().filter(|a| a.kind == AlertKind::Warning).count();
     let manage  = alerts.iter().filter(|a| a.kind == AlertKind::Manage || a.kind == AlertKind::Roll).count();
     let close   = alerts.iter().filter(|a| a.kind == AlertKind::Close).count();
@@ -2705,6 +2705,8 @@ fn draw_daily_actions(
                     AlertKind::Warning        => (C_YELLOW,        "WARNING"),
                     AlertKind::DeltaExtreme   => (C_YELLOW,        "Δ EXTREME"),
                     AlertKind::UndefinedDrift => (C_YELLOW,        "DRIFT"),
+                    AlertKind::Drawdown       => (C_RED,           "DRAWDOWN"),
+                    AlertKind::RollChain      => (C_YELLOW,        "ROLLS"),
                     AlertKind::Manage         => (C_YELLOW,        "MANAGE"),
                     AlertKind::Close          => (C_GREEN,         "CLOSE"),
                     AlertKind::Roll           => (C_BLUE,          "ROLL"),
@@ -2726,13 +2728,15 @@ fn draw_daily_actions(
                     AlertKind::Warning        => C_YELLOW,
                     AlertKind::DeltaExtreme   => C_YELLOW,
                     AlertKind::UndefinedDrift => C_YELLOW,
+                    AlertKind::Drawdown       => C_RED,
+                    AlertKind::RollChain      => C_YELLOW,
                     AlertKind::Manage         => C_YELLOW,
                     AlertKind::Close          => C_GREEN,
                     AlertKind::Roll           => C_BLUE,
                     AlertKind::Sizing         => Color::Magenta,
                     AlertKind::Ok             => C_GRAY,
                 };
-                let badge_style = if matches!(alert.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::GammaRisk) {
+                let badge_style = if matches!(alert.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::GammaRisk | AlertKind::Drawdown) {
                     if pulse_on {
                         Style::default().fg(Color::White).bg(C_RED).add_modifier(Modifier::BOLD)
                     } else {

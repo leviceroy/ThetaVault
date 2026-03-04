@@ -140,6 +140,7 @@ impl AppState {
         let alerts = theta_vault_rust::actions::compute_alerts(
             &trades, &live_prices, account_size, current_vix,
             stats.net_beta_weighted_delta, stats.drift, stats.target_undefined_pct,
+            stats.max_drawdown_pct,
         );
         let mut actions_list_state = ListState::default();
         if !alerts.is_empty() {
@@ -220,6 +221,7 @@ impl AppState {
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
+            self.stats.max_drawdown_pct,
         );
         if !self.alerts.is_empty() && self.actions_list_state.selected().is_none() {
             self.actions_list_state.select(Some(0));
@@ -1604,6 +1606,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 app.alerts = theta_vault_rust::actions::compute_alerts(
                     &app.trades, &app.live_prices, app.account_size, app.current_vix,
                     app.stats.net_beta_weighted_delta, app.stats.drift, app.stats.target_undefined_pct,
+                    app.stats.max_drawdown_pct,
                 );
                 if !app.alerts.is_empty() {
                     app.actions_list_state.select(Some(0));

@@ -27,6 +27,8 @@ pub enum AlertKind {
     Warning,        // Earnings risk while short premium
     DeltaExtreme,   // Portfolio BWD > ±500 — heavy directional bias
     UndefinedDrift, // Undefined risk % drifted from target
+    Drawdown,       // Account down X% from peak — circuit breaker
+    RollChain,      // Rolled 3+ times — consider closing
     Manage,         // 21 DTE management / IVR crush
     Close,          // Profit target hit
     Roll,           // Roll for credit at 21 DTE
@@ -43,6 +45,8 @@ impl AlertKind {
             AlertKind::Warning        => "WARNING",
             AlertKind::DeltaExtreme   => "ΔEXTREM",
             AlertKind::UndefinedDrift => "DRIFT  ",
+            AlertKind::Drawdown       => "DRAWDWN",
+            AlertKind::RollChain      => "ROLLS  ",
             AlertKind::Manage         => "MANAGE ",
             AlertKind::Close          => "CLOSE  ",
             AlertKind::Roll           => "ROLL   ",
@@ -60,11 +64,13 @@ impl AlertKind {
             AlertKind::Warning        => 3,
             AlertKind::DeltaExtreme   => 4,
             AlertKind::UndefinedDrift => 5,
-            AlertKind::Manage         => 6,
-            AlertKind::Close          => 7,
-            AlertKind::Roll           => 8,
-            AlertKind::Sizing         => 9,
-            AlertKind::Ok             => 10,
+            AlertKind::Drawdown       => 6,
+            AlertKind::RollChain      => 7,
+            AlertKind::Manage         => 8,
+            AlertKind::Close          => 9,
+            AlertKind::Roll           => 10,
+            AlertKind::Sizing         => 11,
+            AlertKind::Ok             => 12,
         }
     }
 }
@@ -105,6 +111,8 @@ pub fn build_action_rows(
         AlertKind::Warning,
         AlertKind::DeltaExtreme,
         AlertKind::UndefinedDrift,
+        AlertKind::Drawdown,
+        AlertKind::RollChain,
         AlertKind::Manage,
         AlertKind::Close,
         AlertKind::Roll,
@@ -199,13 +207,14 @@ fn get_sector(ticker: &str) -> &'static str {
 /// Compute all alerts for open positions.
 /// Sorted by severity (Critical first), then ticker alphabetically.
 pub fn compute_alerts(
-    trades:           &[Trade],
-    live_prices:      &HashMap<String, f64>,
-    account_size:     f64,
-    current_vix:      Option<f64>,
-    net_bwd:          f64,
-    undefined_drift:  f64,
-    target_undef_pct: f64,
+    trades:            &[Trade],
+    live_prices:       &HashMap<String, f64>,
+    account_size:      f64,
+    current_vix:       Option<f64>,
+    net_bwd:           f64,
+    undefined_drift:   f64,
+    target_undef_pct:  f64,
+    max_drawdown_pct:  f64,
 ) -> Vec<TradeAlert> {
     let today = Utc::now().date_naive();
     let mut alerts: Vec<TradeAlert> = Vec::new();
@@ -526,6 +535,25 @@ pub fn compute_alerts(
                 }
             }
         }
+
+        // ── 8. ROLL CHAIN: Rolled 3+ times ───────────────────────────────────
+        if trade.roll_count >= 3 {
+            alerts.push(TradeAlert {
+                trade_id:       trade.id,
+                ticker:         trade.ticker.clone(),
+                strategy_badge: badge.clone(),
+                kind:           AlertKind::RollChain,
+                severity:       AlertSeverity::Medium,
+                headline: format!(
+                    "${} {} has been rolled {} times. Evaluate closing vs rolling again.",
+                    trade.ticker, badge, trade.roll_count
+                ),
+                detail: Some(
+                    "Rolling repeatedly can chase a loser. Assess whether the thesis still holds \
+                     or take the loss and redeploy capital.".to_string()
+                ),
+            });
+        }
     }
 
     // ── Sector concentration (portfolio-level) ────────────────────────────────
@@ -598,6 +626,25 @@ pub fn compute_alerts(
             detail: Some(
                 "Add defined-risk spreads to bring undefined exposure back to target, \
                  or close naked positions.".to_string()
+            ),
+        });
+    }
+
+    // ── Drawdown circuit breaker ─────────────────────────────────────────────
+    if max_drawdown_pct > 5.0 {
+        alerts.push(TradeAlert {
+            trade_id:       -1,
+            ticker:         "PORTFOLIO".to_string(),
+            strategy_badge: "—".to_string(),
+            kind:           AlertKind::Drawdown,
+            severity:       AlertSeverity::High,
+            headline: format!(
+                "Account down {:.1}% from peak. Reduce size and reassess.",
+                max_drawdown_pct
+            ),
+            detail: Some(
+                "Drawdown circuit breaker: >5% from peak. Cut position size by 50%, \
+                 close losers, and wait for high-probability setups.".to_string()
             ),
         });
     }
