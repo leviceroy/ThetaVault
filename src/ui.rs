@@ -2869,7 +2869,9 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled(format!("1:{:.2}", rr), Style::default().fg(C_WHITE)),
     ]));
 
-    let sharpe_color = if perf.sharpe_ratio >= 1.0 { C_GREEN } else if perf.sharpe_ratio >= 0.0 { C_YELLOW } else { C_RED };
+    let sharpe_color  = if perf.sharpe_ratio  >= 1.0 { C_GREEN } else if perf.sharpe_ratio  >= 0.0 { C_YELLOW } else { C_RED };
+    let sortino_color = if perf.sortino_ratio >= 1.0 { C_GREEN } else if perf.sortino_ratio >= 0.0 { C_YELLOW } else { C_RED };
+    let calmar_color  = if perf.calmar_ratio  >= 0.5 { C_GREEN } else if perf.calmar_ratio  >= 0.0 { C_YELLOW } else { C_RED };
     let dd_color = if stats.max_drawdown > 0.0 { C_RED } else { C_GREEN };
     let streak_color = if stats.current_streak >= 0 { C_GREEN } else { C_RED };
     let streak_str = if stats.current_streak >= 0 {
@@ -2882,12 +2884,20 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled("Sharpe: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:.2}", perf.sharpe_ratio), Style::default().fg(sharpe_color)),
         Span::raw("   "),
+        Span::styled("Sortino: ", Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:.2}", perf.sortino_ratio), Style::default().fg(sortino_color)),
+        Span::raw("   "),
         Span::styled("Max Drawdown: ", Style::default().fg(C_GRAY)),
         Span::styled(
             format!("-{:.0} ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct),
             Style::default().fg(dd_color),
         ),
         Span::raw("   "),
+        Span::styled("Calmar: ", Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:.2}", perf.calmar_ratio), Style::default().fg(calmar_color)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
         Span::styled("Streak: ", Style::default().fg(C_GRAY)),
         Span::styled(streak_str, Style::default().fg(streak_color)),
         Span::raw("   "),

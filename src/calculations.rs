@@ -1104,6 +1104,30 @@ fn calculate_sharpe_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     daily_sharpe * 252.0_f64.sqrt()
 }
 
+/// Sortino ratio: (mean_return − rf) / downside_std × √252
+/// Uses daily returns (pnl / account_size per day). Penalises only negative deviations.
+fn calculate_sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
+    if returns.len() < 2 { return 0.0; }
+    let n = returns.len() as f64;
+    let mean = returns.iter().sum::<f64>() / n;
+    let risk_free_daily = risk_free_annual / 252.0;
+    let downside_var = returns.iter()
+        .filter(|&&r| r < risk_free_daily)
+        .map(|&r| (r - risk_free_daily).powi(2))
+        .sum::<f64>() / n;
+    let downside_std = downside_var.sqrt();
+    if downside_std <= 0.0 { return 0.0; }
+    (mean - risk_free_daily) / downside_std * 252.0_f64.sqrt()
+}
+
+/// Calmar ratio: annual_return_pct / max_drawdown_pct
+/// annual_return_pct = total_pnl / account_size / span_years × 100
+fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max_drawdown_pct: f64) -> f64 {
+    if max_drawdown_pct <= 0.0 || span_days <= 0.0 { return 0.0; }
+    let annual_return_pct = (total_pnl / account_size) / (span_days / 365.0) * 100.0;
+    annual_return_pct / max_drawdown_pct
+}
+
 pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::models::PerformanceStats {
     use chrono::Datelike;
     use crate::models::{PerformanceStats, StrategyBreakdown, MonthlyPnl};
@@ -1268,6 +1292,10 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     monthly_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
 
     let avg_annualized_roc = if ann_roc_count > 0 { ann_roc_sum / ann_roc_count as f64 } else { 0.0 };
+    let sortino_ratio = calculate_sortino_ratio(&daily_returns, 0.045);
+    let total_pnl = gross_wins - gross_losses;
+    let (_, max_drawdown_pct, _) = calculate_drawdown(&balance_history);
+    let calmar_ratio = calculate_calmar_ratio(total_pnl, account_size, span_days, max_drawdown_pct);
 
     PerformanceStats {
         avg_win,
@@ -1275,6 +1303,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         profit_factor,
         expected_value,
         sharpe_ratio,
+        sortino_ratio,
+        calmar_ratio,
         avg_annualized_roc,
         avg_dte_at_close: if dte_count > 0 { Some(dte_sum / dte_count as f64) } else { None },
         avg_pct_max_captured: if pct_max_count > 0 { Some(pct_max_sum / pct_max_count as f64) } else { None },
