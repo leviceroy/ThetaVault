@@ -2948,11 +2948,11 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
     }
 
     lines.push(Line::from(vec![Span::styled(
-        "  Strategy            Trades  Win%    P&L        Avg P&L  Avg ROC",
+        "  Strategy                Trades  Win%    P&L        Avg P&L  Avg ROC",
         Style::default().fg(C_GRAY),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        "  ─────────────────────────────────────────────────────────────────",
+        "  ─────────────────────────────────────────────────────────────────────",
         Style::default().fg(C_DARK),
     )]));
 
@@ -2968,10 +2968,10 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
         let wr_color = if sb.win_rate >= 65.0 { C_GREEN } else if sb.win_rate >= 50.0 { C_YELLOW } else { C_RED };
         let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
         let roc_color = if sb.avg_roc >= 5.0 { C_GREEN } else if sb.avg_roc >= 0.0 { C_YELLOW } else { C_RED };
-        let strat_name = format!("{:?}", sb.strategy);
+        let strat_name = sb.strategy.label().to_string();
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<20}", strat_name), Style::default().fg(C_CYAN)),
+            Span::styled(format!("{:<24}", strat_name), Style::default().fg(C_CYAN)),
             Span::styled(format!("{:>6}", sb.trades), Style::default().fg(C_WHITE)),
             Span::raw("  "),
             Span::styled(format!("{:>5.0}%", sb.win_rate), Style::default().fg(wr_color)),
@@ -2985,7 +2985,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
     }
 
     lines.push(Line::from(vec![Span::styled(
-        "  ─────────────────────────────────────────────────────────────────",
+        "  ─────────────────────────────────────────────────────────────────────",
         Style::default().fg(C_DARK),
     )]));
     let total_wr = if total_trades > 0 { total_wins as f64 / total_trades as f64 * 100.0 } else { 0.0 };
@@ -2993,7 +2993,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
     let total_pnl_color = if total_pnl >= 0.0 { C_GREEN } else { C_RED };
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("{:<20}", "TOTAL"), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:<24}", "TOTAL"), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
         Span::styled(format!("{:>6}", total_trades), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled(format!("{:>5.0}%", total_wr), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
