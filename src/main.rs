@@ -57,6 +57,7 @@ pub struct AppState {
     pub thesis_scroll:      u16,
     pub thesis_max_scroll:  u16,
     pub detail_scroll:      u16,
+    pub detail_max_scroll:  u16,
     pub detail_total_lines: usize,
     pub dash_open_scroll:     usize,
     pub dash_open_max_scroll: usize,
@@ -177,6 +178,7 @@ impl AppState {
             thesis_scroll:      0,
             thesis_max_scroll:  u16::MAX,
             detail_scroll:      0,
+            detail_max_scroll:  u16::MAX,
             detail_total_lines: 0,
             dash_open_scroll:     0,
             dash_open_max_scroll: usize::MAX,
@@ -374,9 +376,7 @@ impl AppState {
                         self.close_field_idx += 1;
                     }
                 } else if self.show_detail {
-                    let total = self.detail_total_lines.max(1);
-                    let next  = self.detail_scroll as usize + 1;
-                    self.detail_scroll = (if next >= total { 0 } else { next }) as u16;
+                    self.detail_scroll = self.detail_scroll.saturating_add(1).min(self.detail_max_scroll);
                 } else {
                     let len = self.visual_rows.len();
                     if len == 0 { return; }
@@ -428,12 +428,7 @@ impl AppState {
                         self.close_field_idx -= 1;
                     }
                 } else if self.show_detail {
-                    let total = self.detail_total_lines.max(1);
-                    self.detail_scroll = if self.detail_scroll == 0 {
-                        total.saturating_sub(1) as u16
-                    } else {
-                        self.detail_scroll - 1
-                    };
+                    self.detail_scroll = self.detail_scroll.saturating_sub(1);
                 } else {
                     let len = self.visual_rows.len();
                     if len == 0 { return; }
@@ -1678,11 +1673,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Refresh detail line count for wrap-around scrolling
+        // Refresh detail line count + max scroll
         if app.show_detail {
             if let Some(i) = app.table_state.selected() {
                 if let Some(VisualRowKind::Trade(ti)) = app.visual_rows.get(i) {
                     app.detail_total_lines = theta_vault_rust::ui::count_detail_lines(&app.trades[*ti]);
+                    if let Ok(size) = term.size() {
+                        // Detail panel = 45% of content area (tabs+footer = 4 rows), minus 2 borders
+                        let content_h = size.height.saturating_sub(4) as usize;
+                        let detail_h  = content_h * 45 / 100;
+                        let visible   = detail_h.saturating_sub(2);
+                        app.detail_max_scroll = app.detail_total_lines.saturating_sub(visible) as u16;
+                    }
                 }
             }
         }
