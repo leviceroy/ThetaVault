@@ -1784,6 +1784,16 @@ pub fn count_perf_lines(
     + 1  // trailing blank line pushed in draw_performance
 }
 
+pub fn count_thesis_lines(text: &str, inner_width: usize) -> usize {
+    let wrapped = word_wrap(text, inner_width).len();
+    // Header lines are rendered as "\n{ln}" — the \n adds 1 extra blank visual line each
+    let header_extras = text.split('\n').filter(|ln| {
+        let tr = ln.trim();
+        tr.ends_with(':') || (tr.starts_with(|c: char| c.is_uppercase()) && tr.len() > 40)
+    }).count();
+    wrapped + header_extras
+}
+
 // ── Playbook ──────────────────────────────────────────────────────────────────
 
 fn draw_playbook(

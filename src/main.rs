@@ -54,6 +54,7 @@ pub struct AppState {
 
     // Scrolling
     pub thesis_scroll:      u16,
+    pub thesis_max_scroll:  u16,
     pub detail_scroll:      u16,
     pub detail_total_lines: usize,
     pub dash_open_scroll:     usize,
@@ -170,6 +171,7 @@ impl AppState {
             collapsed_months: HashSet::new(),
             visual_rows:      Vec::new(),
             thesis_scroll:      0,
+            thesis_max_scroll:  u16::MAX,
             detail_scroll:      0,
             detail_total_lines: 0,
             dash_open_scroll:     0,
@@ -462,7 +464,7 @@ impl AppState {
     }
 
     pub fn scroll_right(&mut self) {
-        if self.selected_tab == 2 {
+        if self.selected_tab == 2 && self.thesis_scroll < self.thesis_max_scroll {
             self.thesis_scroll = self.thesis_scroll.saturating_add(1);
         }
     }
@@ -1589,6 +1591,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // Compute trade count for display (Trade rows only, not headers)
         let display_count = app.visual_rows.iter().filter(|r| matches!(r, VisualRowKind::Trade(_))).count();
+
+        // Refresh thesis scroll limit
+        if app.selected_tab == 2 {
+            if let Ok(size) = term.size() {
+                let inner_w = (size.width as usize * 72 / 100).saturating_sub(2); // 72% panel - borders
+                let inner_h = size.height.saturating_sub(11) as usize; // tabs(3)+footer(1)+entry(5)+borders(2)
+                let desc = app.playbooks
+                    .get(app.playbook_state.selected().unwrap_or(0))
+                    .and_then(|pb| pb.description.as_deref())
+                    .unwrap_or("No description provided.");
+                let total = theta_vault_rust::ui::count_thesis_lines(desc, inner_w);
+                app.thesis_max_scroll = total.saturating_sub(inner_h) as u16;
+            }
+        }
 
         // Refresh dashboard open positions scroll limit
         if app.selected_tab == 0 {
