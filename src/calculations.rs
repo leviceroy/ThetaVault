@@ -1133,6 +1133,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
     let mut held_sum = 0.0_f64;
 
+    let mut ann_roc_sum   = 0.0_f64;
+    let mut ann_roc_count = 0u32;
+
     // daily_pnl_map: NaiveDate -> total pnl on that date
     let mut daily_pnl_map: HashMap<chrono::NaiveDate, f64> = HashMap::new();
 
@@ -1178,6 +1181,14 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         // Held days
         let held_days = (exit_date_naive - t.trade_date.date_naive()).num_days().max(0);
         held_sum += held_days as f64;
+
+        // Annualized ROC
+        if let Some(roc) = roc_opt {
+            if held_days > 0 {
+                ann_roc_sum   += roc * (365.0 / held_days as f64);
+                ann_roc_count += 1;
+            }
+        }
 
         // Daily P&L
         *daily_pnl_map.entry(exit_date_naive).or_insert(0.0) += pnl;
@@ -1256,12 +1267,15 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     }).collect();
     monthly_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
 
+    let avg_annualized_roc = if ann_roc_count > 0 { ann_roc_sum / ann_roc_count as f64 } else { 0.0 };
+
     PerformanceStats {
         avg_win,
         avg_loss,
         profit_factor,
         expected_value,
         sharpe_ratio,
+        avg_annualized_roc,
         avg_dte_at_close: if dte_count > 0 { Some(dte_sum / dte_count as f64) } else { None },
         avg_pct_max_captured: if pct_max_count > 0 { Some(pct_max_sum / pct_max_count as f64) } else { None },
         trades_per_week,

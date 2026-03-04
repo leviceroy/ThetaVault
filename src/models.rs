@@ -509,6 +509,7 @@ pub struct PerformanceStats {
 
     // Risk-adjusted return
     pub sharpe_ratio: f64,
+    pub avg_annualized_roc: f64,   // average ROC × (365 / days_held)
 
     // Exit quality
     pub avg_dte_at_close: Option<f64>,
@@ -533,7 +534,7 @@ impl Default for PerformanceStats {
     fn default() -> Self {
         Self {
             avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0,
-            sharpe_ratio: 0.0, avg_dte_at_close: None, avg_pct_max_captured: None,
+            sharpe_ratio: 0.0, avg_annualized_roc: 0.0, avg_dte_at_close: None, avg_pct_max_captured: None,
             trades_per_week: 0.0, trades_per_month: 0.0, avg_held_days: 0.0,
             strategy_breakdown: vec![], monthly_pnl: vec![], balance_history: vec![],
         }

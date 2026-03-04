@@ -2898,6 +2898,15 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled(format!("{}", stats.max_loss_streak), Style::default().fg(C_RED)),
     ]));
 
+    if perf.avg_annualized_roc != 0.0 {
+        let ann_color = if perf.avg_annualized_roc >= 0.0 { C_GREEN } else { C_RED };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Avg Annualized ROC: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("{:+.1}%/yr", perf.avg_annualized_roc), Style::default().fg(ann_color)),
+        ]));
+    }
+
     let dte_str = perf.avg_dte_at_close.map_or("—".to_string(), |d| format!("{:.1}d", d));
     let pmc_str = perf.avg_pct_max_captured.map_or("—".to_string(), |p| format!("{:.1}%", p));
     lines.push(Line::from(vec![
