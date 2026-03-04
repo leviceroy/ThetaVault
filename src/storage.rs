@@ -172,6 +172,9 @@ impl Storage {
             ("tags",                      "ALTER TABLE trades ADD COLUMN tags TEXT NOT NULL DEFAULT ''"),
             ("notes",                     "ALTER TABLE trades ADD COLUMN notes TEXT"),
             ("next_earnings",             "ALTER TABLE trades ADD COLUMN next_earnings TEXT"),
+            ("iv_at_close",              "ALTER TABLE trades ADD COLUMN iv_at_close REAL"),
+            ("delta_at_close",           "ALTER TABLE trades ADD COLUMN delta_at_close REAL"),
+            ("roll_count",               "ALTER TABLE trades ADD COLUMN roll_count INTEGER NOT NULL DEFAULT 0"),
         ];
 
         for (col_name, sql) in migrations {
@@ -219,8 +222,9 @@ impl Storage {
                 playbook_id=?35, rolled_from_id=?36,
                 is_earnings_play=?37, is_tested=?38,
                 trade_grade=?39, grade_notes=?40,
-                legs_json=?41, tags=?42, notes=?43, next_earnings=?44
-             WHERE id=?45",
+                legs_json=?41, tags=?42, notes=?43, next_earnings=?44,
+                iv_at_close=?45, delta_at_close=?46, roll_count=?47
+             WHERE id=?48",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -266,7 +270,10 @@ impl Storage {
                 tags_str,                               // 42
                 t.notes.as_deref(),                     // 43
                 t.next_earnings.map(|d| d.format("%Y-%m-%d").to_string()), // 44
-                id,                                     // 45
+                t.iv_at_close,                          // 45
+                t.delta_at_close,                       // 46
+                t.roll_count,                           // 47
+                id,                                     // 48
             ],
         )?;
         Ok(())
@@ -301,7 +308,8 @@ impl Storage {
                 playbook_id, rolled_from_id,
                 is_earnings_play, is_tested,
                 trade_grade, grade_notes,
-                legs_json, tags, notes, next_earnings
+                legs_json, tags, notes, next_earnings,
+                iv_at_close, delta_at_close, roll_count
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -316,7 +324,8 @@ impl Storage {
                 ?35, ?36,
                 ?37, ?38,
                 ?39, ?40,
-                ?41, ?42, ?43, ?44
+                ?41, ?42, ?43, ?44,
+                ?45, ?46, ?47
             )",
             params![
                 trade.ticker,               // 1
@@ -363,6 +372,9 @@ impl Storage {
                 tags_str,                   // 42
                 trade.notes.as_deref(),     // 43
                 trade.next_earnings.map(|d| d.format("%Y-%m-%d").to_string()), // 44
+                trade.iv_at_close,          // 45
+                trade.delta_at_close,       // 46
+                trade.roll_count,           // 47
             ],
         )?;
 
@@ -385,7 +397,8 @@ impl Storage {
                 playbook_id, rolled_from_id,
                 is_earnings_play, is_tested,
                 trade_grade, grade_notes,
-                legs_json, tags, notes, next_earnings
+                legs_json, tags, notes, next_earnings,
+               iv_at_close, delta_at_close, roll_count
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -472,6 +485,9 @@ impl Storage {
                 tags,
                 notes:                     row.get(43)?,
                 next_earnings,
+                iv_at_close:               row.get(45)?,
+                delta_at_close:            row.get(46)?,
+                roll_count:                row.get::<_, Option<i32>>(47)?.unwrap_or(0),
             })
         })?;
 

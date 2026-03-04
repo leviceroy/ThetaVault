@@ -160,6 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tags: et.tags.clone().unwrap_or_default(),
             notes: et.notes.clone(),
             next_earnings: None,
+            iv_at_close: None,
+            delta_at_close: None,
+            roll_count: 0,
         };
         storage.insert_trade(&trade)?;
     }

@@ -341,6 +341,13 @@ pub struct Trade {
     pub entry_dte: Option<i32>,         // DTE at entry
     pub dte_at_close: Option<i32>,      // DTE at close
 
+    // Close-side Greeks (captured when closing the trade)
+    pub iv_at_close: Option<f64>,       // IV% at close — measures IV crush contribution
+    pub delta_at_close: Option<f64>,    // Delta at close — directional exposure at exit
+
+    // Roll tracking
+    pub roll_count: i32,                // Number of times this position has been rolled
+
     // Relationships
     pub playbook_id: Option<i32>,
     pub rolled_from_id: Option<i32>,

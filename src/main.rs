@@ -1287,6 +1287,8 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
     let exit_reasons = vec!["closed".to_string(), "expired".to_string(), "rolled".to_string(), "stopped".to_string()];
     f.push(EditField::select("Exit Reason", "0", exit_reasons));
     f.push(EditField::number("Underlying @ Close", &t.underlying_price.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+    f.push(EditField::number("IV at Close",  &t.iv_at_close.map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::number("Delta at Close", &t.delta_at_close.map(|v| format!("{:.2}", v)).unwrap_or_default()));
     f.push(EditField::number("Close Commission",  ""));
 
     // Per-leg close premiums
@@ -1308,6 +1310,8 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.exit_date   = parse_date_field(fields, "Exit Date");
     t.exit_reason = field_select_value(fields, "Exit Reason");
     t.underlying_price_at_close = field_opt_f64(fields, "Underlying @ Close");
+    t.iv_at_close    = field_opt_f64(fields, "IV at Close");
+    t.delta_at_close = field_opt_f64(fields, "Delta at Close");
     let close_comm = field_opt_f64(fields, "Close Commission").unwrap_or(0.0);
 
     // Per-leg close premiums

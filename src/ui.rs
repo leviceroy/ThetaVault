@@ -1480,6 +1480,24 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16) {
                 Span::raw("")
             },
         ]));
+        // IV / Delta at close + roll count
+        let has_close_greeks = trade.iv_at_close.is_some() || trade.delta_at_close.is_some() || trade.roll_count > 0;
+        if has_close_greeks {
+            let mut spans: Vec<Span> = vec![Span::raw("  ")];
+            if let Some(iv) = trade.iv_at_close {
+                spans.push(Span::styled("IV@close: ", Style::default().fg(C_GRAY)));
+                spans.push(Span::styled(format!("{:.1}%  ", iv), Style::default().fg(C_CYAN)));
+            }
+            if let Some(d) = trade.delta_at_close {
+                spans.push(Span::styled("Δ@close: ", Style::default().fg(C_GRAY)));
+                spans.push(Span::styled(format!("{:.2}  ", d), Style::default().fg(C_CYAN)));
+            }
+            if trade.roll_count > 0 {
+                spans.push(Span::styled("Rolls: ", Style::default().fg(C_GRAY)));
+                spans.push(Span::styled(format!("{}", trade.roll_count), Style::default().fg(C_YELLOW)));
+            }
+            lines.push(Line::from(spans));
+        }
     }
     lines.push(Line::from(""));
 
@@ -1704,7 +1722,11 @@ pub fn count_detail_lines(trade: &crate::models::Trade) -> usize {
     n += 1; // description / qty
     n += 1; // entry date / expiry
 
-    if trade.exit_date.is_some() { n += 1; } // exit date line
+    if trade.exit_date.is_some() {
+        n += 1; // exit date line
+        let has_close_greeks = trade.iv_at_close.is_some() || trade.delta_at_close.is_some() || trade.roll_count > 0;
+        if has_close_greeks { n += 1; } // IV/delta@close + roll count line
+    }
 
     n += 1; // blank after exit block (always pushed)
     n += 1; // credit / max profit / max loss
@@ -2627,9 +2649,10 @@ fn draw_daily_actions(
                 let is_collapsed = collapsed.contains(kind);
                 let toggle = if is_collapsed { "▶" } else { "▼" };
                 let (color, label) = match kind {
-                    AlertKind::Defense => (C_RED,           "DEFENSE"),
-                    AlertKind::MaxLoss => (C_RED,           "MAXLOSS"),
-                    AlertKind::Warning => (C_YELLOW,        "WARNING"),
+                    AlertKind::Defense   => (C_RED,           "DEFENSE"),
+                    AlertKind::MaxLoss   => (C_RED,           "MAXLOSS"),
+                    AlertKind::GammaRisk => (C_RED,           "GAMMA"),
+                    AlertKind::Warning   => (C_YELLOW,        "WARNING"),
                     AlertKind::Manage  => (C_YELLOW,        "MANAGE"),
                     AlertKind::Close   => (C_GREEN,         "CLOSE"),
                     AlertKind::Roll    => (C_BLUE,          "ROLL"),
@@ -2645,16 +2668,17 @@ fn draw_daily_actions(
             }
             ActionRow::Alert(alert) => {
                 let badge_color = match alert.kind {
-                    AlertKind::Defense => C_RED,
-                    AlertKind::MaxLoss => C_RED,
-                    AlertKind::Warning => C_YELLOW,
+                    AlertKind::Defense   => C_RED,
+                    AlertKind::MaxLoss   => C_RED,
+                    AlertKind::GammaRisk => C_RED,
+                    AlertKind::Warning   => C_YELLOW,
                     AlertKind::Manage  => C_YELLOW,
                     AlertKind::Close   => C_GREEN,
                     AlertKind::Roll    => C_BLUE,
                     AlertKind::Sizing  => Color::Magenta,
                     AlertKind::Ok      => C_GRAY,
                 };
-                let badge_style = if alert.kind == AlertKind::Defense || alert.kind == AlertKind::MaxLoss {
+                let badge_style = if matches!(alert.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::GammaRisk) {
                     if pulse_on {
                         Style::default().fg(Color::White).bg(C_RED).add_modifier(Modifier::BOLD)
                     } else {
