@@ -56,7 +56,8 @@ pub struct AppState {
     pub thesis_scroll:      u16,
     pub detail_scroll:      u16,
     pub detail_total_lines: usize,
-    pub dash_open_scroll:   usize,
+    pub dash_open_scroll:     usize,
+    pub dash_open_max_scroll: usize,
     pub perf_scroll:      u16,
     pub perf_max_scroll:  u16,
 
@@ -171,7 +172,8 @@ impl AppState {
             thesis_scroll:      0,
             detail_scroll:      0,
             detail_total_lines: 0,
-            dash_open_scroll:   0,
+            dash_open_scroll:     0,
+            dash_open_max_scroll: usize::MAX,
             perf_scroll:      0,
             perf_max_scroll:  u16::MAX,
             cal_year:      0,
@@ -392,8 +394,9 @@ impl AppState {
                 self.actions_list_state.select(Some(if i + 1 >= len { 0 } else { i + 1 }));
             }
             0 => {
-                // Scroll dashboard open positions down
-                self.dash_open_scroll = self.dash_open_scroll.saturating_add(1);
+                if self.dash_open_scroll < self.dash_open_max_scroll {
+                    self.dash_open_scroll = self.dash_open_scroll.saturating_add(1);
+                }
             }
             5 => {
                 if self.perf_scroll < self.perf_max_scroll {
@@ -1586,6 +1589,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // Compute trade count for display (Trade rows only, not headers)
         let display_count = app.visual_rows.iter().filter(|r| matches!(r, VisualRowKind::Trade(_))).count();
+
+        // Refresh dashboard open positions scroll limit
+        if app.selected_tab == 0 {
+            if let Ok(size) = term.size() {
+                let content_h  = size.height.saturating_sub(4) as usize; // tabs(3)+footer(1)
+                let lower_h    = content_h.saturating_sub(9);             // top KPI row
+                let open_panel_h = lower_h * 60 / 100;                   // Percentage(60)
+                let visible_rows = open_panel_h.saturating_sub(3);        // borders+header
+                let open_count = app.trades.iter().filter(|t| t.is_open()).count();
+                app.dash_open_max_scroll = open_count.saturating_sub(visible_rows);
+            }
+        }
 
         // Refresh perf scroll limit
         if app.selected_tab == 5 {
