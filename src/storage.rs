@@ -623,6 +623,11 @@ For earnings plays, use the weekly cycle — we need the stock to move toward ou
             max_allocation_pct: Some(5.0),
             target_profit_pct:  Some(50.0),
             management_rule:    Some("profit_target_50".to_string()),
+            min_pop:            None,
+            vix_min:            None,
+            vix_max:            None,
+            max_bpr_pct:        None,
+            notes:              None,
         };
         let pb = PlaybookStrategy {
             id:             0,

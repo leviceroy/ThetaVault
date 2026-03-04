@@ -409,6 +409,16 @@ pub struct EntryCriteria {
     pub target_profit_pct: Option<f64>,
     #[serde(rename = "managementRule")]
     pub management_rule: Option<String>,
+    #[serde(rename = "minPOP")]
+    pub min_pop: Option<f64>,
+    #[serde(rename = "vixMin")]
+    pub vix_min: Option<f64>,
+    #[serde(rename = "vixMax")]
+    pub vix_max: Option<f64>,
+    #[serde(rename = "maxBprPct")]
+    pub max_bpr_pct: Option<f64>,
+    #[serde(rename = "notes")]
+    pub notes: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

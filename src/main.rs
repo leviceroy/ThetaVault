@@ -1404,6 +1404,16 @@ fn build_playbook_edit_fields(pb: &models::PlaybookStrategy) -> Vec<EditField> {
         &ec.and_then(|e| e.target_profit_pct).map(|v| format!("{:.0}", v)).unwrap_or_default()));
     f.push(EditField::text("Exit Rule",
         &ec.and_then(|e| e.management_rule.clone()).unwrap_or_default()));
+    f.push(EditField::number("Min POP %",
+        &ec.and_then(|e| e.min_pop).map(|v| format!("{:.0}", v)).unwrap_or_default()));
+    f.push(EditField::number("VIX Min",
+        &ec.and_then(|e| e.vix_min).map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::number("VIX Max",
+        &ec.and_then(|e| e.vix_max).map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::number("Max BPR %",
+        &ec.and_then(|e| e.max_bpr_pct).map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::text("When to Avoid",
+        &ec.and_then(|e| e.notes.clone()).unwrap_or_default()));
 
     // Thesis section
     f.push(EditField::multiline("Thesis",
@@ -1439,12 +1449,19 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
     let max_allocation_pct   = field_opt_f64(fields, "Max Alloc %");
     let target_profit_pct    = field_opt_f64(fields, "Target Profit %");
     let management_rule      = field_opt_str(fields, "Exit Rule");
+    let min_pop              = field_opt_f64(fields, "Min POP %");
+    let vix_min              = field_opt_f64(fields, "VIX Min");
+    let vix_max              = field_opt_f64(fields, "VIX Max");
+    let max_bpr_pct          = field_opt_f64(fields, "Max BPR %");
+    let ec_notes             = field_opt_str(fields, "When to Avoid");
 
     let has_criteria = min_ivr.is_some() || max_ivr.is_some()
         || min_delta.is_some() || max_delta.is_some()
         || min_dte.is_some() || max_dte.is_some()
         || max_allocation_pct.is_some() || target_profit_pct.is_some()
-        || management_rule.is_some();
+        || management_rule.is_some() || min_pop.is_some()
+        || vix_min.is_some() || vix_max.is_some() || max_bpr_pct.is_some()
+        || ec_notes.is_some();
 
     let entry_criteria = if has_criteria {
         Some(models::EntryCriteria {
@@ -1457,6 +1474,11 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
             max_allocation_pct,
             target_profit_pct,
             management_rule,
+            min_pop,
+            vix_min,
+            vix_max,
+            max_bpr_pct,
+            notes: ec_notes,
         })
     } else {
         None

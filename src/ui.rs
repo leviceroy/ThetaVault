@@ -325,7 +325,10 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
     );
 
     // Card 7 — VIX
-    let vix_str   = stats.vix.map_or("—".to_string(), |v| format!("{:.2}", v));
+    let (vix_str, vix_regime) = stats.vix.map_or(("—".to_string(), "".to_string()), |v| {
+        let regime = if v > 35.0 { "[STRESS]" } else if v > 25.0 { "[ELEVATED]" } else if v >= 15.0 { "[NORMAL]" } else { "[CALM]" };
+        (format!("{:.1}", v), regime.to_string())
+    });
     let vix_color = stats.vix.map_or(C_GRAY, |v| {
         if v > 30.0 { C_RED } else if v > 20.0 { C_YELLOW } else { C_GREEN }
     });
@@ -333,7 +336,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         Paragraph::new(vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                format!(" {}", vix_str),
+                format!(" {} {}", vix_str, vix_regime),
                 Style::default().fg(vix_color).add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![Span::styled(" env fear", Style::default().fg(C_GRAY))]),
@@ -1939,8 +1942,37 @@ fn draw_playbook(
                     };
                     bs.push(Span::styled(format!(" {} ", lbl), Style::default().bg(C_BLUE).fg(C_WHITE)));
                 }
+
+                // Second line: new tastytrade-focused criteria
+                let mut bs2: Vec<Span> = Vec::new();
+                if let Some(p) = ec.min_pop {
+                    bs2.push(Span::styled(format!(" POP ≥{:.0}% ", p), Style::default().bg(C_DARK).fg(C_GREEN)));
+                    bs2.push(Span::raw("  "));
+                }
+                if ec.vix_min.is_some() || ec.vix_max.is_some() {
+                    let v_lo = ec.vix_min.map(|v| format!("{:.0}", v)).unwrap_or("—".to_string());
+                    let v_hi = ec.vix_max.map(|v| format!("{:.0}", v)).unwrap_or("—".to_string());
+                    bs2.push(Span::styled(format!(" VIX {}–{} ", v_lo, v_hi), Style::default().bg(C_DARK).fg(C_YELLOW)));
+                    bs2.push(Span::raw("  "));
+                }
+                if let Some(b) = ec.max_bpr_pct {
+                    bs2.push(Span::styled(format!(" BPR ≤{:.1}% ", b), Style::default().bg(C_DARK).fg(Color::Magenta)));
+                }
+
+                let mut pg_lines: Vec<Line> = vec![Line::from(""), Line::from(bs)];
+                if !bs2.is_empty() {
+                    pg_lines.push(Line::from(bs2));
+                }
+                if let Some(n) = &ec.notes {
+                    pg_lines.push(Line::from(""));
+                    pg_lines.push(Line::from(vec![
+                        Span::styled("  ⚠ ", Style::default().fg(C_YELLOW)),
+                        Span::styled(n.clone(), Style::default().fg(C_GRAY)),
+                    ]));
+                }
+
                 f.render_widget(
-                    Paragraph::new(vec![Line::from(""), Line::from(bs)])
+                    Paragraph::new(pg_lines)
                         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
                             .title(Span::styled(format!(" {} — Entry Checklist ", pb.name), Style::default().fg(C_CYAN)))),
                     dc[0],
@@ -2614,7 +2646,7 @@ fn draw_daily_actions(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // stats bar
+            Constraint::Length(5),  // stats bar + plan summary
             Constraint::Min(0),     // alert list
         ])
         .split(area);
@@ -2624,6 +2656,20 @@ fn draw_daily_actions(
     let warning = alerts.iter().filter(|a| a.kind == AlertKind::Warning).count();
     let manage  = alerts.iter().filter(|a| a.kind == AlertKind::Manage || a.kind == AlertKind::Roll).count();
     let close   = alerts.iter().filter(|a| a.kind == AlertKind::Close).count();
+    let total   = alerts.iter().filter(|a| a.kind != AlertKind::Ok).count();
+
+    // ── "Today's Plan" single-line summary ───────────────────────────────────
+    let plan_str = if total == 0 {
+        "  ✓ All clear. No positions require action today.".to_string()
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        if defense > 0 { parts.push(format!("{} defense", defense)); }
+        if warning > 0 { parts.push(format!("{} earnings warning", warning)); }
+        if manage  > 0 { parts.push(format!("{} to manage/roll", manage)); }
+        if close   > 0 { parts.push(format!("{} near profit target", close)); }
+        format!("  Today: {}", parts.join(" · "))
+    };
+    let plan_color = if defense > 0 { C_RED } else if warning > 0 || manage > 0 { C_YELLOW } else { C_GREEN };
 
     let stats_line = Line::from(vec![
         Span::styled("  ⚡ Daily Actions  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)),
@@ -2636,8 +2682,11 @@ fn draw_daily_actions(
         Span::styled("  ", Style::default()),
         Span::styled(format!(" {} CLOSE ", close), Style::default().fg(C_GREEN)),
     ]);
+    let plan_line = Line::from(vec![
+        Span::styled(plan_str, Style::default().fg(plan_color)),
+    ]);
     f.render_widget(
-        Paragraph::new(stats_line)
+        Paragraph::new(vec![stats_line, Line::from(""), plan_line])
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_DARK))),
         chunks[0],
     );
