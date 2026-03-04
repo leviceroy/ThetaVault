@@ -1,6 +1,9 @@
 /// Financial data fetcher — earnings dates (Nasdaq) + VIX (CNBC).
 /// Yahoo Finance is no longer used due to aggressive rate-limiting (HTTP 429).
 /// All functions are async and fail silently on network/parse errors.
+///
+/// Exception: fetch_spy_monthly_returns uses Yahoo Finance v8 chart API (same
+/// as fetch_betas) with a Mozilla User-Agent to retrieve historical monthly data.
 use std::collections::HashMap;
 use chrono::NaiveDate;
 
@@ -15,6 +18,49 @@ fn build_client() -> Option<reqwest::Client> {
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .ok()
+}
+
+/// Fetch SPY monthly returns (open→close %) from Yahoo Finance v8 chart API.
+/// Returns a map of (year, month) → return_pct.  Fails silently → empty map.
+pub async fn fetch_spy_monthly_returns(
+    start_year: i32, start_month: u32,
+) -> HashMap<(i32, u32), f64> {
+    use chrono::Datelike;
+    let client = match build_client() { Some(c) => c, None => return HashMap::new() };
+    let period1 = chrono::NaiveDate::from_ymd_opt(start_year, start_month, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).timestamp())
+        .unwrap_or(0);
+    let period2 = chrono::Utc::now().timestamp() + 86_400;
+    let url = format!(
+        "https://query1.finance.yahoo.com/v8/finance/chart/SPY\
+         ?interval=1mo&period1={period1}&period2={period2}&includePrePost=false"
+    );
+    let resp = match client.get(&url)
+        .header("Accept", "application/json")
+        .send().await { Ok(r) => r, Err(_) => return HashMap::new() };
+    let json: serde_json::Value = match resp.json().await { Ok(j) => j, Err(_) => return HashMap::new() };
+
+    let result = match json.pointer("/chart/result/0") { Some(r) => r, None => return HashMap::new() };
+    let timestamps = match result["timestamp"].as_array()  { Some(t) => t, None => return HashMap::new() };
+    let opens  = match result.pointer("/indicators/quote/0/open") .and_then(|v| v.as_array()) { Some(a) => a, None => return HashMap::new() };
+    let closes = match result.pointer("/indicators/quote/0/close").and_then(|v| v.as_array()) { Some(a) => a, None => return HashMap::new() };
+
+    let mut map = HashMap::new();
+    for (i, ts) in timestamps.iter().enumerate() {
+        if let (Some(ts_i), Some(open), Some(close)) = (
+            ts.as_i64(),
+            opens.get(i).and_then(|v| v.as_f64()),
+            closes.get(i).and_then(|v| v.as_f64()),
+        ) {
+            if open > 0.0 {
+                let dt = chrono::DateTime::from_timestamp(ts_i, 0)
+                    .unwrap_or_default().naive_utc();
+                map.insert((dt.year(), dt.month()), (close / open - 1.0) * 100.0);
+            }
+        }
+    }
+    map
 }
 
 /// Fetch next earnings dates for a list of tickers using Nasdaq's earnings calendar.

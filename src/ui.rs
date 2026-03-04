@@ -76,6 +76,7 @@ pub fn draw_ui(
     cal_month:               u32,
     cal_day:                 u32,
     thesis_edit_buf:         &str,
+    spy_monthly:             &std::collections::HashMap<(i32, u32), f64>,
 ) {
     let area = f.area();
     let chunks = Layout::default()
@@ -131,7 +132,7 @@ pub fn draw_ui(
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct),
-        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_scroll),
+        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_scroll, spy_monthly),
         _ => {}
     }
 
@@ -1780,7 +1781,7 @@ pub fn count_perf_lines(
     + perf_advanced_lines(stats, width).len()
     + perf_chart_lines(stats, perf, width).len()
     + perf_strategy_lines(perf, width).len()
-    + perf_monthly_lines(perf, width).len()
+    + perf_monthly_lines(perf, &std::collections::HashMap::new(), width).len()
     + 1  // trailing blank line pushed in draw_performance
 }
 
@@ -2697,6 +2698,7 @@ fn draw_performance(
     stats: &PortfolioStats,
     perf: &PerformanceStats,
     scroll: u16,
+    spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
 ) {
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -2705,7 +2707,7 @@ fn draw_performance(
     lines.extend(perf_advanced_lines(stats, width));
     lines.extend(perf_chart_lines(stats, perf, width));
     lines.extend(perf_strategy_lines(perf, width));
-    lines.extend(perf_monthly_lines(perf, width));
+    lines.extend(perf_monthly_lines(perf, spy_monthly, width));
     lines.push(Line::from(""));
 
     let para = Paragraph::new(lines)
@@ -3069,7 +3071,11 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'stati
     lines
 }
 
-fn perf_monthly_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
+fn perf_monthly_lines(
+    perf: &PerformanceStats,
+    spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
         perf_section_header("📅 MONTHLY P&L", width),
@@ -3081,7 +3087,7 @@ fn perf_monthly_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static
     }
 
     let max_abs = perf.monthly_pnl.iter().map(|m| m.pnl.abs()).fold(0.0_f64, f64::max).max(1.0);
-    let bar_max = (width.saturating_sub(30)).max(10).min(40);
+    let bar_max = (width.saturating_sub(44)).max(10).min(40);
     let month_names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -3094,12 +3100,20 @@ fn perf_monthly_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static
         } else {
             format!("{}{}", "░".repeat(bar_max.saturating_sub(bar_len)), "█".repeat(bar_len))
         };
+        let spy_span = match spy_monthly.get(&(mp.year, mp.month)) {
+            Some(&r) => Span::styled(
+                format!("  SPY{:+.1}%", r),
+                Style::default().fg(if r >= 0.0 { C_GREEN } else { C_RED }),
+            ),
+            None => Span::styled("  SPY  —  ".to_string(), Style::default().fg(C_GRAY)),
+        };
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(format!("{} {:4}", m_name, mp.year), Style::default().fg(C_GRAY)),
             Span::styled(format!(" ({:2}T) ", mp.trade_count), Style::default().fg(C_GRAY)),
             Span::styled(format!("{:>+8.0}   ", mp.pnl), Style::default().fg(pnl_color)),
             Span::styled(bar_str, Style::default().fg(pnl_color)),
+            spy_span,
         ]));
     }
     lines

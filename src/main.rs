@@ -29,6 +29,7 @@ pub struct AppState {
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
     pub live_prices:          std::collections::HashMap<String, f64>,
+    pub spy_monthly:          std::collections::HashMap<(i32, u32), f64>,
     pub alerts:               Vec<theta_vault_rust::actions::TradeAlert>,
     pub actions_list_state:   ListState,
     pub collapsed_action_kinds: HashSet<theta_vault_rust::actions::AlertKind>,
@@ -156,6 +157,7 @@ impl AppState {
             beta_map,
             spy_price,
             live_prices,
+            spy_monthly: std::collections::HashMap::new(),
             alerts,
             actions_list_state,
             collapsed_action_kinds: HashSet::new(),
@@ -1581,6 +1583,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // ── SPY monthly returns fetch (always runs, regardless of open positions)
+    {
+        use chrono::Datelike;
+        let (spy_start_year, spy_start_month) = app.trades.iter()
+            .filter_map(|t| t.exit_date)
+            .map(|d| { let n = d.date_naive(); (n.year(), n.month()) })
+            .min_by(|a, b| a.cmp(b))
+            .unwrap_or_else(|| { let n = chrono::Utc::now().date_naive(); (n.year() - 1, n.month()) });
+        if let Ok(map) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            yahoo::fetch_spy_monthly_returns(spy_start_year, spy_start_month),
+        ).await {
+            app.spy_monthly = map;
+        }
+    }
+
     // ── TUI init
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1681,6 +1699,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.cal_month,
             app.cal_day,
             &app.thesis_edit_buf,
+            &app.spy_monthly,
         ))?;
 
         let has_event = event::poll(std::time::Duration::from_millis(750))?;
