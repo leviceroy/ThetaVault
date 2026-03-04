@@ -2649,15 +2649,17 @@ fn draw_daily_actions(
                 let is_collapsed = collapsed.contains(kind);
                 let toggle = if is_collapsed { "▶" } else { "▼" };
                 let (color, label) = match kind {
-                    AlertKind::Defense   => (C_RED,           "DEFENSE"),
-                    AlertKind::MaxLoss   => (C_RED,           "MAXLOSS"),
-                    AlertKind::GammaRisk => (C_RED,           "GAMMA"),
-                    AlertKind::Warning   => (C_YELLOW,        "WARNING"),
-                    AlertKind::Manage  => (C_YELLOW,        "MANAGE"),
-                    AlertKind::Close   => (C_GREEN,         "CLOSE"),
-                    AlertKind::Roll    => (C_BLUE,          "ROLL"),
-                    AlertKind::Sizing  => (Color::Magenta,  "SIZING"),
-                    AlertKind::Ok      => (C_GRAY,          "OK"),
+                    AlertKind::Defense        => (C_RED,           "DEFENSE"),
+                    AlertKind::MaxLoss        => (C_RED,           "MAXLOSS"),
+                    AlertKind::GammaRisk      => (C_RED,           "GAMMA"),
+                    AlertKind::Warning        => (C_YELLOW,        "WARNING"),
+                    AlertKind::DeltaExtreme   => (C_YELLOW,        "Δ EXTREME"),
+                    AlertKind::UndefinedDrift => (C_YELLOW,        "DRIFT"),
+                    AlertKind::Manage         => (C_YELLOW,        "MANAGE"),
+                    AlertKind::Close          => (C_GREEN,         "CLOSE"),
+                    AlertKind::Roll           => (C_BLUE,          "ROLL"),
+                    AlertKind::Sizing         => (Color::Magenta,  "SIZING"),
+                    AlertKind::Ok             => (C_GRAY,          "OK"),
                 };
                 let suffix = if *count == 1 { "alert" } else { "alerts" };
                 ListItem::new(Line::from(vec![
@@ -2668,15 +2670,17 @@ fn draw_daily_actions(
             }
             ActionRow::Alert(alert) => {
                 let badge_color = match alert.kind {
-                    AlertKind::Defense   => C_RED,
-                    AlertKind::MaxLoss   => C_RED,
-                    AlertKind::GammaRisk => C_RED,
-                    AlertKind::Warning   => C_YELLOW,
-                    AlertKind::Manage  => C_YELLOW,
-                    AlertKind::Close   => C_GREEN,
-                    AlertKind::Roll    => C_BLUE,
-                    AlertKind::Sizing  => Color::Magenta,
-                    AlertKind::Ok      => C_GRAY,
+                    AlertKind::Defense        => C_RED,
+                    AlertKind::MaxLoss        => C_RED,
+                    AlertKind::GammaRisk      => C_RED,
+                    AlertKind::Warning        => C_YELLOW,
+                    AlertKind::DeltaExtreme   => C_YELLOW,
+                    AlertKind::UndefinedDrift => C_YELLOW,
+                    AlertKind::Manage         => C_YELLOW,
+                    AlertKind::Close          => C_GREEN,
+                    AlertKind::Roll           => C_BLUE,
+                    AlertKind::Sizing         => Color::Magenta,
+                    AlertKind::Ok             => C_GRAY,
                 };
                 let badge_style = if matches!(alert.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::GammaRisk) {
                     if pulse_on {

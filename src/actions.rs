@@ -21,41 +21,50 @@ pub enum AlertSeverity {
 /// The action category shown to the user.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AlertKind {
-    Defense,  // Tested / expires today
-    MaxLoss,  // Down 2× max profit — tastytrade hard stop
-    Warning,  // Earnings risk while short premium
-    Manage,   // 21 DTE management / IVR crush
-    Close,    // Profit target hit
-    Roll,     // Roll for credit at 21 DTE
-    Sizing,   // BPR oversized (per ticker or sector)
-    Ok,       // All clear
+    Defense,        // Tested / expires today
+    MaxLoss,        // Down 2× max profit — tastytrade hard stop
+    GammaRisk,      // Short gamma blowup risk in final week (DTE ≤ 7)
+    Warning,        // Earnings risk while short premium
+    DeltaExtreme,   // Portfolio BWD > ±500 — heavy directional bias
+    UndefinedDrift, // Undefined risk % drifted from target
+    Manage,         // 21 DTE management / IVR crush
+    Close,          // Profit target hit
+    Roll,           // Roll for credit at 21 DTE
+    Sizing,         // BPR oversized (per ticker or sector)
+    Ok,             // All clear
 }
 
 impl AlertKind {
     pub fn badge(&self) -> &'static str {
         match self {
-            AlertKind::Defense => "DEFENSE",
-            AlertKind::MaxLoss => "MAXLOSS",
-            AlertKind::Warning => "WARNING",
-            AlertKind::Manage  => "MANAGE ",
-            AlertKind::Close   => "CLOSE  ",
-            AlertKind::Roll    => "ROLL   ",
-            AlertKind::Sizing  => "SIZING ",
-            AlertKind::Ok      => "OK     ",
+            AlertKind::Defense        => "DEFENSE",
+            AlertKind::MaxLoss        => "MAXLOSS",
+            AlertKind::GammaRisk      => "GAMMA  ",
+            AlertKind::Warning        => "WARNING",
+            AlertKind::DeltaExtreme   => "ΔEXTREM",
+            AlertKind::UndefinedDrift => "DRIFT  ",
+            AlertKind::Manage         => "MANAGE ",
+            AlertKind::Close          => "CLOSE  ",
+            AlertKind::Roll           => "ROLL   ",
+            AlertKind::Sizing         => "SIZING ",
+            AlertKind::Ok             => "OK     ",
         }
     }
 
     /// Canonical display order for grouping.
     pub fn order(&self) -> u8 {
         match self {
-            AlertKind::Defense => 0,
-            AlertKind::MaxLoss => 1,
-            AlertKind::Warning => 2,
-            AlertKind::Manage  => 3,
-            AlertKind::Close   => 4,
-            AlertKind::Roll    => 5,
-            AlertKind::Sizing  => 6,
-            AlertKind::Ok      => 7,
+            AlertKind::Defense        => 0,
+            AlertKind::MaxLoss        => 1,
+            AlertKind::GammaRisk      => 2,
+            AlertKind::Warning        => 3,
+            AlertKind::DeltaExtreme   => 4,
+            AlertKind::UndefinedDrift => 5,
+            AlertKind::Manage         => 6,
+            AlertKind::Close          => 7,
+            AlertKind::Roll           => 8,
+            AlertKind::Sizing         => 9,
+            AlertKind::Ok             => 10,
         }
     }
 }
@@ -92,7 +101,10 @@ pub fn build_action_rows(
     let order = [
         AlertKind::Defense,
         AlertKind::MaxLoss,
+        AlertKind::GammaRisk,
         AlertKind::Warning,
+        AlertKind::DeltaExtreme,
+        AlertKind::UndefinedDrift,
         AlertKind::Manage,
         AlertKind::Close,
         AlertKind::Roll,
@@ -187,10 +199,13 @@ fn get_sector(ticker: &str) -> &'static str {
 /// Compute all alerts for open positions.
 /// Sorted by severity (Critical first), then ticker alphabetically.
 pub fn compute_alerts(
-    trades:       &[Trade],
-    live_prices:  &HashMap<String, f64>,
-    account_size: f64,
-    current_vix:  Option<f64>,
+    trades:           &[Trade],
+    live_prices:      &HashMap<String, f64>,
+    account_size:     f64,
+    current_vix:      Option<f64>,
+    net_bwd:          f64,
+    undefined_drift:  f64,
+    target_undef_pct: f64,
 ) -> Vec<TradeAlert> {
     let today = Utc::now().date_naive();
     let mut alerts: Vec<TradeAlert> = Vec::new();
@@ -326,7 +341,47 @@ pub fn compute_alerts(
             }
         }
 
-        // ── 4. WARNING: Earnings within 48h with short premium ────────────────
+        // ── 4. GAMMA RISK: Final-week short gamma exposure ───────────────────
+        if dte <= 7 && dte > 0 && is_short_premium(strategy) {
+            if let Some(g) = trade.gamma {
+                if g.abs() > 0.02 {
+                    alerts.push(TradeAlert {
+                        trade_id:       trade.id,
+                        ticker:         trade.ticker.clone(),
+                        strategy_badge: badge.clone(),
+                        kind:           AlertKind::GammaRisk,
+                        severity:       AlertSeverity::High,
+                        headline: format!(
+                            "${} {} — {} DTE, gamma {:.3}. Short gamma risk accelerating.",
+                            trade.ticker, badge, dte, g.abs()
+                        ),
+                        detail: Some(
+                            "Close before expiration weekend. Gamma blowups happen fast in the final week.".to_string()
+                        ),
+                    });
+                    continue;
+                }
+            } else {
+                // No gamma stored — fire a general final-week warning
+                alerts.push(TradeAlert {
+                    trade_id:       trade.id,
+                    ticker:         trade.ticker.clone(),
+                    strategy_badge: badge.clone(),
+                    kind:           AlertKind::GammaRisk,
+                    severity:       AlertSeverity::High,
+                    headline: format!(
+                        "${} {} — {} DTE. Approaching expiration, gamma risk elevated.",
+                        trade.ticker, badge, dte
+                    ),
+                    detail: Some(
+                        "Under 7 DTE: gamma accelerates rapidly. Close or let expire if well OTM.".to_string()
+                    ),
+                });
+                continue;
+            }
+        }
+
+        // ── 5. WARNING: Earnings within 48h with short premium ────────────────
         if is_short_premium(strategy) {
             if let Some(earnings) = trade.next_earnings {
                 let days_to_earnings = (earnings - today).num_days();
@@ -504,6 +559,47 @@ pub fn compute_alerts(
                 });
             }
         }
+    }
+
+    // ── Portfolio BWD extreme ─────────────────────────────────────────────────
+    if net_bwd.abs() > 500.0 {
+        let dir = if net_bwd > 0.0 { "bullish" } else { "bearish" };
+        alerts.push(TradeAlert {
+            trade_id:       -1,
+            ticker:         "PORTFOLIO".to_string(),
+            strategy_badge: "—".to_string(),
+            kind:           AlertKind::DeltaExtreme,
+            severity:       AlertSeverity::High,
+            headline: format!(
+                "Net BWD {:+.0} — heavy {} directional bias. Rebalance.",
+                net_bwd, dir
+            ),
+            detail: Some(
+                "Beta-weighted delta > ±500 means your book has material directional risk. \
+                 Consider adding the opposite side or reducing size.".to_string()
+            ),
+        });
+    }
+
+    // ── Undefined risk drift ──────────────────────────────────────────────────
+    if undefined_drift > 10.0 || undefined_drift < -15.0 {
+        let actual = target_undef_pct + undefined_drift;
+        let dir = if undefined_drift > 0.0 { "above" } else { "below" };
+        alerts.push(TradeAlert {
+            trade_id:       -1,
+            ticker:         "PORTFOLIO".to_string(),
+            strategy_badge: "—".to_string(),
+            kind:           AlertKind::UndefinedDrift,
+            severity:       AlertSeverity::Medium,
+            headline: format!(
+                "Undefined risk at {:.0}% vs target {:.0}% — {dir} by {:.0}%. Rebalance.",
+                actual, target_undef_pct, undefined_drift.abs()
+            ),
+            detail: Some(
+                "Add defined-risk spreads to bring undefined exposure back to target, \
+                 or close naked positions.".to_string()
+            ),
+        });
     }
 
     // ── Sort: severity first, then ticker alphabetically ─────────────────────
