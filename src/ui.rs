@@ -2597,7 +2597,7 @@ fn draw_daily_actions(
         .split(area);
 
     // ── Stats bar: count by kind ──────────────────────────────────────────────
-    let defense = alerts.iter().filter(|a| a.kind == AlertKind::Defense).count();
+    let defense = alerts.iter().filter(|a| a.kind == AlertKind::Defense || a.kind == AlertKind::MaxLoss).count();
     let warning = alerts.iter().filter(|a| a.kind == AlertKind::Warning).count();
     let manage  = alerts.iter().filter(|a| a.kind == AlertKind::Manage || a.kind == AlertKind::Roll).count();
     let close   = alerts.iter().filter(|a| a.kind == AlertKind::Close).count();
@@ -2627,7 +2627,8 @@ fn draw_daily_actions(
                 let is_collapsed = collapsed.contains(kind);
                 let toggle = if is_collapsed { "▶" } else { "▼" };
                 let (color, label) = match kind {
-                    AlertKind::Defense => (C_RED,          "DEFENSE"),
+                    AlertKind::Defense => (C_RED,           "DEFENSE"),
+                    AlertKind::MaxLoss => (C_RED,           "MAXLOSS"),
                     AlertKind::Warning => (C_YELLOW,        "WARNING"),
                     AlertKind::Manage  => (C_YELLOW,        "MANAGE"),
                     AlertKind::Close   => (C_GREEN,         "CLOSE"),
@@ -2645,6 +2646,7 @@ fn draw_daily_actions(
             ActionRow::Alert(alert) => {
                 let badge_color = match alert.kind {
                     AlertKind::Defense => C_RED,
+                    AlertKind::MaxLoss => C_RED,
                     AlertKind::Warning => C_YELLOW,
                     AlertKind::Manage  => C_YELLOW,
                     AlertKind::Close   => C_GREEN,
@@ -2652,7 +2654,7 @@ fn draw_daily_actions(
                     AlertKind::Sizing  => Color::Magenta,
                     AlertKind::Ok      => C_GRAY,
                 };
-                let badge_style = if alert.kind == AlertKind::Defense {
+                let badge_style = if alert.kind == AlertKind::Defense || alert.kind == AlertKind::MaxLoss {
                     if pulse_on {
                         Style::default().fg(Color::White).bg(C_RED).add_modifier(Modifier::BOLD)
                     } else {

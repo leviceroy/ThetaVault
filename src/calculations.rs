@@ -1041,8 +1041,8 @@ pub fn check_playbook_compliance(
 
     // Delta check
     if let Some(delta) = trade.delta {
-        let abs_delta = delta.abs() * 100.0;
-        let check_delta = if abs_delta > 1.0 { abs_delta } else { abs_delta * 100.0 };
+        // Normalize: stored as decimal [0,1] → scale to 0-100; already-scaled values kept as-is
+        let check_delta = if delta.abs() <= 1.0 { delta.abs() * 100.0 } else { delta.abs() };
         if let Some(min) = criteria.min_delta {
             if check_delta < min {
                 violations.push(ComplianceViolation {
@@ -1208,7 +1208,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let win_rate = win_count / closed_count;
     let avg_win = if win_count > 0.0 { gross_wins / win_count } else { 0.0 };
     let avg_loss = if loss_count > 0.0 { gross_losses / loss_count } else { 0.0 };
-    let profit_factor = if gross_losses > 0.0 { gross_wins / gross_losses } else { f64::INFINITY };
+    let profit_factor = if gross_losses > 0.0 { gross_wins / gross_losses } else { 999.9 };
     let expected_value = win_rate * avg_win - (1.0 - win_rate) * avg_loss;
 
     // Step 4: Sharpe

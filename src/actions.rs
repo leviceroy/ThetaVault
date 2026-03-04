@@ -1,5 +1,5 @@
 use crate::models::{Trade, StrategyType};
-use crate::calculations::calculate_remaining_dte;
+use crate::calculations::{calculate_remaining_dte, calculate_payoff_at_price};
 use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 
@@ -22,6 +22,7 @@ pub enum AlertSeverity {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AlertKind {
     Defense,  // Tested / expires today
+    MaxLoss,  // Down 2× max profit — tastytrade hard stop
     Warning,  // Earnings risk while short premium
     Manage,   // 21 DTE management / IVR crush
     Close,    // Profit target hit
@@ -34,6 +35,7 @@ impl AlertKind {
     pub fn badge(&self) -> &'static str {
         match self {
             AlertKind::Defense => "DEFENSE",
+            AlertKind::MaxLoss => "MAXLOSS",
             AlertKind::Warning => "WARNING",
             AlertKind::Manage  => "MANAGE ",
             AlertKind::Close   => "CLOSE  ",
@@ -47,12 +49,13 @@ impl AlertKind {
     pub fn order(&self) -> u8 {
         match self {
             AlertKind::Defense => 0,
-            AlertKind::Warning => 1,
-            AlertKind::Manage  => 2,
-            AlertKind::Close   => 3,
-            AlertKind::Roll    => 4,
-            AlertKind::Sizing  => 5,
-            AlertKind::Ok      => 6,
+            AlertKind::MaxLoss => 1,
+            AlertKind::Warning => 2,
+            AlertKind::Manage  => 3,
+            AlertKind::Close   => 4,
+            AlertKind::Roll    => 5,
+            AlertKind::Sizing  => 6,
+            AlertKind::Ok      => 7,
         }
     }
 }
@@ -88,6 +91,7 @@ pub fn build_action_rows(
     // Canonical kind order
     let order = [
         AlertKind::Defense,
+        AlertKind::MaxLoss,
         AlertKind::Warning,
         AlertKind::Manage,
         AlertKind::Close,
@@ -296,7 +300,33 @@ pub fn compute_alerts(
             continue;
         }
 
-        // ── 3. WARNING: Earnings within 48h with short premium ────────────────
+        // ── 3. MAXLOSS: Down 2× max profit (tastytrade hard stop) ────────────
+        if is_short_premium(strategy) && trade.credit_received > 0.0 && !trade.legs.is_empty() {
+            if let Some(spot) = live_spot {
+                let payoff = calculate_payoff_at_price(&trade.legs, trade.credit_received, spot);
+                let two_x_loss = -(2.0 * trade.credit_received * 100.0);
+                if payoff < two_x_loss {
+                    let loss_dollars = -payoff * trade.quantity as f64;
+                    alerts.push(TradeAlert {
+                        trade_id:       trade.id,
+                        ticker:         trade.ticker.clone(),
+                        strategy_badge: badge.clone(),
+                        kind:           AlertKind::MaxLoss,
+                        severity:       AlertSeverity::High,
+                        headline: format!(
+                            "${} {} is down ~${:.0} — exceeded 2× max profit. CLOSE NOW.",
+                            trade.ticker, badge, loss_dollars
+                        ),
+                        detail: Some(
+                            "Tastytrade hard stop: never let a position exceed 2× the initial credit. Cut the loss.".to_string()
+                        ),
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // ── 4. WARNING: Earnings within 48h with short premium ────────────────
         if is_short_premium(strategy) {
             if let Some(earnings) = trade.next_earnings {
                 let days_to_earnings = (earnings - today).num_days();
