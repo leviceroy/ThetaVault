@@ -1596,7 +1596,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if app.selected_tab == 2 {
             if let Ok(size) = term.size() {
                 let inner_w = (size.width as usize * 72 / 100).saturating_sub(2); // 72% panel - borders
-                let inner_h = size.height.saturating_sub(11) as usize; // tabs(3)+footer(1)+entry(5)+borders(2)
+                let inner_h = size.height.saturating_sub(17) as usize; // tabs(3)+footer(1)+entry(5)+stats(6)+borders(2)
                 let desc = app.playbooks
                     .get(app.playbook_state.selected().unwrap_or(0))
                     .and_then(|pb| pb.description.as_deref())

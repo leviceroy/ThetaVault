@@ -127,7 +127,7 @@ pub fn draw_ui(
         2 => draw_playbook(
             f, chunks[1], playbooks, playbook_state, thesis_scroll,
             app_mode, playbook_edit_fields, playbook_edit_field_idx, playbook_edit_scroll,
-            thesis_edit_buf,
+            thesis_edit_buf, perf_stats,
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct),
@@ -1807,6 +1807,7 @@ fn draw_playbook(
     playbook_edit_field_idx: usize,
     playbook_edit_scroll:    u16,
     thesis_edit_buf:         &str,
+    perf_stats:              &crate::models::PerformanceStats,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1877,7 +1878,7 @@ fn draw_playbook(
         if let Some(pb) = playbooks.get(idx) {
             let dc = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(5), Constraint::Min(0)])
+                .constraints([Constraint::Length(5), Constraint::Length(6), Constraint::Min(0)])
                 .split(chunks[1]);
 
             if let Some(ec) = &pb.entry_criteria {
@@ -1930,6 +1931,36 @@ fn draw_playbook(
                 );
             }
 
+            // ── Strategy stats panel
+            {
+                let sb = perf_stats.strategy_breakdown.iter()
+                    .find(|sb| sb.strategy.as_str() == pb.spread_type.as_deref().unwrap_or(""));
+                let iw = dc[1].width.saturating_sub(2) as usize;
+                let stats_lines: Vec<Line> = if let Some(sb) = sb {
+                    let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
+                    let roc_color = if sb.avg_roc  >= 0.0 { C_GREEN } else { C_RED };
+                    vec![
+                        stat_row("Win Rate:", &format!("{:.0}%", sb.win_rate),              C_WHITE,   iw),
+                        stat_row("Avg R:R:",  &format!("1:{:.1}", sb.avg_roc / 100.0),      roc_color, iw),
+                        stat_row("Usage:",    &format!("{} trades", sb.trades),             C_WHITE,   iw),
+                        stat_row("Total P&L:",&format!("${:.0}", sb.total_pnl),             pnl_color, iw),
+                    ]
+                } else {
+                    vec![
+                        stat_row("Win Rate:", "—",        C_GRAY, iw),
+                        stat_row("Avg R:R:",  "—",        C_GRAY, iw),
+                        stat_row("Usage:",    "0 trades", C_GRAY, iw),
+                        stat_row("Total P&L:","—",        C_GRAY, iw),
+                    ]
+                };
+                f.render_widget(
+                    Paragraph::new(stats_lines)
+                        .block(Block::default().borders(Borders::ALL)
+                            .border_style(Style::default().fg(C_BLUE))),
+                    dc[1],
+                );
+            }
+
             let desc = pb.description.as_deref().unwrap_or("No description provided.");
             let desc_lines: Vec<Line> = desc.split('\n').map(|ln| {
                 let tr = ln.trim();
@@ -1949,7 +1980,7 @@ fn draw_playbook(
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
                         .title(Span::styled(" Thesis (↑/↓ scroll) ", Style::default().fg(C_CYAN)))),
-                dc[1],
+                dc[2],
             );
         }
     } else {
@@ -1963,6 +1994,15 @@ fn draw_playbook(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn stat_row(label: &str, value: &str, value_color: Color, inner_w: usize) -> Line<'static> {
+    let pad = inner_w.saturating_sub(label.len() + value.len());
+    Line::from(vec![
+        Span::styled(label.to_string(), Style::default().fg(C_GRAY)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(value.to_string(), Style::default().fg(value_color)),
+    ])
+}
 
 /// Word-wrap `text` to lines of at most `width` chars, respecting existing newlines.
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
