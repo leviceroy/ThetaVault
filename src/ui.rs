@@ -3297,11 +3297,18 @@ fn draw_equity_curve(f: &mut Frame, area: Rect, trades: &[&Trade]) {
 
 // ── Performance Tab ───────────────────────────────────────────────────────────
 
-fn perf_section_header(title: &str, width: usize, collapsed: bool) -> Line<'static> {
+fn perf_section_header(title: &str, width: usize, collapsed: bool, num: Option<u8>) -> Line<'static> {
     let toggle = if collapsed { "▶" } else { "▼" };
-    let bar_len = width.saturating_sub(title.len() + 6).max(2);
+    let num_prefix = match num {
+        Some(n) if n < 10 => format!("[{}] ", n),
+        Some(_)           => "[0] ".to_string(),
+        None              => "    ".to_string(),
+    };
+    let header_text = format!("{} ━━━ {}{} ", num_prefix, toggle, title);
+    let bar_len = width.saturating_sub(header_text.len() + 2).max(2);
     let bar = "━".repeat(bar_len);
     Line::from(vec![
+        Span::styled(num_prefix, Style::default().fg(C_DARK).add_modifier(Modifier::BOLD)),
         Span::styled(format!("{} ━━━ {} ", toggle, title), Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)),
         Span::styled(bar, Style::default().fg(C_DARK)),
     ])
@@ -3310,7 +3317,7 @@ fn perf_section_header(title: &str, width: usize, collapsed: bool) -> Line<'stat
 fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🛡 PORTFOLIO HEALTH", width, collapsed),
+        perf_section_header("🛡 PORTFOLIO HEALTH", width, collapsed, Some(1)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3372,7 +3379,7 @@ fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> V
 fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📈 RETURNS", width, collapsed),
+        perf_section_header("📈 RETURNS", width, collapsed, Some(2)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3502,7 +3509,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
 fn perf_advanced_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⚙ ADVANCED METRICS", width, collapsed),
+        perf_section_header("⚙ ADVANCED METRICS", width, collapsed, Some(1)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3615,7 +3622,7 @@ fn draw_perf_growth_chart(f: &mut Frame, area: Rect, stats: &PortfolioStats, per
 fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⚔ STRATEGY BREAKDOWN", width, collapsed),
+        perf_section_header("⚔ STRATEGY BREAKDOWN", width, collapsed, Some(2)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3685,7 +3692,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -
 fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🎯 TICKER BREAKDOWN", width, collapsed),
+        perf_section_header("🎯 TICKER BREAKDOWN", width, collapsed, Some(3)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3732,7 +3739,7 @@ fn perf_monthly_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📅 MONTHLY P&L", width, collapsed),
+        perf_section_header("📅 MONTHLY P&L", width, collapsed, Some(4)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3777,12 +3784,12 @@ fn perf_monthly_lines(
 fn perf_ivr_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📊 IV RANK AT ENTRY", width, collapsed),
+        perf_section_header("📊 IV RANK AT ENTRY", width, collapsed, Some(5)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
-    if perf.ivr_buckets.is_empty() {
-        lines.push(Line::from(vec![Span::styled("  No IVR data yet.", Style::default().fg(C_GRAY))]));
+    if perf.ivr_buckets.iter().all(|b| b.trades == 0) {
+        lines.push(Line::from(vec![Span::styled("  No IVR data yet — log iv_rank at entry to populate.", Style::default().fg(C_GRAY))]));
         return lines;
     }
 
@@ -3814,7 +3821,7 @@ fn perf_ivr_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec
 fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🌡 VIX REGIME", width, collapsed),
+        perf_section_header("🌡 VIX REGIME", width, collapsed, Some(6)),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3851,7 +3858,7 @@ fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec
 fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⏱ EXIT DTE ANALYSIS", width, false),
+        perf_section_header("⏱ EXIT DTE ANALYSIS", width, false, None),
     ];
     lines.push(Line::from(""));
     if perf.dte_buckets.is_empty() {
@@ -3887,11 +3894,11 @@ fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
 fn perf_ivr_entry_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, false),
+        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, false, None),
     ];
     lines.push(Line::from(""));
-    if perf.ivr_entry_buckets.is_empty() {
-        lines.push(Line::from(vec![Span::styled("  No IVR entry data yet.", Style::default().fg(C_GRAY))]));
+    if perf.ivr_entry_buckets.iter().all(|b| b.count == 0) {
+        lines.push(Line::from(vec![Span::styled("  No IVR entry data yet — log iv_rank at entry to populate.", Style::default().fg(C_GRAY))]));
         return lines;
     }
 
