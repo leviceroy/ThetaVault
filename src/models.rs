@@ -344,6 +344,9 @@ pub struct Trade {
     // Close-side Greeks (captured when closing the trade)
     pub iv_at_close: Option<f64>,       // IV% at close — measures IV crush contribution
     pub delta_at_close: Option<f64>,    // Delta at close — directional exposure at exit
+    pub theta_at_close: Option<f64>,    // Theta at close
+    pub gamma_at_close: Option<f64>,    // Gamma at close
+    pub vega_at_close: Option<f64>,     // Vega at close
 
     // Roll tracking
     pub roll_count: i32,                // Number of times this position has been rolled
@@ -483,7 +486,28 @@ pub struct PortfolioStats {
     pub drift: f64,                // undefined_risk_pct - target_undefined_pct
     pub avg_pop: f64,              // avg POP% across open trades
     pub vix: Option<f64>,          // current VIX (fetched at startup from Yahoo)
+    pub net_vega: f64,             // total portfolio vega
+    pub bp_available: f64,         // account_size - total_open_bpr
     pub unrealized_pnl: f64,       // estimated unrealized P&L (theta × days_held × 100 × qty)
+
+    // M10: avg IVR across open positions
+    pub avg_ivr_open: Option<f64>,
+
+    // M5: upcoming expirations (DTE ≤ 21), sorted by DTE asc — (ticker, dte)
+    pub next_critical_positions: Vec<(String, i32)>,
+
+    // M1: avg P50 across open positions
+    pub avg_p50_open: Option<f64>,
+
+    // L2: theta/delta efficiency ratio
+    pub theta_delta_ratio: Option<f64>,
+
+    // L1: monthly P&L pace target + pace
+    pub monthly_pnl_target: f64,
+    pub monthly_pnl_pace: f64,
+
+    // L3: strategy distribution for open trades (sorted by count desc)
+    pub open_strategy_counts: Vec<(String, usize)>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -495,10 +519,12 @@ pub struct StrategyBreakdown {
     pub strategy: StrategyType,
     pub trades: usize,
     pub wins: usize,
+    pub scratches: usize,
     pub total_pnl: f64,
     pub avg_pnl: f64,
     pub avg_roc: f64,
     pub win_rate: f64,
+    pub scratch_rate: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -506,10 +532,12 @@ pub struct TickerBreakdown {
     pub ticker: String,
     pub trades: usize,
     pub wins: usize,
+    pub scratches: usize,
     pub total_pnl: f64,
     pub avg_pnl: f64,
     pub avg_roc: f64,
     pub win_rate: f64,
+    pub scratch_rate: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -520,8 +548,52 @@ pub struct MonthlyPnl {
     pub trade_count: usize,
 }
 
+/// L10: IVR entry frequency histogram bucket
+#[derive(Debug, Clone)]
+pub struct IvrEntryBucket {
+    pub label: &'static str,
+    pub count: usize,
+    pub win_rate: f64,    // 0.0–100.0
+}
+
+/// IVR bucket: win rate by IV Rank at entry
+#[derive(Debug, Clone)]
+pub struct IvrBucket {
+    pub label: &'static str,    // e.g. "IVR 50-75"
+    pub min_ivr: f64,
+    pub max_ivr: f64,
+    pub trades: usize,
+    pub wins: usize,
+    pub win_rate: f64,          // 0.0–100.0
+    pub avg_pnl: f64,
+}
+
+/// DTE-at-close bucket: performance by how many DTE remained when trade was closed
+#[derive(Debug, Clone)]
+pub struct DteBucket {
+    pub label: &'static str,    // e.g. "0-7d"
+    pub trades: usize,
+    pub wins: usize,
+    pub avg_pnl: f64,
+    pub win_rate: f64,          // 0.0–100.0
+}
+
+/// VIX regime bucket: performance by VIX environment at entry
+#[derive(Debug, Clone)]
+pub struct VixRegime {
+    pub label: &'static str,    // e.g. "Normal (15-20)"
+    pub trades: usize,
+    pub wins: usize,
+    pub win_rate: f64,          // 0.0–100.0
+    pub avg_pnl: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PerformanceStats {
+    pub win_rate: f64,
+    pub scratch_rate: f64,
+    pub scratches: usize,
+
     // Win/Loss quality
     pub avg_win: f64,
     pub avg_loss: f64,
@@ -537,6 +609,10 @@ pub struct PerformanceStats {
     // Exit quality
     pub avg_dte_at_close: Option<f64>,
     pub avg_pct_max_captured: Option<f64>,
+
+    // Entry quality
+    pub avg_credit_width_ratio: Option<f64>,   // avg (credit/width)×100 for defined-risk trades
+    pub avg_iv_crush: Option<f64>,             // avg entry_iv - close_iv in % points
 
     // Trade frequency
     pub trades_per_week: f64,
@@ -554,16 +630,46 @@ pub struct PerformanceStats {
 
     // Balance history: account_size then account_size + running_pnl per trade
     pub balance_history: Vec<f64>,
+
+    // IVR-bucketed win rate (always 4 buckets: 0-25, 25-50, 50-75, 75+)
+    pub ivr_buckets: Vec<IvrBucket>,
+
+    // VIX regime performance (5 regimes: Calm, Normal, Elevated, High, Stress)
+    pub vix_regimes: Vec<VixRegime>,
+
+    // M3: P&L bucketed by DTE-at-close (5 buckets)
+    pub dte_buckets: Vec<DteBucket>,
+
+    // M8: rolling 30-trade win rate (one entry per closed trade)
+    pub rolling_win_rate: Vec<f64>,
+
+    // M9: running peak balance (same length as balance_history)
+    pub peak_history: Vec<f64>,
+
+    // L6: average premium recapture rate across closed trades
+    pub avg_premium_recapture: Option<f64>,
+
+    // L7: rolling 30-trade theta capture efficiency (%)
+    pub rolling_theta_capture: Vec<f64>,
+
+    // L10: IVR entry frequency histogram (4 buckets: <25, 25-50, 50-75, 75+)
+    pub ivr_entry_buckets: Vec<IvrEntryBucket>,
 }
 
 impl Default for PerformanceStats {
     fn default() -> Self {
         Self {
+            win_rate: 0.0, scratch_rate: 0.0, scratches: 0,
             avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0,
             sharpe_ratio: 0.0, sortino_ratio: 0.0, calmar_ratio: 0.0, avg_annualized_roc: 0.0,
             avg_dte_at_close: None, avg_pct_max_captured: None,
+            avg_credit_width_ratio: None, avg_iv_crush: None,
             trades_per_week: 0.0, trades_per_month: 0.0, avg_held_days: 0.0,
-            strategy_breakdown: vec![], ticker_breakdown: vec![], monthly_pnl: vec![], balance_history: vec![],
+            strategy_breakdown: vec![], ticker_breakdown: vec![], monthly_pnl: vec![],
+            balance_history: vec![], ivr_buckets: vec![], vix_regimes: vec![],
+            dte_buckets: vec![], rolling_win_rate: vec![], peak_history: vec![],
+            avg_premium_recapture: None, rolling_theta_capture: vec![],
+            ivr_entry_buckets: vec![],
         }
     }
 }

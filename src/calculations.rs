@@ -5,6 +5,39 @@ use crate::models::{LegType, StrategyType, TradeLeg, Trade};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
+/// Campaign metrics
+pub struct CampaignMetrics {
+    pub total_pnl: f64,
+    pub total_credit: f64,
+    pub total_debit: f64,
+    pub roll_count: usize,
+    pub net_credit: f64,
+}
+
+pub fn calculate_campaign_metrics(chain: &[Trade]) -> CampaignMetrics {
+    let mut total_pnl = 0.0;
+    let mut total_credit = 0.0;
+    let mut total_debit = 0.0;
+    
+    for t in chain {
+        if let Some(pnl) = t.pnl {
+            total_pnl += pnl;
+        }
+        total_credit += t.credit_received;
+        if let Some(dp) = t.debit_paid {
+            total_debit += dp;
+        }
+    }
+    
+    CampaignMetrics {
+        total_pnl,
+        total_credit,
+        total_debit,
+        roll_count: chain.len().saturating_sub(1),
+        net_credit: total_credit, // This is simplified; true net credit depends on mechanics but sum of credits is a good proxy for "total collected"
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Basic P&L / Profit Metrics
 // ──────────────────────────────────────────────────────────────────────────────
@@ -669,6 +702,7 @@ pub fn build_portfolio_stats(
     beta_map: &HashMap<String, f64>,
     spy_price: Option<f64>,
     target_undefined_pct: f64,
+    monthly_pnl_target: f64,
 ) -> crate::models::PortfolioStats {
     use crate::models::PortfolioStats;
 
@@ -684,6 +718,7 @@ pub fn build_portfolio_stats(
     let mut best_pnl     = f64::NEG_INFINITY;
     let mut worst_pnl    = f64::INFINITY;
     let mut net_theta    = 0.0_f64;
+    let mut net_vega     = 0.0_f64;
     let mut net_bwd      = 0.0_f64;
 
     // OTJ Dashboard metrics for open trades
@@ -696,11 +731,35 @@ pub fn build_portfolio_stats(
     // Collect (exit_date, pnl) pairs — sorted later for accurate drawdown
     let mut closed_pnl_series: Vec<(chrono::NaiveDate, f64)> = Vec::new();
 
+    // M10: IVR accumulator for open trades
+    let mut ivr_open_sum   = 0.0_f64;
+    let mut ivr_open_count = 0usize;
+
+    // M5: next critical positions (DTE ≤ 21)
+    let mut critical_positions: Vec<(String, i32)> = Vec::new();
+
+    // M1: P50 accumulator for open trades
+    let mut p50_open_sum   = 0.0_f64;
+    let mut p50_open_count = 0usize;
+
+    // L1: first trade date for pace computation
+    let mut first_trade_date: Option<chrono::NaiveDate> = None;
+
+    // L3: strategy counts for open trades
+    let mut open_strategy_map: HashMap<String, usize> = HashMap::new();
+
     // Sort by exit_date so streak and drawdown are chronological
     let mut all_refs: Vec<&Trade> = trades.iter().collect();
     all_refs.sort_by_key(|t| t.exit_date);
 
     for trade in trades {
+        // L1: track first trade date
+        let td = trade.trade_date.date_naive();
+        first_trade_date = Some(match first_trade_date {
+            None => td,
+            Some(prev) => prev.min(td),
+        });
+
         if let Some(pnl) = trade.pnl {
             realized_pnl += pnl;
             total_pnl    += pnl;
@@ -723,9 +782,12 @@ pub fn build_portfolio_stats(
         } else {
             open_count += 1;
 
-            // Net theta from open positions
+            // Net theta and vega from open positions
             if let Some(th) = trade.theta {
                 net_theta += th * 100.0 * trade.quantity as f64;
+            }
+            if let Some(vg) = trade.vega {
+                net_vega += vg * 100.0 * trade.quantity as f64;
             }
 
             // Beta-Weighted Delta (only calculable when SPY price and delta are available)
@@ -766,6 +828,27 @@ pub fn build_portfolio_stats(
             let effective_pop = trade.pop.unwrap_or_else(|| estimate_pop(trade));
             pop_sum   += effective_pop;
             pop_count += 1;
+
+            // M10: avg IVR
+            if let Some(ivr) = trade.iv_rank {
+                ivr_open_sum   += ivr;
+                ivr_open_count += 1;
+            }
+
+            // M5: next critical positions (DTE ≤ 21)
+            let remaining_dte = calculate_remaining_dte(&trade.expiration_date);
+            if remaining_dte <= 21 {
+                critical_positions.push((trade.ticker.clone(), remaining_dte as i32));
+            }
+
+            // M1: P50
+            if let Some(p50) = calculate_p50(trade) {
+                p50_open_sum   += p50;
+                p50_open_count += 1;
+            }
+
+            // L3: strategy distribution
+            *open_strategy_map.entry(trade.strategy.badge().to_string()).or_insert(0) += 1;
 
             // Unrealized P&L estimate: theta ($/share/day) × days_held × 100 × qty
             // theta is stored as positive for credit sellers (we benefit from decay)
@@ -828,6 +911,29 @@ pub fn build_portfolio_stats(
     let avg_pop = if pop_count > 0 { pop_sum / pop_count as f64 } else { 0.0 };
     let balance = account_size + realized_pnl;
 
+    // M5: sort critical positions by DTE ascending
+    critical_positions.sort_by_key(|(_, dte)| *dte);
+
+    // L1: monthly P&L pace
+    let monthly_pnl_pace = if let Some(first) = first_trade_date {
+        let days_elapsed = (today - first).num_days().max(1) as f64;
+        let months_elapsed = days_elapsed / 30.44;
+        if months_elapsed > 0.0 { realized_pnl / months_elapsed } else { 0.0 }
+    } else {
+        0.0
+    };
+
+    // L2: theta/delta efficiency ratio
+    let theta_delta_ratio = if net_bwd.abs() >= 0.01 {
+        Some(net_theta / net_bwd.abs())
+    } else {
+        None
+    };
+
+    // L3: open strategy counts sorted by count desc
+    let mut open_strategy_counts: Vec<(String, usize)> = open_strategy_map.into_iter().collect();
+    open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1));
+
     PortfolioStats {
         total_pnl,
         realized_pnl,
@@ -860,7 +966,16 @@ pub fn build_portfolio_stats(
         drift,
         avg_pop,
         vix,
+        net_vega,
+        bp_available: account_size - total_open_bpr,
         unrealized_pnl,
+        avg_ivr_open:             if ivr_open_count > 0 { Some(ivr_open_sum / ivr_open_count as f64) } else { None },
+        next_critical_positions:  critical_positions,
+        avg_p50_open:             if p50_open_count > 0 { Some(p50_open_sum / p50_open_count as f64) } else { None },
+        theta_delta_ratio,
+        monthly_pnl_target,
+        monthly_pnl_pace,
+        open_strategy_counts,
     }
 }
 
@@ -989,6 +1104,63 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
     pop.clamp(10.0, 95.0)
 }
 
+/// P50 = probability of reaching 50% of max profit before expiry.
+/// Evaluated at the 50%-profit threshold strike using Black-Scholes d2.
+pub fn calculate_p50(trade: &Trade) -> Option<f64> {
+    let iv_raw = trade.implied_volatility.unwrap_or(0.0);
+    let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else { return None; };
+
+    let s = trade.underlying_price?;
+    if s <= 0.0 { return None; }
+
+    let dte = calculate_remaining_dte(&trade.expiration_date);
+    let t = (dte as f64 / 365.25).max(1.0 / 365.0);
+    let r = 0.045_f64;
+    let credit = trade.credit_received;
+
+    let p50 = match trade.strategy {
+        StrategyType::CashSecuredPut | StrategyType::ShortPutVertical => {
+            // 50% profit when stock stays above: short_strike + credit*0.5
+            let k = trade.legs.iter()
+                .find(|l| l.leg_type == LegType::ShortPut)
+                .map(|l| l.strike)
+                .unwrap_or(trade.short_strike);
+            if k <= 0.0 { return None; }
+            let threshold = k + credit * 0.5;
+            let d2 = bs_d1(s, threshold, t, r, iv) - iv * t.sqrt();
+            normal_cdf(d2) * 100.0
+        }
+        StrategyType::CoveredCall | StrategyType::ShortCallVertical => {
+            // 50% profit when stock stays below: short_strike - credit*0.5
+            let k = trade.legs.iter()
+                .find(|l| l.leg_type == LegType::ShortCall)
+                .map(|l| l.strike)
+                .unwrap_or(trade.short_strike);
+            if k <= 0.0 { return None; }
+            let threshold = k - credit * 0.5;
+            let d2 = bs_d1(s, threshold, t, r, iv) - iv * t.sqrt();
+            normal_cdf(-d2) * 100.0
+        }
+        StrategyType::IronCondor | StrategyType::IronButterfly
+        | StrategyType::Strangle | StrategyType::Straddle => {
+            let kp = trade.legs.iter().find(|l| l.leg_type == LegType::ShortPut).map(|l| l.strike);
+            let kc = trade.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike);
+            match (kp, kc) {
+                (Some(kp), Some(kc)) if kp > 0.0 && kc > 0.0 => {
+                    let tp = kp + credit * 0.5;
+                    let tc = kc - credit * 0.5;
+                    let d2_put  = bs_d1(s, tp, t, r, iv) - iv * t.sqrt();
+                    let d2_call = bs_d1(s, tc, t, r, iv) - iv * t.sqrt();
+                    (normal_cdf(d2_put) + normal_cdf(-d2_call) - 1.0) * 100.0
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(p50.clamp(5.0, 95.0))
+}
+
 fn delta_based_pop_fallback(trade: &Trade) -> f64 {
     match trade.strategy {
         StrategyType::IronCondor | StrategyType::IronButterfly => 68.0,
@@ -1042,7 +1214,31 @@ pub fn check_playbook_compliance(
     // Delta check
     if let Some(delta) = trade.delta {
         // Normalize: stored as decimal [0,1] → scale to 0-100; already-scaled values kept as-is
-        let check_delta = if delta.abs() <= 1.0 { delta.abs() * 100.0 } else { delta.abs() };
+        let mut check_delta = if delta.abs() <= 1.0 { delta.abs() * 100.0 } else { delta.abs() };
+
+        // TASTYTRADE IMPROVEMENT: For neutral strategies (IC, Strangle, etc.), the net delta
+        // is often zero but the short legs are NOT safe. Use credit/width ratio as a surrogate.
+        let is_neutral = matches!(trade.strategy, 
+            crate::models::StrategyType::IronCondor |
+            crate::models::StrategyType::IronButterfly |
+            crate::models::StrategyType::Strangle |
+            crate::models::StrategyType::Straddle |
+            crate::models::StrategyType::CalendarSpread
+        );
+        
+        if is_neutral && check_delta < 5.0 {
+            // Surrogate Delta = (Credit / Width) * 100. 
+            // e.g. $3.16 credit on $10 wings = 31.6 'delta' proxy.
+            if let Some(width) = trade.spread_width {
+                if width > 0.0 {
+                    let surrogate = (trade.credit_received / width).abs() * 100.0;
+                    if surrogate > check_delta {
+                        check_delta = surrogate;
+                    }
+                }
+            }
+        }
+
         if let Some(min) = criteria.min_delta {
             if check_delta < min {
                 violations.push(ComplianceViolation {
@@ -1105,15 +1301,16 @@ fn calculate_sharpe_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
 }
 
 /// Sortino ratio: (mean_return − rf) / downside_std × √252
-/// Uses daily returns (pnl / account_size per day). Penalises only negative deviations.
+/// Uses daily returns (pnl / account_size per day). Penalises only truly negative returns
+/// (not returns below rf — that is the common but incorrect implementation).
 fn calculate_sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     if returns.len() < 2 { return 0.0; }
     let n = returns.len() as f64;
     let mean = returns.iter().sum::<f64>() / n;
     let risk_free_daily = risk_free_annual / 252.0;
     let downside_var = returns.iter()
-        .filter(|&&r| r < risk_free_daily)
-        .map(|&r| (r - risk_free_daily).powi(2))
+        .filter(|&&r| r < 0.0)
+        .map(|&r| r.powi(2))
         .sum::<f64>() / n;
     let downside_std = downside_var.sqrt();
     if downside_std <= 0.0 { return 0.0; }
@@ -1130,7 +1327,7 @@ fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max
 
 pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::models::PerformanceStats {
     use chrono::Datelike;
-    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl};
+    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket};
 
     // Step 1: filter and sort closed trades by exit_date ascending
     let mut sorted_closed: Vec<&Trade> = trades.iter()
@@ -1147,6 +1344,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let mut gross_wins = 0.0_f64;
     let mut gross_losses = 0.0_f64;
     let mut win_count = 0.0_f64;
+    let mut scratch_count = 0.0_f64;
     let mut loss_count = 0.0_f64;
 
     let mut pct_max_sum = 0.0_f64;
@@ -1166,22 +1364,51 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     // monthly_map: (year, month) -> (pnl, trade_count)
     let mut monthly_map: HashMap<(i32, u32), (f64, usize)> = HashMap::new();
 
-    // strategy_map: StrategyType -> (trades, wins, total_pnl, roc_sum, roc_count)
-    let mut strategy_map: HashMap<String, (usize, usize, f64, f64, u32)> = HashMap::new();
+    // strategy_map: StrategyType -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
+    let mut strategy_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
 
-    // ticker_map: ticker -> (trades, wins, total_pnl, roc_sum, roc_count)
-    let mut ticker_map: HashMap<String, (usize, usize, f64, f64, u32)> = HashMap::new();
+    // ticker_map: ticker -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
+    let mut ticker_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
+
+    // credit/width ratio accumulator
+    let mut cw_ratio_sum   = 0.0_f64;
+    let mut cw_ratio_count = 0u32;
+
+    // IV crush accumulator (entry_iv - close_iv, both as 0-1 decimals → display as % pts)
+    let mut iv_crush_sum   = 0.0_f64;
+    let mut iv_crush_count = 0u32;
+
+    // IVR buckets: (trades, wins, pnl_sum) for [0-25), [25-50), [50-75), [75+)
+    let mut ivr_data: [(usize, usize, f64); 4] = [(0, 0, 0.0); 4];
+
+    // VIX regime buckets: (trades, wins, pnl_sum) for Calm/<15, Normal/15-20, Elevated/20-25, High/25-35, Stress/35+
+    let mut vix_data: [(usize, usize, f64); 5] = [(0, 0, 0.0); 5];
 
     // balance history: start at account_size, push running after each trade
     let mut balance_history: Vec<f64> = vec![account_size];
     let mut running = account_size;
+
+    // L6: premium recapture
+    let mut recapture_sum   = 0.0_f64;
+    let mut recapture_count = 0u32;
+
+    // L7: per-trade theta capture pct (filled in loop, used for rolling 30-window after)
+    let mut theta_capture_per_trade: Vec<f64> = Vec::new();
+
+    // L10: IVR entry histogram: (count, wins) for [<25, 25-50, 50-75, 75+]
+    let mut ivr_entry_data: [(usize, usize); 4] = [(0, 0); 4];
 
     for t in &sorted_closed {
         let pnl = t.pnl.unwrap();
         let exit = t.exit_date.unwrap();
         let exit_date_naive = exit.date_naive();
 
-        if pnl > 0.0 {
+        // Scratch threshold: 5% of max profit per trade (min $10 for tiny trades)
+        let max_profit = calculate_max_profit(t.credit_received, t.quantity);
+        let scratch_threshold = (max_profit * 0.05).max(10.0);
+        if pnl.abs() < scratch_threshold {
+            scratch_count += 1.0;
+        } else if pnl > 0.0 {
             gross_wins += pnl;
             win_count += 1.0;
         } else {
@@ -1190,7 +1417,6 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         }
 
         // Avg % max captured (winners only)
-        let max_profit = calculate_max_profit(t.credit_received, t.quantity);
         if max_profit > 0.0 && pnl > 0.0 {
             pct_max_sum += (pnl / max_profit) * 100.0;
             pct_max_count += 1;
@@ -1228,23 +1454,93 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
         // Strategy breakdown
         let strat_key = format!("{:?}", t.strategy);
-        let se = strategy_map.entry(strat_key).or_insert((0, 0, 0.0, 0.0, 0));
+        let se = strategy_map.entry(strat_key).or_insert((0, 0, 0, 0.0, 0.0, 0));
         se.0 += 1;
-        if pnl > 0.0 { se.1 += 1; }
-        se.2 += pnl;
+        if pnl.abs() < scratch_threshold { se.2 += 1; }
+        else if pnl > 0.0 { se.1 += 1; }
+        se.3 += pnl;
         if let Some(roc) = roc_opt {
-            se.3 += roc;
-            se.4 += 1;
+            se.4 += roc;
+            se.5 += 1;
         }
 
         // Ticker breakdown
-        let te = ticker_map.entry(t.ticker.clone()).or_insert((0, 0, 0.0, 0.0, 0));
+        let te = ticker_map.entry(t.ticker.clone()).or_insert((0, 0, 0, 0.0, 0.0, 0));
         te.0 += 1;
-        if pnl > 0.0 { te.1 += 1; }
-        te.2 += pnl;
+        if pnl.abs() < scratch_threshold { te.2 += 1; }
+        else if pnl > 0.0 { te.1 += 1; }
+        te.3 += pnl;
         if let Some(roc) = roc_opt {
-            te.3 += roc;
-            te.4 += 1;
+            te.4 += roc;
+            te.5 += 1;
+        }
+
+        // Credit/width ratio (defined-risk strategies only)
+        let cw = calculate_credit_width_ratio(t.credit_received, &t.legs, t.spread_type());
+        if cw > 0.0 {
+            cw_ratio_sum   += cw;
+            cw_ratio_count += 1;
+        }
+
+        // IV crush: entry_iv - iv_at_close (both stored as decimals 0-1)
+        if let (Some(entry_iv), Some(close_iv)) = (t.implied_volatility, t.iv_at_close) {
+            iv_crush_sum   += (entry_iv - close_iv) * 100.0; // convert to % pts
+            iv_crush_count += 1;
+        }
+
+        // IVR bucket
+        if let Some(ivr) = t.iv_rank {
+            let bucket = if ivr < 25.0 { 0 } else if ivr < 50.0 { 1 } else if ivr < 75.0 { 2 } else { 3 };
+            ivr_data[bucket].0 += 1;
+            if pnl > 0.0 { ivr_data[bucket].1 += 1; }
+            ivr_data[bucket].2 += pnl;
+        }
+
+        // VIX regime
+        if let Some(vix) = t.vix_at_entry {
+            let bucket = if vix < 15.0 { 0 } else if vix < 20.0 { 1 } else if vix < 25.0 { 2 } else if vix < 35.0 { 3 } else { 4 };
+            vix_data[bucket].0 += 1;
+            if pnl > 0.0 { vix_data[bucket].1 += 1; }
+            vix_data[bucket].2 += pnl;
+        }
+
+        // L6: premium recapture
+        if t.credit_received > 0.0 {
+            if let Some(debit) = t.debit_paid {
+                let recapture = (t.credit_received - debit) / t.credit_received * 100.0;
+                recapture_sum   += recapture;
+                recapture_count += 1;
+            }
+        }
+
+        // L7: per-trade theta capture pct
+        if let (Some(theta), Some(debit)) = (t.theta, t.debit_paid) {
+            if theta.abs() > 0.0 {
+                let hd = (exit_date_naive - t.trade_date.date_naive()).num_days().max(0) as f64;
+                if hd > 0.0 {
+                    let max_theta_pnl = theta.abs() * 100.0 * t.quantity as f64 * hd;
+                    if max_theta_pnl > 0.0 {
+                        let tc_pct = (pnl / max_theta_pnl * 100.0).clamp(-200.0, 200.0);
+                        theta_capture_per_trade.push(tc_pct);
+                    } else {
+                        theta_capture_per_trade.push(0.0);
+                    }
+                } else {
+                    theta_capture_per_trade.push(0.0);
+                }
+            } else {
+                theta_capture_per_trade.push(0.0);
+            }
+            let _ = debit; // suppress unused warning
+        } else {
+            theta_capture_per_trade.push(0.0);
+        }
+
+        // L10: IVR entry histogram
+        if let Some(ivr) = t.iv_rank {
+            let b = if ivr < 25.0 { 0 } else if ivr < 50.0 { 1 } else if ivr < 75.0 { 2 } else { 3 };
+            ivr_entry_data[b].0 += 1;
+            if pnl > 0.0 { ivr_entry_data[b].1 += 1; }
         }
 
         // Balance history
@@ -1254,6 +1550,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
     // Step 3: aggregates
     let win_rate = win_count / closed_count;
+    let scratch_rate = scratch_count / closed_count;
     let avg_win = if win_count > 0.0 { gross_wins / win_count } else { 0.0 };
     let avg_loss = if loss_count > 0.0 { gross_losses / loss_count } else { 0.0 };
     let profit_factor = if gross_losses > 0.0 { gross_wins / gross_losses } else { 999.9 };
@@ -1278,38 +1575,40 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let avg_held_days = held_sum / closed_count;
 
     // Step 6: strategy breakdown
-    let mut strategy_breakdown: Vec<StrategyBreakdown> = strategy_map.into_iter().map(|(key, (trades, wins, total_pnl, roc_sum, roc_count))| {
+    let mut strategy_breakdown: Vec<StrategyBreakdown> = strategy_map.into_iter().map(|(key, (trades, wins, scratches, total_pnl, roc_sum, roc_count))| {
         // Recover the StrategyType from its Debug string
         let strategy = sorted_closed.iter()
             .find(|t| format!("{:?}", t.strategy) == key)
             .map(|t| t.strategy.clone())
             .unwrap_or(StrategyType::ShortPutVertical);
-        let w = wins as f64;
         let tc = trades as f64;
         StrategyBreakdown {
             strategy,
             trades,
             wins,
+            scratches,
             total_pnl,
             avg_pnl: if tc > 0.0 { total_pnl / tc } else { 0.0 },
             avg_roc: if roc_count > 0 { roc_sum / roc_count as f64 } else { 0.0 },
-            win_rate: if tc > 0.0 { w / tc * 100.0 } else { 0.0 },
+            win_rate: if tc > 0.0 { wins as f64 / tc * 100.0 } else { 0.0 },
+            scratch_rate: if tc > 0.0 { scratches as f64 / tc * 100.0 } else { 0.0 },
         }
     }).collect();
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
 
     // Step 7a: ticker breakdown
-    let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, total_pnl, roc_sum, roc_count))| {
-        let w = wins as f64;
+    let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, scratches, total_pnl, roc_sum, roc_count))| {
         let tc = trades as f64;
         TickerBreakdown {
             ticker,
             trades,
             wins,
+            scratches,
             total_pnl,
             avg_pnl: if tc > 0.0 { total_pnl / tc } else { 0.0 },
             avg_roc: if roc_count > 0 { roc_sum / roc_count as f64 } else { 0.0 },
-            win_rate: if tc > 0.0 { w / tc * 100.0 } else { 0.0 },
+            win_rate: if tc > 0.0 { wins as f64 / tc * 100.0 } else { 0.0 },
+            scratch_rate: if tc > 0.0 { scratches as f64 / tc * 100.0 } else { 0.0 },
         }
     }).collect();
     ticker_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
@@ -1326,7 +1625,106 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let (_, max_drawdown_pct, _) = calculate_drawdown(&balance_history);
     let calmar_ratio = calculate_calmar_ratio(total_pnl, account_size, span_days, max_drawdown_pct);
 
+    // IVR buckets
+    let ivr_bucket_defs: [(&str, f64, f64); 4] = [
+        ("IVR  0-25",  0.0,  25.0),
+        ("IVR 25-50", 25.0,  50.0),
+        ("IVR 50-75", 50.0,  75.0),
+        ("IVR   75+", 75.0, 100.0),
+    ];
+    let ivr_buckets: Vec<IvrBucket> = ivr_bucket_defs.iter().zip(ivr_data.iter()).map(|((label, min, max), (trades, wins, pnl_sum))| {
+        IvrBucket {
+            label,
+            min_ivr: *min,
+            max_ivr: *max,
+            trades: *trades,
+            wins: *wins,
+            win_rate: if *trades > 0 { *wins as f64 / *trades as f64 * 100.0 } else { 0.0 },
+            avg_pnl: if *trades > 0 { pnl_sum / *trades as f64 } else { 0.0 },
+        }
+    }).collect();
+
+    // VIX regimes
+    let vix_regime_defs: [&str; 5] = ["Calm (<15)", "Normal (15-20)", "Elevated (20-25)", "High (25-35)", "Stress (35+)"];
+    let vix_regimes: Vec<VixRegime> = vix_regime_defs.iter().zip(vix_data.iter()).map(|(label, (trades, wins, pnl_sum))| {
+        VixRegime {
+            label,
+            trades: *trades,
+            wins: *wins,
+            win_rate: if *trades > 0 { *wins as f64 / *trades as f64 * 100.0 } else { 0.0 },
+            avg_pnl: if *trades > 0 { pnl_sum / *trades as f64 } else { 0.0 },
+        }
+    }).collect();
+
+    // M3: DTE-at-close buckets: 0-7, 7-14, 14-21, 21-30, 30+
+    let dte_bucket_defs: [(&str, i32, i32); 5] = [
+        ("0–7d",  0,  7),
+        ("7–14d", 7, 14),
+        ("14–21d",14, 21),
+        ("21–30d",21, 30),
+        ("30+d",  30, i32::MAX),
+    ];
+    let mut dte_data: [(usize, usize, f64); 5] = [(0, 0, 0.0); 5];
+    for t in &sorted_closed {
+        if let (Some(dte_close), Some(pnl)) = (t.dte_at_close, t.pnl) {
+            let bi = dte_bucket_defs.iter().position(|&(_, lo, hi)| dte_close >= lo && dte_close < hi)
+                .unwrap_or(4);
+            dte_data[bi].0 += 1;
+            if pnl > 0.0 { dte_data[bi].1 += 1; }
+            dte_data[bi].2 += pnl;
+        }
+    }
+    use crate::models::DteBucket;
+    let dte_buckets: Vec<DteBucket> = dte_bucket_defs.iter().zip(dte_data.iter()).map(|((label, _, _), (trades, wins, pnl_sum))| {
+        DteBucket {
+            label,
+            trades: *trades,
+            wins: *wins,
+            avg_pnl: if *trades > 0 { pnl_sum / *trades as f64 } else { 0.0 },
+            win_rate: if *trades > 0 { *wins as f64 / *trades as f64 * 100.0 } else { 0.0 },
+        }
+    }).collect();
+
+    // M8: rolling 30-trade win rate
+    let rolling_win_rate: Vec<f64> = sorted_closed.iter().enumerate().map(|(i, _)| {
+        let start = i.saturating_sub(29);
+        let window = &sorted_closed[start..=i];
+        let wins = window.iter().filter(|t| t.pnl.unwrap_or(0.0) > 0.0).count();
+        wins as f64 / window.len() as f64 * 100.0
+    }).collect();
+
+    // M9: running peak balance
+    let mut peak = account_size;
+    let peak_history: Vec<f64> = balance_history.iter().map(|&b| { peak = peak.max(b); peak }).collect();
+
+    // L6: avg premium recapture
+    let avg_premium_recapture = if recapture_count > 0 {
+        Some(recapture_sum / recapture_count as f64)
+    } else {
+        None
+    };
+
+    // L7: rolling 30-trade theta capture
+    let rolling_theta_capture: Vec<f64> = theta_capture_per_trade.iter().enumerate().map(|(i, _)| {
+        let start = i.saturating_sub(29);
+        let window = &theta_capture_per_trade[start..=i];
+        window.iter().sum::<f64>() / window.len() as f64
+    }).collect();
+
+    // L10: IVR entry buckets
+    let ivr_entry_bucket_defs: [&str; 4] = ["IVR  <25", "IVR 25-50", "IVR 50-75", "IVR  75+"];
+    let ivr_entry_buckets: Vec<IvrEntryBucket> = ivr_entry_bucket_defs.iter().zip(ivr_entry_data.iter()).map(|(label, (count, wins))| {
+        IvrEntryBucket {
+            label,
+            count: *count,
+            win_rate: if *count > 0 { *wins as f64 / *count as f64 * 100.0 } else { 0.0 },
+        }
+    }).collect();
+
     PerformanceStats {
+        win_rate: win_rate * 100.0,
+        scratch_rate: scratch_rate * 100.0,
+        scratches: scratch_count as usize,
         avg_win,
         avg_loss,
         profit_factor,
@@ -1337,6 +1735,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         avg_annualized_roc,
         avg_dte_at_close: if dte_count > 0 { Some(dte_sum / dte_count as f64) } else { None },
         avg_pct_max_captured: if pct_max_count > 0 { Some(pct_max_sum / pct_max_count as f64) } else { None },
+        avg_credit_width_ratio: if cw_ratio_count > 0 { Some(cw_ratio_sum / cw_ratio_count as f64) } else { None },
+        avg_iv_crush: if iv_crush_count > 0 { Some(iv_crush_sum / iv_crush_count as f64) } else { None },
         trades_per_week,
         trades_per_month,
         avg_held_days,
@@ -1344,5 +1744,111 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         ticker_breakdown,
         monthly_pnl,
         balance_history,
+        ivr_buckets,
+        vix_regimes,
+        dte_buckets,
+        rolling_win_rate,
+        peak_history,
+        avg_premium_recapture,
+        rolling_theta_capture,
+        ivr_entry_buckets,
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// L8: Auto-match trades to playbooks
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Find playbook IDs that match the trade's strategy, IVR, DTE, and delta.
+/// Returns a list of matching playbook IDs (may be empty, 1, or many).
+pub fn find_matching_playbooks(
+    trade: &Trade,
+    playbooks: &[crate::models::PlaybookStrategy],
+) -> Vec<i32> {
+    let trade_badge = trade.strategy.badge();
+    let mut matches = Vec::new();
+
+    for pb in playbooks {
+        // Must match spread type if playbook specifies one
+        if let Some(ref st) = pb.spread_type {
+            let pb_badge = crate::models::StrategyType::from_str(st).badge();
+            if pb_badge != trade_badge { continue; }
+        }
+
+        // Check entry criteria if present
+        if let Some(ref ec) = pb.entry_criteria {
+            let mut pass = true;
+
+            if let Some(ivr) = trade.iv_rank {
+                if let Some(min) = ec.min_ivr { if ivr < min { pass = false; } }
+                if let Some(max) = ec.max_ivr { if ivr > max { pass = false; } }
+            }
+
+            if let Some(dte) = trade.entry_dte {
+                if let Some(min) = ec.min_dte { if dte < min { pass = false; } }
+                if let Some(max) = ec.max_dte { if dte > max { pass = false; } }
+            }
+
+            if let Some(delta) = trade.delta {
+                let d = if delta.abs() <= 1.0 { delta.abs() * 100.0 } else { delta.abs() };
+                if let Some(min) = ec.min_delta { if d < min { pass = false; } }
+                if let Some(max) = ec.max_delta { if d > max { pass = false; } }
+            }
+
+            if !pass { continue; }
+        }
+
+        matches.push(pb.id);
+    }
+
+    matches
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// L5: Payoff series for ASCII chart
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Build a payoff series for the ASCII chart: (price, pnl) pairs over the range
+/// [underlying * 0.70, underlying * 1.30] in `steps` steps.
+/// Also returns the expected move (±em) if IV data is available.
+pub fn build_payoff_series(
+    trade: &Trade,
+    steps: usize,
+) -> (Vec<(f64, f64)>, Option<f64>) {
+    let underlying = match trade.underlying_price {
+        Some(u) if u > 0.0 => u,
+        _ => return (vec![], None),
+    };
+
+    let lo = underlying * 0.70;
+    let hi = underlying * 1.30;
+    let step_size = (hi - lo) / (steps.saturating_sub(1).max(1)) as f64;
+
+    let series: Vec<(f64, f64)> = (0..steps).map(|i| {
+        let price = lo + i as f64 * step_size;
+        let pnl = calculate_payoff_at_price(&trade.legs, trade.credit_received, price)
+            * trade.quantity as f64;
+        (price, pnl)
+    }).collect();
+
+    // Expected move: underlying * (iv/100) * sqrt(dte/365)
+    let iv = trade.implied_volatility.or_else(|| trade.iv_rank).unwrap_or(0.0);
+    let dte = trade.entry_dte.unwrap_or(0) as f64;
+    let expected_move = if iv > 0.0 && dte > 0.0 {
+        let iv_dec = if iv > 2.0 { iv / 100.0 } else { iv };
+        Some(underlying * iv_dec * (dte / 365.0).sqrt())
+    } else {
+        None
+    };
+
+    (series, expected_move)
+}
+
+/// tastytrade "Opportunities in Extremes" — VIX -> max BPR % of net liq.
+pub fn vix_max_heat(vix: f64) -> f64 {
+    if      vix >= 40.0 { 50.0 }
+    else if vix >= 30.0 { 40.0 }
+    else if vix >= 20.0 { 35.0 }
+    else if vix >= 15.0 { 30.0 }
+    else                { 25.0 }
 }

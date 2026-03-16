@@ -163,6 +163,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             iv_at_close: None,
             delta_at_close: None,
             roll_count: 0,
+            theta_at_close: None,
+            gamma_at_close: None,
+            vega_at_close: None,
         };
         storage.insert_trade(&trade)?;
     }

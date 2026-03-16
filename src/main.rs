@@ -25,6 +25,8 @@ pub struct AppState {
     pub account_size:         f64,
     pub target_undefined_pct: f64,
     pub max_heat_pct:         f64,
+    pub max_pos_bpr_pct:      f64,   // max BPR per position as % of account (default 5.0)
+    pub monthly_pnl_target:   f64,
     pub current_vix:          Option<f64>,
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
@@ -35,8 +37,15 @@ pub struct AppState {
     pub collapsed_action_kinds: HashSet<theta_vault_rust::actions::AlertKind>,
     pub pulse_on:             bool,
 
-    // Dashboard KPI popup
-    pub dash_kpi_popup: bool,
+    // Runtime context
+    pub under_tauri: bool,
+
+    // KPI info popups
+    pub dash_kpi_popup:     bool,
+    pub perf_kpi_popup:     bool,
+    pub journal_help_popup: bool,
+    pub journal_help_scroll: u16,
+    pub journal_help_max_scroll: u16,
 
     // Admin settings form
     pub admin_fields:    Vec<EditField>,
@@ -52,6 +61,15 @@ pub struct AppState {
     pub collapsed_years:  HashSet<i32>,
     pub collapsed_months: HashSet<(i32, u32)>,
     pub visual_rows:      Vec<VisualRowKind>,
+    // Chain View mode
+    pub journal_chain_view: bool,
+
+    // Column visibility for trade table (19 columns)
+    pub col_visibility:  [bool; 19],
+    pub show_col_picker: bool,
+
+    // Playbook auto-match candidates (when multiple match on save)
+    pub playbook_match_candidates: Vec<i32>,
 
     // Scrolling
     pub thesis_scroll:      u16,
@@ -61,8 +79,12 @@ pub struct AppState {
     pub detail_total_lines: usize,
     pub dash_open_scroll:     usize,
     pub dash_open_max_scroll: usize,
-    pub perf_scroll:      u16,
-    pub perf_max_scroll:  u16,
+    pub perf_subtab:              usize,   // 0 = OVERVIEW, 1 = ANALYTICS
+    pub perf_overview_scroll:     u16,
+    pub perf_overview_max_scroll: u16,
+    pub perf_analytics_scroll:    u16,
+    pub perf_analytics_max_scroll: u16,
+    pub perf_collapsed:   [bool; 11], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry
 
     // Calendar popup state
     pub cal_year:      i32,
@@ -74,6 +96,7 @@ pub struct AppState {
 
     // Mode flags
     pub show_detail: bool,
+    pub selected_trade_chain: Vec<models::Trade>,
     pub app_mode:    AppMode,
 
     // Journal filter / sort
@@ -111,7 +134,23 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(storage: &storage::Storage) -> Self {
-        let trades    = storage.get_all_trades().unwrap_or_default();
+        let mut trades = storage.get_all_trades().unwrap_or_default();
+        // Backfill BPR for any trade where it was never calculated
+        for t in &mut trades {
+            if t.bpr.is_none() {
+                let bpr = calculations::calculate_bpr(
+                    &t.legs,
+                    t.credit_received,
+                    t.quantity,
+                    t.underlying_price,
+                    t.strategy.as_str(),
+                );
+                if bpr > 0.0 {
+                    t.bpr = Some(bpr);
+                    let _ = storage.set_bpr(t.id, bpr);
+                }
+            }
+        }
         let playbooks = storage.get_all_playbooks().unwrap_or_default();
         let account_size = storage.get_setting("account_size")
             .and_then(|s| s.parse::<f64>().ok())
@@ -122,11 +161,20 @@ impl AppState {
         let max_heat_pct = storage.get_setting("max_heat_pct")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(50.0);
+        let max_pos_bpr_pct = storage.get_setting("max_pos_bpr_pct")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(5.0);
+        let monthly_pnl_target = storage.get_setting("monthly_pnl_target")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let col_visibility_str = storage.get_setting("col_visibility")
+            .unwrap_or_else(|| "1111111111111111111".to_string());
+        let col_visibility = parse_col_visibility(&col_visibility_str);
         let current_vix: Option<f64> = None;
         let beta_map = std::collections::HashMap::new();
         let spy_price: Option<f64> = None;
         let live_prices = std::collections::HashMap::new();
-        let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, target_undefined_pct);
+        let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, target_undefined_pct, monthly_pnl_target);
         let perf_stats = calculations::build_performance_stats(&trades, account_size);
 
         let mut table_state = TableState::default();
@@ -156,6 +204,11 @@ impl AppState {
             account_size,
             target_undefined_pct,
             max_heat_pct,
+            max_pos_bpr_pct,
+            monthly_pnl_target,
+            col_visibility,
+            show_col_picker: false,
+            playbook_match_candidates: Vec::new(),
             current_vix,
             beta_map,
             spy_price,
@@ -165,7 +218,12 @@ impl AppState {
             actions_list_state,
             collapsed_action_kinds: HashSet::new(),
             pulse_on:             false,
-            dash_kpi_popup:  false,
+            under_tauri: std::env::var("THETA_VAULT_TAURI").is_ok(),
+            dash_kpi_popup:     false,
+            perf_kpi_popup:     false,
+            journal_help_popup: false,
+            journal_help_scroll: 0,
+            journal_help_max_scroll: 0,
             admin_fields:    Vec::new(),
             admin_field_idx: 0,
             admin_scroll:    0,
@@ -175,6 +233,7 @@ impl AppState {
             collapsed_years:  HashSet::new(),
             collapsed_months: HashSet::new(),
             visual_rows:      Vec::new(),
+            journal_chain_view: false,
             thesis_scroll:      0,
             thesis_max_scroll:  u16::MAX,
             detail_scroll:      0,
@@ -182,8 +241,12 @@ impl AppState {
             detail_total_lines: 0,
             dash_open_scroll:     0,
             dash_open_max_scroll: usize::MAX,
-            perf_scroll:      0,
-            perf_max_scroll:  u16::MAX,
+            perf_subtab: 0,
+            perf_overview_scroll: 0,
+            perf_overview_max_scroll: u16::MAX,
+            perf_analytics_scroll: 0,
+            perf_analytics_max_scroll: u16::MAX,
+            perf_collapsed:   [false; 11],
             cal_year:      0,
             cal_month:     0,
             cal_day:       0,
@@ -191,6 +254,7 @@ impl AppState {
             cal_is_edit:   false,
             cal_from_mode: AppMode::Normal,
             show_detail:      false,
+            selected_trade_chain: Vec::new(),
             app_mode:         AppMode::Normal,
             filter_status:    FilterStatus::All,
             filter_ticker:    String::new(),
@@ -218,7 +282,7 @@ impl AppState {
     pub fn reload(&mut self, storage: &storage::Storage) {
         self.trades      = storage.get_all_trades().unwrap_or_default();
         self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
-        self.stats       = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct);
+        self.stats       = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct, self.monthly_pnl_target);
         self.perf_stats  = calculations::build_performance_stats(&self.trades, self.account_size);
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
@@ -256,6 +320,10 @@ impl AppState {
     /// Rebuild the visual_rows vec from filter/sort/collapse state.
     /// Must be called any time filter, sort, collapsed_months, or collapsed_years changes.
     pub fn rebuild_visual_rows(&mut self) {
+        if self.journal_chain_view {
+            self.visual_rows = self.build_chain_visual_rows();
+            return;
+        }
         use chrono::Datelike;
         use std::collections::BTreeMap;
 
@@ -294,6 +362,120 @@ impl AppState {
             }
         }
         self.visual_rows = rows;
+    }
+
+    /// Build chain-grouped visual rows (Chain View mode).
+    fn build_chain_visual_rows(&self) -> Vec<VisualRowKind> {
+        use std::collections::{BTreeMap, HashMap, HashSet as HSet};
+
+        // Build forward map: parent_id -> child trade index
+        let mut child_map: HashMap<i32, usize> = HashMap::new();
+        for (i, t) in self.trades.iter().enumerate() {
+            if let Some(parent_id) = t.rolled_from_id {
+                child_map.insert(parent_id, i);
+            }
+        }
+
+        // Set of all known trade IDs
+        let trade_ids: HSet<i32> = self.trades.iter().map(|t| t.id).collect();
+
+        // Collect root indices grouped by ticker (BTreeMap = alpha sort)
+        let mut ticker_roots: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, t) in self.trades.iter().enumerate() {
+            let is_root = t.rolled_from_id
+                .map_or(true, |pid| !trade_ids.contains(&pid));
+            if is_root {
+                ticker_roots.entry(t.ticker.clone()).or_default().push(i);
+            }
+        }
+
+        let mut rows = Vec::new();
+
+        for (ticker, root_indices) in &ticker_roots {
+            // Ticker filter
+            if !self.filter_ticker.is_empty()
+                && !ticker.to_uppercase().contains(&self.filter_ticker.to_uppercase())
+            {
+                continue;
+            }
+
+            // Build chains for this ticker
+            let mut chains: Vec<Vec<usize>> = Vec::new();
+            for &root_idx in root_indices {
+                let mut chain = Vec::new();
+                let mut cur = root_idx;
+                loop {
+                    chain.push(cur);
+                    let cur_id = self.trades[cur].id;
+                    if let Some(&next) = child_map.get(&cur_id) {
+                        cur = next;
+                    } else {
+                        break;
+                    }
+                }
+                chains.push(chain);
+            }
+
+            // Sort chains: most recent entry first
+            chains.sort_by(|a, b| {
+                self.trades[b[0]].trade_date.cmp(&self.trades[a[0]].trade_date)
+            });
+
+            // Apply status filter at chain level
+            let filtered: Vec<&Vec<usize>> = chains.iter().filter(|chain| {
+                let chain_trades: Vec<&models::Trade> = chain.iter().map(|&i| &self.trades[i]).collect();
+                match self.filter_status {
+                    FilterStatus::All     => true,
+                    FilterStatus::Open    => chain_trades.iter().any(|t| t.is_open()),
+                    FilterStatus::Closed  => chain_trades.iter().all(|t| !t.is_open() && t.exit_reason.as_deref() != Some("expired")),
+                    FilterStatus::Expired => chain_trades.last().map_or(false, |t| t.exit_reason.as_deref() == Some("expired")),
+                }
+            }).collect();
+
+            if filtered.is_empty() {
+                continue;
+            }
+
+            // Ticker-level stats
+            let open_count  = filtered.iter().filter(|c| c.iter().any(|&i| self.trades[i].is_open())).count();
+            let closed_count = filtered.iter().filter(|c| c.iter().all(|&i| !self.trades[i].is_open())).count();
+            let net_pnl: f64 = filtered.iter()
+                .flat_map(|c| c.iter())
+                .filter_map(|&i| self.trades[i].pnl)
+                .sum();
+
+            rows.push(VisualRowKind::TickerHeader {
+                ticker: ticker.clone(),
+                open_count,
+                closed_count,
+                net_pnl,
+            });
+
+            for chain in &filtered {
+                let root_trade = &self.trades[chain[0]];
+                let chain_owned: Vec<models::Trade> = chain.iter().map(|&i| self.trades[i].clone()).collect();
+                let metrics = calculations::calculate_campaign_metrics(&chain_owned);
+                let is_open = chain.iter().any(|&i| self.trades[i].is_open());
+                let chain_pnl = metrics.total_pnl;
+
+                rows.push(VisualRowKind::ChainHeader {
+                    root_id: root_trade.id,
+                    ticker: ticker.clone(),
+                    strategy: root_trade.strategy.badge().to_string(),
+                    roll_count: metrics.roll_count as i32,
+                    net_credit: metrics.net_credit,
+                    chain_pnl,
+                    is_open,
+                    entry_date: root_trade.trade_date,
+                });
+
+                for &ti in chain.iter() {
+                    rows.push(VisualRowKind::Trade(ti));
+                }
+            }
+        }
+
+        rows
     }
 
     /// Returns indices into self.trades for the current filter/sort.
@@ -354,7 +536,8 @@ impl AppState {
         let idx = self.table_state.selected()?;
         match self.visual_rows.get(idx)? {
             VisualRowKind::Trade(ti) => self.trades.get(*ti),
-            VisualRowKind::YearHeader { .. } | VisualRowKind::MonthHeader { .. } => None,
+            VisualRowKind::YearHeader { .. } | VisualRowKind::MonthHeader { .. }
+            | VisualRowKind::TickerHeader { .. } | VisualRowKind::ChainHeader { .. } => None,
         }
     }
 
@@ -407,8 +590,14 @@ impl AppState {
                 }
             }
             5 => {
-                if self.perf_scroll < self.perf_max_scroll {
-                    self.perf_scroll = self.perf_scroll.saturating_add(1);
+                if self.perf_subtab == 0 {
+                    if self.perf_overview_scroll < self.perf_overview_max_scroll {
+                        self.perf_overview_scroll = self.perf_overview_scroll.saturating_add(1);
+                    }
+                } else {
+                    if self.perf_analytics_scroll < self.perf_analytics_max_scroll {
+                        self.perf_analytics_scroll = self.perf_analytics_scroll.saturating_add(1);
+                    }
                 }
             }
             _ => {}
@@ -458,9 +647,61 @@ impl AppState {
                 self.dash_open_scroll = self.dash_open_scroll.saturating_sub(1);
             }
             5 => {
-                self.perf_scroll = self.perf_scroll.saturating_sub(1);
+                if self.perf_subtab == 0 {
+                    self.perf_overview_scroll = self.perf_overview_scroll.saturating_sub(1);
+                } else {
+                    self.perf_analytics_scroll = self.perf_analytics_scroll.saturating_sub(1);
+                }
             }
             _ => {}
+        }
+    }
+
+    /// While in detail mode, move selection to the next Trade row (wraps around).
+    pub fn nav_detail_next_trade(&mut self) {
+        let len = self.visual_rows.len();
+        if len == 0 { return; }
+        let current = self.table_state.selected().unwrap_or(0);
+        // Forward pass
+        for i in (current + 1)..len {
+            if matches!(self.visual_rows[i], VisualRowKind::Trade(_)) {
+                self.table_state.select(Some(i));
+                self.detail_scroll = 0;
+                return;
+            }
+        }
+        // Wrap: search from beginning
+        for i in 0..=current {
+            if matches!(self.visual_rows[i], VisualRowKind::Trade(_)) {
+                self.table_state.select(Some(i));
+                self.detail_scroll = 0;
+                return;
+            }
+        }
+    }
+
+    /// While in detail mode, move selection to the previous Trade row (wraps around).
+    pub fn nav_detail_prev_trade(&mut self) {
+        let len = self.visual_rows.len();
+        if len == 0 { return; }
+        let current = self.table_state.selected().unwrap_or(0);
+        // Backward pass
+        if current > 0 {
+            for i in (0..current).rev() {
+                if matches!(self.visual_rows[i], VisualRowKind::Trade(_)) {
+                    self.table_state.select(Some(i));
+                    self.detail_scroll = 0;
+                    return;
+                }
+            }
+        }
+        // Wrap: search from end
+        for i in (current..len).rev() {
+            if matches!(self.visual_rows[i], VisualRowKind::Trade(_)) {
+                self.table_state.select(Some(i));
+                self.detail_scroll = 0;
+                return;
+            }
         }
     }
 
@@ -502,6 +743,14 @@ impl AppState {
         self.analyze_trade_id = Some(trade.id);
         self.app_mode         = AppMode::AnalyzeTrade;
         self.show_detail      = false;
+        // Signal Tauri wrapper via stdout (same fd as Ratatui — guaranteed through PTY master).
+        // Ignored when running standalone: xterm interprets unknown OSC 9999 as no-op.
+        if let Ok(json) = serde_json::to_string(trade) {
+            use std::io::Write;
+            let seq = format!("\x1b]9999;THETAVAULT_CHART:{}\x07", json);
+            let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+            let _ = std::io::stdout().lock().flush();
+        }
     }
 
     pub fn edit_key_char(&mut self, c: char) {
@@ -633,6 +882,13 @@ impl AppState {
     pub fn build_updated_trade(&self, original: &models::Trade) -> models::Trade {
         let mut t = original.clone();
         apply_edit_fields_to_trade(&self.edit_fields, &mut t);
+        // L8: auto-match playbook if none assigned
+        if t.playbook_id.is_none() {
+            let matches = calculations::find_matching_playbooks(&t, &self.playbooks);
+            if matches.len() == 1 {
+                t.playbook_id = Some(matches[0]);
+            }
+        }
         t
     }
 
@@ -729,6 +985,13 @@ impl AppState {
     pub fn build_closed_trade(&self, original: &models::Trade) -> models::Trade {
         let mut t = original.clone();
         apply_close_fields_to_trade(&self.close_fields, &mut t);
+        // L8: auto-match playbook if none assigned
+        if t.playbook_id.is_none() {
+            let matches = calculations::find_matching_playbooks(&t, &self.playbooks);
+            if matches.len() == 1 {
+                t.playbook_id = Some(matches[0]);
+            }
+        }
         t
     }
 
@@ -750,7 +1013,7 @@ impl AppState {
     }
 
     pub fn start_admin_settings(&mut self) {
-        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.target_undefined_pct);
+        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target);
         self.admin_field_idx = 0;
         self.admin_scroll    = 0;
         self.app_mode        = AppMode::AdminSettings;
@@ -1286,8 +1549,11 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
     let exit_reasons = vec!["closed".to_string(), "expired".to_string(), "rolled".to_string(), "stopped".to_string()];
     f.push(EditField::select("Exit Reason", "0", exit_reasons));
     f.push(EditField::number("Underlying @ Close", &t.underlying_price.map(|v| format!("{:.2}", v)).unwrap_or_default()));
-    f.push(EditField::number("IV at Close",  &t.iv_at_close.map(|v| format!("{:.1}", v)).unwrap_or_default()));
-    f.push(EditField::number("Delta at Close", &t.delta_at_close.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+    f.push(EditField::number("IV at Close",    &t.iv_at_close.map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::number("Delta at Close", &t.delta_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
+    f.push(EditField::number("Theta at Close", &t.theta_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
+    f.push(EditField::number("Gamma at Close", &t.gamma_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
+    f.push(EditField::number("Vega at Close",  &t.vega_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
     f.push(EditField::number("Close Commission",  ""));
 
     // Per-leg close premiums
@@ -1311,6 +1577,9 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.underlying_price_at_close = field_opt_f64(fields, "Underlying @ Close");
     t.iv_at_close    = field_opt_f64(fields, "IV at Close");
     t.delta_at_close = field_opt_f64(fields, "Delta at Close");
+    t.theta_at_close = field_opt_f64(fields, "Theta at Close");
+    t.gamma_at_close = field_opt_f64(fields, "Gamma at Close");
+    t.vega_at_close  = field_opt_f64(fields, "Vega at Close");
     let close_comm = field_opt_f64(fields, "Close Commission").unwrap_or(0.0);
 
     // Per-leg close premiums
@@ -1494,22 +1763,26 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
 // Admin settings helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, target_undefined_pct: f64) -> Vec<EditField> {
+fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64) -> Vec<EditField> {
     vec![
         EditField::number("Account Size", &format!("{:.2}", account_size))
             .with_section("── Account ───────────────────────────────────────────────────────"),
+        EditField::number("Monthly P&L Target ($)", &format!("{:.2}", monthly_pnl_target)),
         EditField::number("Max Heat %",         &format!("{:.1}", max_heat_pct))
             .with_section("── Risk Limits (tastytrade defaults) ─────────────────────────────"),
+        EditField::number("Max Pos BPR %",      &format!("{}", max_pos_bpr_pct)),
         EditField::number("Target Undefined %", &format!("{:.1}", target_undefined_pct)),
     ]
 }
 
 fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
-    -> (Option<f64>, Option<f64>, Option<f64>)
+    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)
 {
-    let mut new_account     = None;
-    let mut new_max_heat    = None;
+    let mut new_account      = None;
+    let mut new_max_heat     = None;
+    let mut new_max_pos_bpr  = None;
     let mut new_target_undef = None;
+    let mut new_monthly_tgt  = None;
     for field in fields {
         match field.label.as_str() {
             "Account Size" => {
@@ -1518,10 +1791,22 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
                     new_account = Some(v);
                 }
             }
+            "Monthly P&L Target ($)" => {
+                if let Ok(v) = field.value.parse::<f64>() {
+                    let _ = storage.set_setting("monthly_pnl_target", &v.to_string());
+                    new_monthly_tgt = Some(v);
+                }
+            }
             "Max Heat %" => {
                 if let Ok(v) = field.value.parse::<f64>() {
                     let _ = storage.set_setting("max_heat_pct", &v.to_string());
                     new_max_heat = Some(v);
+                }
+            }
+            "Max Pos BPR %" => {
+                if let Ok(v) = field.value.parse::<f64>() {
+                    let _ = storage.set_setting("max_pos_bpr_pct", &v.to_string());
+                    new_max_pos_bpr = Some(v);
                 }
             }
             "Target Undefined %" => {
@@ -1533,7 +1818,38 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
             _ => {}
         }
     }
-    (new_account, new_max_heat, new_target_undef)
+    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Column visibility helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn parse_col_visibility(s: &str) -> [bool; 19] {
+    let mut vis = [true; 19];
+    let chars: Vec<char> = s.chars().collect();
+    let padded: Vec<char> = if chars.len() == 17 {
+        // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
+        let mut p = chars;
+        p.insert(9, '1');  // BPR defaults ON
+        p.insert(10, '1'); // BPR% defaults ON
+        p
+    } else if chars.len() == 18 {
+        // Previous 18-char: insert BPR% at pos 10
+        let mut p = chars;
+        p.insert(10, '1'); // BPR% defaults ON
+        p
+    } else {
+        chars
+    };
+    for (i, ch) in padded.iter().take(19).enumerate() {
+        vis[i] = *ch != '0';
+    }
+    vis
+}
+
+fn col_visibility_to_string(vis: &[bool; 19]) -> String {
+    vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1597,6 +1913,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 app.stats = calculations::build_portfolio_stats(
                     &app.trades, app.account_size, app.current_vix,
                     &app.beta_map, app.spy_price, app.target_undefined_pct,
+                    app.monthly_pnl_target,
                 );
                 app.alerts = theta_vault_rust::actions::compute_alerts(
                     &app.trades, &app.live_prices, app.account_size, app.current_vix,
@@ -1663,13 +1980,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Refresh perf scroll limit
+        // Refresh perf scroll limits (overview + analytics)
         if app.selected_tab == 5 {
             if let Ok(size) = term.size() {
                 let content_w = size.width.saturating_sub(2) as usize;
-                let visible_h = size.height.saturating_sub(6) as usize; // tab_bar(3)+footer(1)+borders(2)
-                let total = theta_vault_rust::ui::count_perf_lines(&app.stats, &app.perf_stats, content_w);
-                app.perf_max_scroll = total.saturating_sub(visible_h) as u16;
+                let visible_h = size.height.saturating_sub(8) as usize;
+                let chart_h: usize = if app.perf_collapsed[3] { 3 } else { 18 };
+                let overview_text_h = visible_h.saturating_sub(chart_h);
+
+                app.perf_overview_max_scroll = theta_vault_rust::ui::count_perf_overview_lines(
+                    &app.stats, &app.perf_stats, content_w, &app.perf_collapsed
+                ).saturating_sub(overview_text_h) as u16;
+
+                app.perf_analytics_max_scroll = theta_vault_rust::ui::count_perf_analytics_lines(
+                    &app.stats, &app.perf_stats, content_w, &app.perf_collapsed, &app.spy_monthly
+                ).saturating_sub(visible_h) as u16;
             }
         }
 
@@ -1677,7 +2002,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if app.show_detail {
             if let Some(i) = app.table_state.selected() {
                 if let Some(VisualRowKind::Trade(ti)) = app.visual_rows.get(i) {
-                    app.detail_total_lines = theta_vault_rust::ui::count_detail_lines(&app.trades[*ti]);
+                    let left_n  = theta_vault_rust::ui::count_detail_lines_left(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks);
+                    let right_n = theta_vault_rust::ui::count_detail_lines_right(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks);
+                    app.detail_total_lines = left_n.max(right_n);
                     if let Ok(size) = term.size() {
                         // Detail panel = 45% of content area (tabs+footer = 4 rows), minus 2 borders
                         let content_h = size.height.saturating_sub(4) as usize;
@@ -1689,6 +2016,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
+        // VIX-adaptive max heat: use tastytrade regime target, capped by user's ceiling
+        let effective_max_heat = app.stats.vix
+            .map(|v| calculations::vix_max_heat(v).min(app.max_heat_pct))
+            .unwrap_or(app.max_heat_pct);
+
         term.draw(|f| ui::draw_ui(
             f,
             display_count,
@@ -1697,7 +2029,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &app.trades,
             &app.stats,
             &app.perf_stats,
-            app.perf_scroll,
+            app.perf_subtab,
+            app.perf_overview_scroll,
+            app.perf_analytics_scroll,
             &app.playbooks,
             app.selected_tab,
             &mut app.table_state,
@@ -1705,6 +2039,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.thesis_scroll,
             app.show_detail,
             app.detail_scroll,
+            &app.selected_trade_chain,
             app.dash_open_scroll,
             app.filter_status,
             &app.filter_ticker,
@@ -1724,8 +2059,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &mut app.actions_list_state,
             &app.collapsed_action_kinds,
             app.pulse_on,
+            app.under_tauri,
             app.dash_kpi_popup,
+            app.perf_kpi_popup,
+            app.journal_help_popup,
+            app.journal_help_scroll,
+            &mut app.journal_help_max_scroll,
+            effective_max_heat,
             app.max_heat_pct,
+            app.max_pos_bpr_pct,
             &app.admin_fields,
             app.admin_field_idx,
             app.admin_scroll,
@@ -1734,6 +2076,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.cal_day,
             &app.thesis_edit_buf,
             &app.spy_monthly,
+            &app.live_prices,
+            &app.perf_collapsed,
+            &app.col_visibility,
+            app.show_col_picker,
+            app.journal_chain_view,
         ))?;
 
         let has_event = event::poll(std::time::Duration::from_millis(750))?;
@@ -1765,6 +2112,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         app.rebuild_visual_rows();
                         let len = app.visual_rows.len();
                         app.table_state.select(if len == 0 { None } else { Some(0) });
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ── Popups (KPIs, Help) ──────────────────────────────────────────────────
+            if app.journal_help_popup && app.selected_tab == 1 {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
+                        app.journal_help_popup = false;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if app.journal_help_scroll > 0 {
+                            app.journal_help_scroll -= 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.journal_help_scroll < app.journal_help_max_scroll {
+                            app.journal_help_scroll += 1;
+                        }
+                    }
+                    KeyCode::PageUp => {
+                        app.journal_help_scroll = app.journal_help_scroll.saturating_sub(10);
+                    }
+                    KeyCode::PageDown => {
+                        app.journal_help_scroll = std::cmp::min(
+                            app.journal_help_scroll + 10,
+                            app.journal_help_max_scroll
+                        );
                     }
                     _ => {}
                 }
@@ -1886,8 +2263,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // ── Analyze trade mode (payoff chart) ────────────────────────────
             if app.app_mode == AppMode::AnalyzeTrade {
-                if key.code == KeyCode::Esc {
-                    app.cancel_mode();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('a') | KeyCode::Char('A') => {
+                        {
+                            use std::io::Write;
+                            let _ = std::io::stdout().lock().write_all(b"\x1b]9999;THETAVAULT_CHART_CLOSE\x07");
+                            let _ = std::io::stdout().lock().flush();
+                        }
+                        app.cancel_mode();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let i = app.table_state.selected().unwrap_or(0);
+                        if i > 0 { 
+                            app.table_state.select(Some(i - 1));
+                            if let Some(t) = app.selected_trade_cloned() {
+                                app.start_analyze(&t);
+                            }
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let i = app.table_state.selected().unwrap_or(0);
+                        if i + 1 < app.visual_rows.len() {
+                            app.table_state.select(Some(i + 1));
+                            if let Some(t) = app.selected_trade_cloned() {
+                                app.start_analyze(&t);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1910,10 +2313,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let fields = app.admin_fields.clone();
-                        let (new_acct, new_heat, new_undef) = apply_admin_fields(&fields, &storage);
-                        if let Some(v) = new_acct  { app.account_size         = v; }
-                        if let Some(v) = new_heat  { app.max_heat_pct         = v; }
-                        if let Some(v) = new_undef { app.target_undefined_pct = v; }
+                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly) = apply_admin_fields(&fields, &storage);
+                        if let Some(v) = new_acct    { app.account_size         = v; }
+                        if let Some(v) = new_heat    { app.max_heat_pct         = v; }
+                        if let Some(v) = new_pos_bpr { app.max_pos_bpr_pct      = v; }
+                        if let Some(v) = new_undef   { app.target_undefined_pct = v; }
+                        if let Some(v) = new_monthly { app.monthly_pnl_target   = v; }
                         app.cancel_mode();
                         app.reload(&storage);
                     }
@@ -2034,14 +2439,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.selected_tab = (app.selected_tab + 1) % 6;
                     app.show_detail  = false;
                     app.detail_scroll = 0;
-                    app.perf_scroll   = 0;
+                    app.perf_overview_scroll = 0;
+                    app.perf_analytics_scroll = 0;
                     app.cancel_mode();
                 }
                 KeyCode::BackTab => {
                     app.selected_tab = if app.selected_tab == 0 { 5 } else { app.selected_tab - 1 };
                     app.show_detail  = false;
                     app.detail_scroll = 0;
-                    app.perf_scroll   = 0;
+                    app.perf_overview_scroll = 0;
+                    app.perf_analytics_scroll = 0;
                     app.cancel_mode();
                 }
 
@@ -2053,6 +2460,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Dashboard KPI popup toggle
                 KeyCode::Char('i') | KeyCode::Char('I') if app.selected_tab == 0 => {
                     app.dash_kpi_popup = !app.dash_kpi_popup;
+                }
+
+                // Journal help popup toggle
+                KeyCode::Char('i') | KeyCode::Char('I') if app.selected_tab == 1 => {
+                    app.journal_help_popup = !app.journal_help_popup;
+                    if app.journal_help_popup {
+                        app.journal_help_scroll = 0;
+                    }
+                }
+
+                // Performance KPI popup toggle
+                KeyCode::Char('i') | KeyCode::Char('I') if app.selected_tab == 5 => {
+                    app.perf_kpi_popup = !app.perf_kpi_popup;
+                }
+
+                // Performance sub-tab navigation
+                KeyCode::Char('[') if app.selected_tab == 5 => {
+                    if app.perf_subtab > 0 {
+                        app.perf_subtab -= 1;
+                        app.perf_overview_scroll = 0;
+                        app.perf_analytics_scroll = 0;
+                    }
+                }
+                KeyCode::Char(']') | KeyCode::Char('/') if app.selected_tab == 5 => {
+                    app.perf_subtab = if app.perf_subtab == 0 { 1 } else { 0 };
+                    app.perf_overview_scroll = 0;
+                    app.perf_analytics_scroll = 0;
+                }
+
+                // Performance section collapse/expand (keys 1-9, context-sensitive)
+                KeyCode::Char(c) if app.selected_tab == 5 && ('1'..='9').contains(&c) => {
+                    let ki = (c as usize) - ('1' as usize);
+                    let gi: Option<usize> = if app.perf_subtab == 0 {
+                        match ki { 0 => Some(0), 1 => Some(1), 2 => Some(3), _ => None }
+                    } else {
+                        match ki { 0 => Some(2), 1 => Some(4), 2 => Some(5), 3 => Some(6), 4 => Some(7), 5 => Some(8), _ => None }
+                    };
+                    if let Some(gi) = gi {
+                        app.perf_collapsed[gi] = !app.perf_collapsed[gi];
+                        app.perf_overview_scroll = 0;
+                        app.perf_analytics_scroll = 0;
+                    }
                 }
 
                 // Admin tab — open settings editor
@@ -2067,10 +2516,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 // Journal-specific controls
                 _ if app.selected_tab == 1 => {
+                    // Column picker intercepts number/letter keys when open
+                    if app.show_col_picker {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('v') => {
+                                app.show_col_picker = false;
+                                let s = col_visibility_to_string(&app.col_visibility);
+                                let _ = storage.set_setting("col_visibility", &s);
+                            }
+                            KeyCode::Char(c) => {
+                                let idx: Option<usize> = match c {
+                                    '1' => Some(0), '2' => Some(1), '3' => Some(2),
+                                    '4' => Some(3), '5' => Some(4), '6' => Some(5),
+                                    '7' => Some(6), '8' => Some(7), '9' => Some(8),
+                                    'a' => Some(9),  // BPR
+                                    'b' => Some(10), // BPR%
+                                    'c' => Some(11), // MaxPft
+                                    'd' => Some(12), // P&L
+                                    'e' => Some(13), // ROC%
+                                    'f' => Some(14), // $V/d
+                                    'g' => Some(15), // DTE
+                                    'h' => Some(16), // Exit
+                                    'i' => Some(17), // Held
+                                    'j' => Some(18), // Status
+                                    _ => None,
+                                };
+                                if let Some(i) = idx {
+                                    app.col_visibility[i] = !app.col_visibility[i];
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         // Filter status cycle (lowercase f)
                         KeyCode::Char('f') => {
                             app.filter_status = app.filter_status.next();
+                            app.show_detail   = false;
                             app.rebuild_visual_rows();
                             let len = app.visual_rows.len();
                             app.table_state.select(if len == 0 { None } else { Some(0) });
@@ -2085,6 +2569,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // Ticker search
                         KeyCode::Char('/') => {
                             app.app_mode = AppMode::FilterInput;
+                            app.show_detail = false;
                         }
                         // Sort cycle
                         KeyCode::Char('s') => {
@@ -2096,9 +2581,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             app.sort_desc = !app.sort_desc;
                             app.rebuild_visual_rows();
                         }
+                        // Toggle Chain View (grouped by ticker → roll chain)
+                        KeyCode::Char('G') => {
+                            app.journal_chain_view = !app.journal_chain_view;
+                            app.show_detail = false;
+                            app.rebuild_visual_rows();
+                            let len = app.visual_rows.len();
+                            app.table_state.select(if len == 0 { None } else { Some(0) });
+                        }
                         // Toggle detail
                         KeyCode::Char('d') | KeyCode::Char('D') => {
-                            if app.selected_trade().is_some() {
+                            if let Some(trade) = app.selected_trade() {
+                                if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                    app.selected_trade_chain = chain;
+                                } else {
+                                    app.selected_trade_chain = vec![trade.clone()];
+                                }
                                 app.show_detail   = !app.show_detail;
                                 app.detail_scroll = 0;
                             }
@@ -2122,6 +2620,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             if let Some(t) = app.selected_trade_cloned() {
                                 app.start_analyze(&t);
                             }
+                        }
+                        // Column visibility picker
+                        KeyCode::Char('v') => {
+                            app.show_col_picker = !app.show_col_picker;
                         }
                         // Delete trade
                         KeyCode::Char('x') | KeyCode::Delete => {
@@ -2160,16 +2662,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                     }
                                     Some(VisualRowKind::Trade(_)) => {
+                                        if let Some(trade) = app.selected_trade() {
+                                            if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                                app.selected_trade_chain = chain;
+                                            } else {
+                                                app.selected_trade_chain = vec![trade.clone()];
+                                            }
+                                        }
                                         app.show_detail   = !app.show_detail;
                                         app.detail_scroll = 0;
                                     }
+                                    Some(VisualRowKind::TickerHeader { .. })
+                                    | Some(VisualRowKind::ChainHeader { .. }) => {}
                                     None => {}
                                 }
                             }
                         }
                         // Navigation
-                        KeyCode::Down | KeyCode::Char('j') => app.nav_down(),
-                        KeyCode::Up   | KeyCode::Char('k') => app.nav_up(),
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.nav_down();
+                            if app.show_detail {
+                                if let Some(trade) = app.selected_trade() {
+                                    if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                        app.selected_trade_chain = chain;
+                                    } else {
+                                        app.selected_trade_chain = vec![trade.clone()];
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.nav_up();
+                            if app.show_detail {
+                                if let Some(trade) = app.selected_trade() {
+                                    if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                        app.selected_trade_chain = chain;
+                                    } else {
+                                        app.selected_trade_chain = vec![trade.clone()];
+                                    }
+                                }
+                            }
+                        }
                         KeyCode::PageDown => for _ in 0..10 { app.nav_down(); },
                         KeyCode::PageUp   => for _ in 0..10 { app.nav_up(); },
                         KeyCode::Home => {
@@ -2183,6 +2716,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             if len > 0 {
                                 app.table_state.select(Some(len - 1));
                                 app.detail_scroll = 0;
+                            }
+                        }
+                        // Navigate to next/prev trade while staying in detail mode
+                        KeyCode::Right if app.show_detail => {
+                            app.nav_detail_next_trade();
+                            if let Some(trade) = app.selected_trade() {
+                                if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                    app.selected_trade_chain = chain;
+                                } else {
+                                    app.selected_trade_chain = vec![trade.clone()];
+                                }
+                            }
+                        }
+                        KeyCode::Left if app.show_detail => {
+                            app.nav_detail_prev_trade();
+                            if let Some(trade) = app.selected_trade() {
+                                if let Ok(chain) = storage.get_roll_chain(trade.id) {
+                                    app.selected_trade_chain = chain;
+                                } else {
+                                    app.selected_trade_chain = vec![trade.clone()];
+                                }
                             }
                         }
                         _ => {}

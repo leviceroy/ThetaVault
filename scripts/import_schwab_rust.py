@@ -119,22 +119,43 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float, opt_type: str
 
 
 def solve_iv(market_price: float, S: float, K: float, T: float, r: float,
-             opt_type: str, initial: float = 0.25) -> Optional[float]:
-    """Solve for implied volatility using Newton-Raphson."""
+             opt_type: str, initial: float = 0.5) -> Optional[float]:
+    """Solve for implied volatility using Newton-Raphson, falling back to bisection."""
     if market_price <= 0 or S <= 0 or K <= 0 or T <= 0:
         return None
+    
+    # Check if price is within boundary (market_price cannot be less than intrinsic value)
+    intrinsic = max(0, S - K) if opt_type == 'call' else max(0, K - S)
+    if market_price < intrinsic:
+        return 0.01
+
+    # Newton-Raphson
     sigma = initial
     for _ in range(50):
         price = bs_price(S, K, T, r, sigma, opt_type)
         d1 = bs_d1(S, K, T, r, sigma)
         vega = S * normal_pdf(d1) * math.sqrt(T)
-        if vega < 1e-10:
+        if vega < 1e-12:
             break
-        sigma -= (price - market_price) / vega
-        sigma = max(0.01, min(sigma, 5.0))
-        if abs(price - market_price) < 1e-6:
+        diff = price - market_price
+        if abs(diff) < 1e-6:
+            return sigma
+        sigma -= diff / vega
+        if sigma <= 0 or sigma > 8.0:
             break
-    return sigma
+
+    # Bisection fallback
+    low, high = 0.001, 8.0
+    for _ in range(100):
+        mid = (low + high) / 2
+        price = bs_price(S, K, T, r, mid, opt_type)
+        if abs(price - market_price) < 1e-5:
+            return mid
+        if price < market_price:
+            low = mid
+        else:
+            high = mid
+    return mid if (low < high) else None
 
 
 def option_greeks(S: float, K: float, T: float, r: float, sigma: float,
@@ -258,12 +279,7 @@ def parse_date(date_str: str) -> datetime:
 
 def find_close(closes: List[Dict], expirations: List[Dict], leg: Dict,
                used_closes: set, used_expirations: set, is_orphan_match: bool = False) -> tuple:
-    """Find closing price, date, reason, and fees for a leg.
-    Only allows matching if is_orphan_match is True, preventing new trades
-    from accidentally matching their own rolling transactions."""
-    if not is_orphan_match:
-        return None, None, None, 0
-        
+    """Find closing price, date, reason, and fees for a leg."""
     for i, c in enumerate(closes):
         if i in used_closes:
             continue
@@ -351,9 +367,15 @@ def enrich_trades_with_greeks(trades: List[Dict]) -> int:
     all_dates = []
     for t in trades:
         by_ticker[t['ticker']].append(t)
-        all_dates.append(t['tradeDate'][:10])
-        if t.get('exitTime'):
-            all_dates.append(t['exitTime'][:10])
+        td = t.get('tradeDate')
+        if td:
+            all_dates.append(td[:10])
+        et = t.get('exitTime')
+        if et:
+            all_dates.append(et[:10])
+
+    if not all_dates:
+        return 0
 
     # Fetch VIX for the entire range of this batch
     vix_start = min(all_dates)
@@ -370,9 +392,15 @@ def enrich_trades_with_greeks(trades: List[Dict]) -> int:
         # Find date range for THIS ticker
         ticker_dates = []
         for t in ticker_trades:
-            ticker_dates.append(t['tradeDate'][:10])
-            if t.get('exitTime'):
-                ticker_dates.append(t['exitTime'][:10])
+            td = t.get('tradeDate')
+            if td:
+                ticker_dates.append(td[:10])
+            et = t.get('exitTime')
+            if et:
+                ticker_dates.append(et[:10])
+
+        if not ticker_dates:
+            continue
 
         start = min(ticker_dates)
         end = max(ticker_dates)
@@ -627,7 +655,7 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                 if not found_leg_close:
                     new_legs.append(leg)
 
-            if matched_legs > 0 and matched_legs == len(t_db['legs']):
+            if matched_legs > 0:
                 # Build a fingerprint for this specific close event so it can't re-fire
                 # on the next import run when the same overlapping date range is used.
                 oc_dates_str = ','.join(sorted(d.strftime('%Y-%m-%d') for d in close_dates)) if close_dates else 'unknown'
@@ -636,7 +664,6 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                     # Already processed — skip to avoid double-closing the trade.
                     continue
 
-                print(f"  Matched orphan close for {t_db['ticker']} ID {t_db['id']} ({t_db['strategy']})")
                 used_closes.update(temp_used_closes)
 
                 updated_trade = {
@@ -653,13 +680,15 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                     'is_update': True
                 }
 
-                # Use the actual BTC/STC transaction date (latest leg if multi-leg),
-                # not datetime.now() which produces the wrong date.
-                if close_dates:
-                    updated_trade['exitTime'] = max(close_dates).strftime('%Y-%m-%dT16:00:00Z')
+                if matched_legs == len(t_db['legs']):
+                    print(f"  Matched orphan close for {t_db['ticker']} ID {t_db['id']} ({t_db['strategy']})")
+                    if close_dates:
+                        updated_trade['exitTime'] = max(close_dates).strftime('%Y-%m-%dT16:00:00Z')
+                    else:
+                        updated_trade['exitTime'] = datetime.now().strftime('%Y-%m-%dT16:00:00Z')
+                    updated_trade['exitReason'] = 'closed'
                 else:
-                    updated_trade['exitTime'] = datetime.now().strftime('%Y-%m-%dT16:00:00Z')
-                updated_trade['exitReason'] = 'closed'
+                    print(f"  Matched partial orphan close ({matched_legs}/{len(t_db['legs'])}) for {t_db['ticker']} ID {t_db['id']} ({t_db['strategy']})")
 
                 # Persist fingerprint so re-running the same file won't re-close this trade.
                 conn.execute(
@@ -842,8 +871,9 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
     # SCV/SPV already in the DB (incremental narrow-window imports use this path)
     trades = upgrade_verticals_to_ic(trades, conn)
 
-    # Handle rolled IC sides: IC where one side was BTC/STC and replaced with new strikes
-    trades = merge_rolled_ic_sides(trades)
+    # REMOVED: merge_rolled_ic_sides(trades)
+    # Merging rolled sides collapses campaign history. We want separate linked trades
+    # so the Chain View (G) correctly shows the progression of the position.
 
     # Detect rolls: closed trade followed by new trade with same ticker on same/next day
     detect_rolls(trades)
@@ -1012,6 +1042,12 @@ def upgrade_verticals_to_ic(trades: List[Dict], conn: Optional[sqlite3.Connectio
             continue
         exp_norm = trade['expirationDate'][:10]
         key = (trade['ticker'], exp_norm, trade['quantity'])
+
+        # CAUTIOUS PROMOTION: Only promote if there isn't already a complex campaign
+        # (prevents re-merging manual splits like IWM/QQQ)
+        ticker_campaign_count = sum(1 for row in db_rows if row['ticker'] == trade['ticker'] and row['expiration_date'][:10] == exp_norm)
+        if ticker_campaign_count > 1:
+            continue
 
         if trade['spreadType'] == 'short_put_vertical' and key in db_scv_by_key:
             db_rec = db_scv_by_key.pop(key)  # pop prevents double-use
@@ -1228,7 +1264,7 @@ def merge_rolled_ic_sides(trades: List[Dict]) -> List[Dict]:
                 new_call_credit  = sc_leg['premium'] - lc_leg['premium']
                 total_credit     = round(put_credit + orig_call_credit - call_close_cost + new_call_credit, 2)
 
-                # Use the roll date as the trade date (when IC reached current form)
+                # Preserving original entry date for campaign tracking
                 roll_date = scv['tradeDate'][:10]
                 ic = dict(t)
                 ic['legs']           = new_legs
@@ -1237,13 +1273,25 @@ def merge_rolled_ic_sides(trades: List[Dict]) -> List[Dict]:
                 ic['longStrike']     = lp_leg['strike']
                 ic['shortPremium']   = sp_leg['premium']
                 ic['longPremium']    = lp_leg['premium']
-                ic['tradeDate']      = roll_date
-                ic['entryTime']      = f"{roll_date}T10:00:00Z"
-                # Clear exitTime — the IC is not closed (put side still open, new call side open)
+                # Keep original tradeDate and entryTime from 't'
+                
+                # Update notes with roll history
+                old_notes = t.get('notes') or ""
+                roll_note = f"Rolled calls on {roll_date} to {sc_leg['strike']}/{lc_leg['strike']}. Total credit updated to {total_credit:+.2f}."
+                ic['notes'] = f"{old_notes}\n{roll_note}".strip()
+                # Clear exitTime — the IC is not closed
                 ic.pop('exitTime', None)
                 ic.pop('exitReason', None)
 
                 print(f"  Rolled IC merge: {t['ticker']} kept puts ({sp_leg['strike']}/{lp_leg['strike']}) + rolled calls to ({sc_leg['strike']}/{lc_leg['strike']}) cr={total_credit:+.2f} dated {roll_date}")
+                
+                # IMPORTANT: Record fingerprint for the standalone vertical too!
+                # This prevents it from being imported separately on future runs
+                if conn:
+                    v_fp = get_trade_fingerprint(scv)
+                    conn.execute("INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)", (v_fp, t.get('id')))
+                    conn.commit()
+
                 new_trades.append(ic)
                 merged_out.add(i)   # remove original IC
                 merged_out.add(j)   # remove standalone SCV
@@ -1279,6 +1327,7 @@ def merge_rolled_ic_sides(trades: List[Dict]) -> List[Dict]:
                 new_put_credit   = sp_leg['premium'] - lp_leg['premium']
                 total_credit     = round(call_credit + orig_put_credit - put_close_cost + new_put_credit, 2)
 
+                # Preserving original entry date for campaign tracking
                 roll_date = spv['tradeDate'][:10]
                 ic = dict(t)
                 ic['legs']           = new_legs
@@ -1287,12 +1336,24 @@ def merge_rolled_ic_sides(trades: List[Dict]) -> List[Dict]:
                 ic['longStrike']     = lp_leg['strike']
                 ic['shortPremium']   = sp_leg['premium']
                 ic['longPremium']    = lp_leg['premium']
-                ic['tradeDate']      = roll_date
-                ic['entryTime']      = f"{roll_date}T10:00:00Z"
+                # Keep original tradeDate and entryTime from 't'
+
+                # Update notes with roll history
+                old_notes = t.get('notes') or ""
+                roll_note = f"Rolled puts on {roll_date} to {sp_leg['strike']}/{lp_leg['strike']}. Total credit updated to {total_credit:+.2f}."
+                ic['notes'] = f"{old_notes}\n{roll_note}".strip()
                 ic.pop('exitTime', None)
                 ic.pop('exitReason', None)
 
+
                 print(f"  Rolled IC merge: {t['ticker']} kept calls ({sc_leg['strike']}/{lc_leg['strike']}) + rolled puts to ({sp_leg['strike']}/{lp_leg['strike']}) cr={total_credit:+.2f} dated {roll_date}")
+                
+                # IMPORTANT: Record fingerprint for the standalone vertical too!
+                if conn:
+                    v_fp = get_trade_fingerprint(spv)
+                    conn.execute("INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)", (v_fp, t.get('id')))
+                    conn.commit()
+
                 new_trades.append(ic)
                 merged_out.add(i)
                 merged_out.add(j)
@@ -1353,13 +1414,19 @@ def filter_new_trades(trades: List[Dict], existing_fingerprints: set) -> List[Di
     print(f"Filtering against {len(existing_fingerprints)} existing trades...")
     new_trades = []
     for t in trades:
-        # Always allow updates to existing trades to pass through
+        fp = get_trade_fingerprint(t)
+        if fp in existing_fingerprints:
+            continue
+            
         if t.get('is_update'):
+            # The specific 'oc|' fingerprint for this update was already checked 
+            # in match_orphan_closes and wasn't found (otherwise it wouldn't be in 'trades').
+            # We don't filter it here because 'get_trade_fingerprint' returns 
+            # a different string than 'oc|...'.
             new_trades.append(t)
             continue
             
-        if get_trade_fingerprint(t) not in existing_fingerprints:
-            new_trades.append(t)
+        new_trades.append(t)
 
     skipped = len(trades) - len(new_trades)
     if skipped > 0:
@@ -1723,14 +1790,28 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
         try:
             db_id = None
             if trade.get('is_update') and trade.get('id'):
-                # UPDATE existing open trade
+                # UPDATE existing open trade (could be a simple close or a roll)
                 conn.execute(
                     """UPDATE trades SET 
+                        strategy = ?,
+                        short_strike = ?, long_strike = ?,
+                        short_premium = ?, long_premium = ?,
+                        credit_received = ?,
+                        trade_date = ?, entry_date = ?,
                         exit_date = ?, pnl = ?, debit_paid = ?, 
                         exit_reason = ?, dte_at_close = ?, legs_json = ?,
-                        underlying_price_at_close = ?, pop = ?
+                        underlying_price_at_close = ?, pop = ?,
+                        spread_width = ?, bpr = ?
                         WHERE id = ?""",
                     (
+                        trade['spreadType'],
+                        trade.get('shortStrike', 0) or 0,
+                        trade.get('longStrike', 0) or 0,
+                        trade.get('shortPremium', 0) or 0,
+                        trade.get('longPremium', 0) or 0,
+                        trade['creditReceived'],
+                        trade_date_str + 'T10:00:00Z',
+                        iso(trade['entryTime']),
                         iso(trade['exitTime']) if trade.get('exitTime') else None,
                         pnl, debit_paid,
                         trade.get('exitReason'),
@@ -1738,6 +1819,8 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         legs_json,
                         trade.get('underlyingPriceAtClose'),
                         pop_val,
+                        spread_width,
+                        bpr,
                         trade['id']
                     )
                 )

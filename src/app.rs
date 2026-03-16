@@ -14,6 +14,10 @@ pub enum VisualRowKind {
     MonthHeader { year: i32, month: u32 },
     /// A trade; value is the index into `AppState::trades`
     Trade(usize),
+    /// Chain View: top-level ticker group header
+    TickerHeader { ticker: String, open_count: usize, closed_count: usize, net_pnl: f64 },
+    /// Chain View: roll chain summary row (one per root trade)
+    ChainHeader { root_id: i32, ticker: String, strategy: String, roll_count: i32, net_credit: f64, chain_pnl: f64, is_open: bool, entry_date: chrono::DateTime<chrono::Utc> },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

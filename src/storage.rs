@@ -97,6 +97,14 @@ impl Storage {
                 -- Earnings date
                 next_earnings             TEXT,
 
+                -- Close-side Greeks
+                iv_at_close               REAL,
+                delta_at_close            REAL,
+                roll_count                INTEGER NOT NULL DEFAULT 0,
+                theta_at_close            REAL,
+                gamma_at_close            REAL,
+                vega_at_close             REAL,
+
                 -- Unique constraint: prevent duplicate imports
                 UNIQUE(trade_date, ticker, strategy, short_strike, long_strike, quantity)
             )",
@@ -175,6 +183,9 @@ impl Storage {
             ("iv_at_close",              "ALTER TABLE trades ADD COLUMN iv_at_close REAL"),
             ("delta_at_close",           "ALTER TABLE trades ADD COLUMN delta_at_close REAL"),
             ("roll_count",               "ALTER TABLE trades ADD COLUMN roll_count INTEGER NOT NULL DEFAULT 0"),
+            ("theta_at_close",           "ALTER TABLE trades ADD COLUMN theta_at_close REAL"),
+            ("gamma_at_close",           "ALTER TABLE trades ADD COLUMN gamma_at_close REAL"),
+            ("vega_at_close",            "ALTER TABLE trades ADD COLUMN vega_at_close REAL"),
         ];
 
         for (col_name, sql) in migrations {
@@ -223,8 +234,9 @@ impl Storage {
                 is_earnings_play=?37, is_tested=?38,
                 trade_grade=?39, grade_notes=?40,
                 legs_json=?41, tags=?42, notes=?43, next_earnings=?44,
-                iv_at_close=?45, delta_at_close=?46, roll_count=?47
-             WHERE id=?48",
+                iv_at_close=?45, delta_at_close=?46, roll_count=?47,
+                theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50
+             WHERE id=?51",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -273,7 +285,10 @@ impl Storage {
                 t.iv_at_close,                          // 45
                 t.delta_at_close,                       // 46
                 t.roll_count,                           // 47
-                id,                                     // 48
+                t.theta_at_close,                       // 48
+                t.gamma_at_close,                       // 49
+                t.vega_at_close,                        // 50
+                id,                                     // 51
             ],
         )?;
         Ok(())
@@ -309,7 +324,8 @@ impl Storage {
                 is_earnings_play, is_tested,
                 trade_grade, grade_notes,
                 legs_json, tags, notes, next_earnings,
-                iv_at_close, delta_at_close, roll_count
+                iv_at_close, delta_at_close, roll_count,
+                theta_at_close, gamma_at_close, vega_at_close
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -325,7 +341,8 @@ impl Storage {
                 ?37, ?38,
                 ?39, ?40,
                 ?41, ?42, ?43, ?44,
-                ?45, ?46, ?47
+                ?45, ?46, ?47,
+                ?48, ?49, ?50
             )",
             params![
                 trade.ticker,               // 1
@@ -375,6 +392,9 @@ impl Storage {
                 trade.iv_at_close,          // 45
                 trade.delta_at_close,       // 46
                 trade.roll_count,           // 47
+                trade.theta_at_close,       // 48
+                trade.gamma_at_close,       // 49
+                trade.vega_at_close,        // 50
             ],
         )?;
 
@@ -398,7 +418,8 @@ impl Storage {
                 is_earnings_play, is_tested,
                 trade_grade, grade_notes,
                 legs_json, tags, notes, next_earnings,
-               iv_at_close, delta_at_close, roll_count
+               iv_at_close, delta_at_close, roll_count,
+               theta_at_close, gamma_at_close, vega_at_close
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -488,6 +509,9 @@ impl Storage {
                 iv_at_close:               row.get(45)?,
                 delta_at_close:            row.get(46)?,
                 roll_count:                row.get::<_, Option<i32>>(47)?.unwrap_or(0),
+                theta_at_close:            row.get(48)?,
+                gamma_at_close:            row.get(49)?,
+                vega_at_close:             row.get(50)?,
             })
         })?;
 
@@ -499,6 +523,154 @@ impl Storage {
             }
         }
         Ok(trades)
+    }
+
+    pub fn get_trade(&self, id: i32) -> Result<Option<Trade>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                id, ticker, strategy, quantity,
+                short_strike, long_strike, short_premium, long_premium,
+                credit_received,
+                entry_date, exit_date, expiration_date, trade_date, back_month_expiration,
+                pnl, debit_paid,
+                delta, theta, gamma, vega, pop,
+                underlying_price, underlying_price_at_close,
+                iv_rank, vix_at_entry, implied_volatility,
+                commission, entry_reason, exit_reason, management_rule, target_profit_pct,
+                spread_width, bpr, entry_dte, dte_at_close,
+                playbook_id, rolled_from_id,
+                is_earnings_play, is_tested,
+                trade_grade, grade_notes,
+                legs_json, tags, notes, next_earnings,
+                iv_at_close, delta_at_close, roll_count,
+                theta_at_close, gamma_at_close, vega_at_close
+            FROM trades WHERE id = ?1"
+        )?;
+
+        let rows = stmt.query_map(params![id], |row| {
+            // Parse strategy
+            let strategy_str: String = row.get(2)?;
+            let strategy = StrategyType::from_str(&strategy_str);
+
+            // Parse timestamps
+            let entry_date  = parse_dt(row.get::<_, String>(9)?)
+                .unwrap_or_else(Utc::now);
+            let exit_date   = row.get::<_, Option<String>>(10)?
+                .and_then(|s| parse_dt(s));
+            let exp_date    = parse_dt(row.get::<_, String>(11)?)
+                .unwrap_or_else(Utc::now);
+            let trade_date_str: String = row.get(12)?;
+            let trade_date  = if trade_date_str.is_empty() {
+                entry_date
+            } else {
+                parse_dt(trade_date_str).unwrap_or(entry_date)
+            };
+            let back_month  = row.get::<_, Option<String>>(13)?
+                .and_then(|s| parse_dt(s));
+
+            // Parse legs
+            let legs_json: String = row.get(41)?;
+            let legs: Vec<TradeLeg> = serde_json::from_str(&legs_json)
+                .unwrap_or_default();
+
+            // Parse tags
+            let tags_str: Option<String> = row.get(42)?;
+            let tags = tags_str
+                .map(|s| s.split(',').filter(|t| !t.is_empty()).map(|t| t.to_string()).collect())
+                .unwrap_or_default();
+
+            // Parse next_earnings
+            let next_earnings: Option<NaiveDate> = row.get::<_, Option<String>>(44)?
+                .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+
+            Ok(Trade {
+                id:                        row.get(0)?,
+                ticker:                    row.get(1)?,
+                strategy,
+                quantity:                  row.get(3)?,
+                short_strike:              row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                long_strike:               row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                short_premium:             row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                long_premium:              row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                credit_received:           row.get(8)?,
+                entry_date,
+                exit_date,
+                expiration_date:           exp_date,
+                trade_date,
+                back_month_expiration:     back_month,
+                pnl:                       row.get(14)?,
+                debit_paid:                row.get(15)?,
+                delta:                     row.get(16)?,
+                theta:                     row.get(17)?,
+                gamma:                     row.get(18)?,
+                vega:                      row.get(19)?,
+                pop:                       row.get(20)?,
+                underlying_price:          row.get(21)?,
+                underlying_price_at_close: row.get(22)?,
+                iv_rank:                   row.get(23)?,
+                vix_at_entry:              row.get(24)?,
+                implied_volatility:        row.get(25)?,
+                commission:                row.get(26)?,
+                entry_reason:              row.get(27)?,
+                exit_reason:               row.get(28)?,
+                management_rule:           row.get(29)?,
+                target_profit_pct:         row.get(30)?,
+                spread_width:              row.get(31)?,
+                bpr:                       row.get(32)?,
+                entry_dte:                 row.get(33)?,
+                dte_at_close:              row.get(34)?,
+                playbook_id:               row.get(35)?,
+                rolled_from_id:            row.get(36)?,
+                is_earnings_play:          row.get::<_, Option<i32>>(37)?.unwrap_or(0) != 0,
+                is_tested:                 row.get::<_, Option<i32>>(38)?.unwrap_or(0) != 0,
+                trade_grade:               row.get(39)?,
+                grade_notes:               row.get(40)?,
+                legs,
+                tags,
+                notes:                     row.get(43)?,
+                next_earnings,
+                iv_at_close:               row.get(45)?,
+                delta_at_close:            row.get(46)?,
+                roll_count:                row.get::<_, Option<i32>>(47)?.unwrap_or(0),
+                theta_at_close:            row.get(48)?,
+                gamma_at_close:            row.get(49)?,
+                vega_at_close:             row.get(50)?,
+            })
+        })?;
+
+        let mut trades = Vec::new();
+        for trade in rows {
+            if let Ok(t) = trade {
+                trades.push(t);
+            }
+        }
+        Ok(trades.into_iter().next())
+    }
+
+    /// Recursively fetch the roll chain for a trade (ancestors).
+    /// Returns list ordered from oldest (original) to newest (current).
+    pub fn get_roll_chain(&self, start_id: i32) -> Result<Vec<Trade>> {
+        // 1. Walk backwards and collect every trade in the chain
+        let mut chain: Vec<Trade> = Vec::new();
+        let mut current_id = Some(start_id);
+        
+        // Safety: limit depth to avoid infinite loops
+        for _ in 0..50 {
+            if let Some(cid) = current_id {
+                if let Ok(Some(t)) = self.get_trade(cid) {
+                    let parent = t.rolled_from_id;
+                    chain.push(t);
+                    current_id = parent;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        chain.reverse(); // Now oldest -> newest
+        Ok(chain)
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -656,6 +828,14 @@ For earnings plays, use the weekly cycle — we need the stock to move toward ou
         self.conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_bpr(&self, trade_id: i32, bpr: f64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE trades SET bpr = ?1 WHERE id = ?2",
+            rusqlite::params![bpr, trade_id],
         )?;
         Ok(())
     }

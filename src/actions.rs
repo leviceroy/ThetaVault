@@ -161,11 +161,13 @@ fn is_short_premium(strategy: &StrategyType) -> bool {
 
 fn get_sector(ticker: &str) -> &'static str {
     match ticker {
-        // Technology
-        "AAPL" | "MSFT" | "NVDA" | "AMD" | "GOOG" | "GOOGL" | "META"
-        | "CRM" | "ORCL" | "IBM" | "INTC" | "MU" | "AVGO" | "QCOM"
-        | "TXN" | "AMAT" | "LRCX" | "KLAC" | "MRVL" | "ADI"
-        | "TSM" | "DELL" | "HPQ" | "SNOW" | "PLTR" | "SYM" => "Tech",
+        // Semiconductors (The "One Trade" Group)
+        "NVDA" | "AMD" | "SMCI" | "INTC" | "MU" | "AVGO" | "QCOM"
+        | "TXN" | "AMAT" | "LRCX" | "KLAC" | "MRVL" | "ADI" | "TSM" => "Semis",
+        // Technology (Software/Services)
+        "AAPL" | "MSFT" | "GOOG" | "GOOGL" | "META"
+        | "CRM" | "ORCL" | "IBM" | "SNOW" | "PLTR" | "SYM" 
+        | "DELL" | "HPQ" => "Tech",
         // Consumer Discretionary
         "AMZN" | "TSLA" | "TGT" | "HD" | "LOW" | "NKE" | "SBUX"
         | "MCD" | "CMG" | "BKNG" | "MAR" | "HLT" | "YUM" | "DPZ" => "Consumer Disc",
@@ -565,24 +567,25 @@ pub fn compute_alerts(
             }
         }
         for (sector, sector_total) in &sector_bpr {
-            // Skip "Other" and broad index ETFs — they don't represent concentration risk
-            if *sector == "Other" || *sector == "Index ETF" {
+            // Skip broad index ETFs — they don't represent single-name concentration risk
+            if *sector == "Index ETF" {
                 continue;
             }
             let pct = sector_total / total_open_bpr * 100.0;
-            if pct > 35.0 {
+            // The "Oh Sh*t" Filter: >25% in a correlated group
+            if pct > 25.0 {
                 alerts.push(TradeAlert {
                     trade_id:       -1,
                     ticker:         format!("SECTOR:{}", sector),
                     strategy_badge: "—".to_string(),
                     kind:           AlertKind::Sizing,
-                    severity:       AlertSeverity::Info,
+                    severity:       AlertSeverity::High,
                     headline: format!(
-                        "{} sector at {:.0}% of BPR — correlated risk concentration.",
+                        "CORRELATION ALERT: {} sector at {:.0}% of BPR.",
                         sector, pct
                     ),
                     detail: Some(
-                        "Diversify across sectors. Correlated moves will damage your whole book.".to_string()
+                        "Correlated tickers (e.g. NVDA, AMD) act as one large trade. Diversify to protect the book.".to_string()
                     ),
                 });
             }
