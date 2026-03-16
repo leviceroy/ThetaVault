@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use crate::models::{Trade, StrategyType, TradeLeg, PlaybookStrategy};
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -911,6 +911,55 @@ For earnings plays, use the weekly cycle — we need the stock to move toward ou
             playbooks.push(pb?);
         }
         Ok(playbooks)
+    }
+
+    /// Compute self-relative IVR for a trade: percentile of `current_iv` within
+    /// min/max implied_volatility for the same ticker in our own database.
+    /// Returns None if there is no data or if min == max (can't rank a single point).
+    pub fn compute_ivr_for_ticker(&self, ticker: &str, current_iv: f64) -> Result<Option<f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT MIN(implied_volatility), MAX(implied_volatility) \
+             FROM trades \
+             WHERE ticker = ?1 AND implied_volatility IS NOT NULL"
+        )?;
+        let row: Option<(Option<f64>, Option<f64>)> = stmt.query_row(
+            rusqlite::params![ticker],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        match row {
+            Some((Some(min_iv), Some(max_iv))) if max_iv > min_iv => {
+                let ivr: f64 = ((current_iv - min_iv) / (max_iv - min_iv) * 100.0).clamp(0.0, 100.0);
+                Ok(Some(ivr))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Backfill iv_rank for all trades that have implied_volatility but no iv_rank.
+    /// Returns the count of trades updated. Safe to call at every startup.
+    pub fn backfill_ivr_all_trades(&self) -> Result<usize> {
+        let candidates: Vec<(i32, String, f64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, ticker, implied_volatility \
+                 FROM trades \
+                 WHERE implied_volatility IS NOT NULL AND iv_rank IS NULL"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |r| {
+                Ok((r.get::<_, i32>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut count = 0usize;
+        for (id, ticker, iv) in candidates {
+            if let Ok(Some(ivr)) = self.compute_ivr_for_ticker(&ticker, iv) {
+                self.conn.execute(
+                    "UPDATE trades SET iv_rank = ?1 WHERE id = ?2",
+                    rusqlite::params![ivr, id],
+                )?;
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 

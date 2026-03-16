@@ -1182,6 +1182,28 @@ def promote_to_ic(conn: sqlite3.Connection, db_record: Dict, new_side: Dict, new
     )
     conn.commit()
 
+    # Recalculate Greeks for the new IC using stored underlying_price and vix_at_entry.
+    # This prevents stale Greeks from the original standalone vertical being carried over.
+    _s = db_record.get('underlying_price')
+    _vix = db_record.get('vix_at_entry')
+    _exp = db_record.get('expiration_date', '')[:10]
+    if _s and _exp:
+        _trade_dict = {
+            'legs':           ic_legs,
+            'tradeDate':      ic_trade_date,
+            'expirationDate': _exp,
+        }
+        _ticker_prices = {ic_trade_date: _s}
+        _vix_prices    = {ic_trade_date: _vix} if _vix is not None else {}
+        _greeks = estimate_trade_greeks(_trade_dict, _ticker_prices, _vix_prices)
+        if _greeks:
+            conn.execute(
+                "UPDATE trades SET theta=?, delta=?, gamma=?, vega=? WHERE id=?",
+                (_greeks['theta'], _greeks['delta'], _greeks['gamma'], _greeks['vega'],
+                 db_record['id'])
+            )
+            conn.commit()
+
     print(f"  DB-promoted IC: {ticker} #{db_record['id']} "
           f"({db_record['strategy']} → iron_condor) "
           f"put={sp_leg['strike']}/{lp_leg['strike']} "

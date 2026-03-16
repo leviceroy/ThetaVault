@@ -29,6 +29,7 @@ pub enum FilterStatus {
     All,
     Open,
     Closed,
+    Rolled,
     Expired,
 }
 
@@ -37,7 +38,8 @@ impl FilterStatus {
         match self {
             FilterStatus::All     => FilterStatus::Open,
             FilterStatus::Open    => FilterStatus::Closed,
-            FilterStatus::Closed  => FilterStatus::Expired,
+            FilterStatus::Closed  => FilterStatus::Rolled,
+            FilterStatus::Rolled  => FilterStatus::Expired,
             FilterStatus::Expired => FilterStatus::All,
         }
     }
@@ -46,6 +48,7 @@ impl FilterStatus {
             FilterStatus::All     => "All",
             FilterStatus::Open    => "Open",
             FilterStatus::Closed  => "Closed",
+            FilterStatus::Rolled  => "Rolled",
             FilterStatus::Expired => "Expired",
         }
     }

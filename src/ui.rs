@@ -94,7 +94,7 @@ pub fn draw_ui(
     live_prices:             &std::collections::HashMap<String, f64>,
     perf_collapsed:          &[bool; 11],
     perf_section_cursor:     usize,
-    col_visibility:          &[bool; 19],
+    col_visibility:          &[bool; 20],
     show_col_picker:         bool,
     journal_chain_view:      bool,
 ) {
@@ -133,7 +133,7 @@ pub fn draw_ui(
 
     // ── Content
     match selected_tab {
-        0 => draw_dashboard(f, chunks[1], stats, all_trades, dash_open_scroll, max_heat_pct),
+        0 => draw_dashboard(f, chunks[1], stats, all_trades, dash_open_scroll, max_heat_pct, alerts),
         1 => draw_journal(
             f, chunks[1],
             display_count, visual_rows, collapsed_months, all_trades,
@@ -222,10 +222,10 @@ pub fn draw_ui(
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[Trade], open_scroll: usize, max_heat_pct: f64) {
+fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[Trade], open_scroll: usize, max_heat_pct: f64, alerts: &[crate::actions::TradeAlert]) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(9), Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
     // ── Row 1: 9 KPI cards ────────────────────────────────────────────────────
@@ -292,14 +292,41 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
             Style::default().fg(C_GRAY),
         )])
     };
+    let streak_color_d = if stats.current_streak >= 0 { C_GREEN } else { C_RED };
+    let streak_str_d = if stats.current_streak >= 0 {
+        format!(" +{}W", stats.current_streak)
+    } else {
+        format!(" {}L", stats.current_streak.abs())
+    };
+    let progress_line = if stats.monthly_pnl_target > 0.0 {
+        let pct = (stats.monthly_pnl_pace / stats.monthly_pnl_target).clamp(0.0, 1.0);
+        let filled = (pct * 8.0).round() as usize;
+        let empty = 8usize.saturating_sub(filled);
+        let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);
+        let bar_pct = stats.monthly_pnl_pace / stats.monthly_pnl_target * 100.0;
+        let bar_color = if bar_pct >= 100.0 { C_GREEN } else if bar_pct >= 50.0 { C_YELLOW } else { C_RED };
+        Line::from(vec![
+            Span::styled(format!(" {}", bar), Style::default().fg(bar_color)),
+            Span::styled(format!(" {:.0}%", bar_pct), Style::default().fg(bar_color)),
+        ])
+    } else {
+        Line::from(vec![Span::styled(
+            streak_str_d.clone(),
+            Style::default().fg(streak_color_d),
+        )])
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                format!(" ${:+.0}", stats.realized_pnl),
-                Style::default().fg(pnl_color).add_modifier(Modifier::BOLD),
-            )]),
+            Line::from(vec![
+                Span::styled(
+                    format!(" ${:+.0}", stats.realized_pnl),
+                    Style::default().fg(pnl_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(streak_str_d, Style::default().fg(streak_color_d)),
+            ]),
             pace_line,
+            progress_line,
         ])
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" P&L ", Style::default().fg(C_CYAN)))),
@@ -445,7 +472,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
 
     // Card 8 — VIX
     let (vix_str, vix_regime) = stats.vix.map_or(("—".to_string(), "".to_string()), |v| {
-        let regime = if v > 35.0 { "[STRESS]" } else if v > 25.0 { "[ELEVATED]" } else if v >= 15.0 { "[NORMAL]" } else { "[CALM]" };
+        let regime = if v >= 40.0 { "[STRESS]" } else if v >= 30.0 { "[HIGH]" } else if v >= 20.0 { "[ELEVATED]" } else if v >= 15.0 { "[NORMAL]" } else { "[CALM]" };
         (format!("{:.1}", v), regime.to_string())
     });
     let vix_color = stats.vix.map_or(C_GRAY, |v| {
@@ -519,11 +546,40 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         f.render_widget(Paragraph::new(vec![Line::from(footer_spans)]), rows[1]);
     }
 
-    // ── Row 3: Risk panel | Open positions + Equity ───────────────────────────
+    // ── Row 3: Today's Actions summary ────────────────────────────────────────
+    {
+        use crate::actions::AlertKind;
+        let action_alerts: Vec<&crate::actions::TradeAlert> = alerts.iter()
+            .filter(|a| a.kind != AlertKind::Ok)
+            .collect();
+        let has_defense = action_alerts.iter().any(|a| matches!(a.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::Drawdown));
+        let line = if action_alerts.is_empty() {
+            Line::from(vec![Span::styled(" \u{2713} Clear \u{2014} no actions needed today", Style::default().fg(C_GREEN))])
+        } else {
+            let tickers: Vec<String> = {
+                let mut seen = std::collections::HashSet::new();
+                action_alerts.iter()
+                    .filter(|a| a.ticker != "\u{2014}" && a.ticker != "PORTFOLIO" && a.ticker != "VIX")
+                    .filter(|a| seen.insert(a.ticker.as_str()))
+                    .take(6)
+                    .map(|a| format!("[{}]", a.ticker))
+                    .collect()
+            };
+            let color = if has_defense { C_RED } else { C_YELLOW };
+            let ticker_str = if tickers.is_empty() { String::new() } else { format!(": {}", tickers.join(" ")) };
+            Line::from(vec![Span::styled(
+                format!(" \u{26A1} {} action{}{}", action_alerts.len(), if action_alerts.len() == 1 { "" } else { "s" }, ticker_str),
+                Style::default().fg(color),
+            )])
+        };
+        f.render_widget(Paragraph::new(vec![line]), rows[2]);
+    }
+
+    // ── Row 4: Risk panel | Open positions + Equity ───────────────────────────
     let bot = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(rows[2]);
+        .split(rows[3]);
 
     // ── Left: Risk Distribution panel
     let bar_width = (bot[0].width as usize).saturating_sub(8).max(8);
@@ -725,6 +781,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         Cell::from("DTE").style(Style::default().fg(C_CYAN)),
         Cell::from("ER").style(Style::default().fg(C_CYAN)),
         Cell::from("BPR").style(Style::default().fg(C_CYAN)),
+        Cell::from("OTM%").style(Style::default().fg(C_CYAN)),
+        Cell::from("P&L%").style(Style::default().fg(C_CYAN)),
     ])
     .style(Style::default().bg(C_DARK));
 
@@ -751,8 +809,46 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
             }
             None => ("—".to_string(), Style::default().fg(C_GRAY)),
         };
-        let bpr_str  = t.bpr.map_or("—".to_string(), |b| format!("${:.0}", b));
+        let bpr_str  = t.bpr.map_or("\u{2014}".to_string(), |b| format!("${:.0}", b));
         let cr_color = if t.credit_received >= 0.0 { C_GREEN } else { C_RED };
+        // OTM% for dashboard
+        let dash_otm_cell = {
+            if let Some(u) = t.underlying_price {
+                let short_put = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortPut)
+                    .map(|l| l.strike)
+                    .or(if t.short_strike > 0.0 { Some(t.short_strike) } else { None });
+                let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
+                    .map(|l| l.strike);
+                let otm_pct = match (short_put, short_call) {
+                    (Some(sp), _) => Some((u - sp) / u * 100.0),
+                    (None, Some(sc)) => Some((sc - u) / u * 100.0),
+                    _ => None,
+                };
+                match otm_pct {
+                    Some(p) if p >= 0.0 => {
+                        let c = if p < 3.0 { C_RED } else if p < 7.0 { C_YELLOW } else { C_GREEN };
+                        Cell::from(format!("{:.1}%", p)).style(Style::default().fg(c))
+                    }
+                    Some(_p) => Cell::from("ITM").style(Style::default().fg(C_RED)),
+                    None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                }
+            } else {
+                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+            }
+        };
+        // Est P&L% (theta-based % of max profit captured)
+        let dash_pnl_pct_cell = {
+            let max_profit_d = crate::calculations::calculate_max_profit(t.credit_received, t.quantity);
+            if max_profit_d > 0.0 {
+                let held = (Utc::now().date_naive() - t.trade_date.date_naive()).num_days().max(0) as f64;
+                let theta_est = t.theta.map_or(0.0, |th| th * held * 100.0 * t.quantity as f64);
+                let pct = (theta_est / max_profit_d * 100.0).clamp(-999.0, 999.0);
+                let c = if pct >= 50.0 { C_GREEN } else if pct >= 25.0 { C_YELLOW } else { C_GRAY };
+                Cell::from(format!("{:.0}%", pct)).style(Style::default().fg(c))
+            } else {
+                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+            }
+        };
         Row::new(vec![
             Cell::from(t.ticker.clone()).style(Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
             Cell::from(t.trade_date.format("%m/%d/%y").to_string()).style(Style::default().fg(C_GRAY)),
@@ -761,6 +857,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
             Cell::from(format!("{}", dte)).style(Style::default().fg(dte_c)),
             Cell::from(er_str).style(er_style),
             Cell::from(bpr_str).style(Style::default().fg(C_YELLOW)),
+            dash_otm_cell,
+            dash_pnl_pct_cell,
         ])
     }).collect();
 
@@ -775,6 +873,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Length(8),
+            Constraint::Length(5),
+            Constraint::Length(5),
         ])
         .header(open_header)
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
@@ -827,7 +927,7 @@ fn draw_journal(
     live_prices:      &std::collections::HashMap<String, f64>,
     under_tauri:      bool,
     playbooks:        &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 19],
+    col_visibility:     &[bool; 20],
     show_col_picker:    bool,
     journal_chain_view: bool,
     account_size:       f64,
@@ -994,12 +1094,12 @@ fn draw_trade_table(
     state:              &mut TableState,
     live_prices:        &std::collections::HashMap<String, f64>,
     playbooks:          &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 19],
+    col_visibility:     &[bool; 20],
     journal_chain_view: bool,
     account_size:       f64,
     max_pos_bpr_pct:    f64,
 ) {
-    const COL_NAMES: [&str; 19] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status"];
+    const COL_NAMES: [&str; 20] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%"];
 
     let header = Row::new(
         COL_NAMES.iter().enumerate()
@@ -1095,7 +1195,7 @@ fn draw_trade_table(
             None                => Style::default().fg(C_YELLOW),
         };
         let max_profit = calculate_max_profit(t.credit_received, t.quantity);
-        let roc = t.pnl.and_then(|p| calculate_roc(p, &t.legs, t.credit_received, t.quantity, t.spread_type(), t.bpr));
+        let roc = t.pnl.and_then(|p| calculate_roc(p, &t.legs, t.credit_received, t.quantity, t.spread_type(), t.bpr, t.underlying_price));
         let dte = calculate_remaining_dte(&t.expiration_date);
         let dte_c = if t.is_open() {
             if dte <= 14 { C_RED } else if dte <= 21 { C_YELLOW } else { C_GREEN }
@@ -1103,8 +1203,12 @@ fn draw_trade_table(
             C_GRAY
         };
 
+        let scratch_threshold = (calculate_max_profit(t.credit_received, t.quantity) * 0.05).max(10.0);
+        let is_scratch = t.pnl.map_or(false, |p| p.abs() < scratch_threshold);
         let status_str = if t.is_open() {
             "OPEN".to_string()
+        } else if is_scratch {
+            "SCRTCH".to_string()
         } else {
             match t.exit_reason.as_deref().filter(|r| !r.is_empty()) {
                 Some("closed")  => "CLOSED".to_string(),
@@ -1117,6 +1221,8 @@ fn draw_trade_table(
         };
         let status_style = if t.is_open() {
             Style::default().fg(C_YELLOW)
+        } else if is_scratch {
+            Style::default().fg(C_GRAY)
         } else {
             match t.exit_reason.as_deref() {
                 Some("expired") => Style::default().fg(C_GRAY),
@@ -1287,6 +1393,42 @@ fn draw_trade_table(
                         Cell::from(format!("{}d", days)).style(Style::default().fg(C_GRAY))
                     },
                     Cell::from(status_str).style(status_style),
+                    // OTM% — how far short strike is from current underlying (open only)
+                    {
+                        if t.is_open() {
+                            let underlying = live_prices.get(&t.ticker).copied()
+                                .or(t.underlying_price);
+                            match underlying {
+                                Some(u) if u > 0.0 => {
+                                    let short_put = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortPut)
+                                        .map(|l| l.strike)
+                                        .or(if t.short_strike > 0.0 { Some(t.short_strike) } else { None });
+                                    let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
+                                        .map(|l| l.strike);
+                                    let otm_pct = match (short_put, short_call) {
+                                        (Some(sp), Some(_sc)) => {
+                                            // For two-sided (strangle/IC): show put side OTM%
+                                            Some((u - sp) / u * 100.0)
+                                        }
+                                        (Some(sp), None) => Some((u - sp) / u * 100.0),
+                                        (None, Some(sc)) => Some((sc - u) / u * 100.0),
+                                        _ => None,
+                                    };
+                                    match otm_pct {
+                                        Some(pct) if pct >= 0.0 => {
+                                            let color = if pct < 3.0 { C_RED } else if pct < 7.0 { C_YELLOW } else { C_GREEN };
+                                            Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
+                                        }
+                                        Some(pct) => Cell::from(format!("{:.1}%", pct.abs())).style(Style::default().fg(C_RED)), // ITM
+                                        None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                                    }
+                                }
+                                _ => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                            }
+                        } else {
+                            Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+                        }
+                    },
                 ];
                 let visible_cells: Vec<Cell> = all_cells.into_iter().enumerate()
                     .filter(|(i, _)| col_visibility[*i])
@@ -1297,7 +1439,7 @@ fn draw_trade_table(
         }
     }).collect();
 
-    const COL_WIDTHS: [u16; 19] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7];
+    const COL_WIDTHS: [u16; 20] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6];
     let visible_widths: Vec<Constraint> = COL_WIDTHS.iter().enumerate()
         .filter(|(i, _)| col_visibility[*i])
         .map(|(_, &w)| Constraint::Length(w))
@@ -1770,7 +1912,7 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
     let breakevens  = calculate_breakevens(&trade.legs, spread_type);
     let leg_desc    = format_trade_description(&trade.legs, spread_type);
     let dte         = calculate_remaining_dte(&trade.expiration_date);
-    let roc         = trade.pnl.and_then(|p| calculate_roc(p, &trade.legs, trade.credit_received, trade.quantity, spread_type, trade.bpr));
+    let roc         = trade.pnl.and_then(|p| calculate_roc(p, &trade.legs, trade.credit_received, trade.quantity, spread_type, trade.bpr, trade.underlying_price));
     let pct_max     = trade.pnl.map(|p| calculate_pct_max_profit(p, trade.credit_received, trade.quantity));
     let pnl_per_day = calculate_pnl_per_day(trade.pnl, &trade.entry_date, trade.exit_date.as_ref());
     let be_str      = if breakevens.is_empty() {
@@ -2913,19 +3055,19 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 
 // ── Column visibility picker popup (L9) ──────────────────────────────────────
 
-fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 19]) {
-    const COL_NAMES: [&str; 19] = [
+fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 20]) {
+    const COL_NAMES: [&str; 20] = [
         "Date","Ticker","Spot","ER","Str","Qty","Credit","GTC","BE",
-        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status",
+        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%",
     ];
-    // Keys: 1-9 for columns 0-8, a-j for columns 9-18
-    const KEY_LABELS: [&str; 19] = [
+    // Keys: 1-9 for columns 0-8, a-k for columns 9-19
+    const KEY_LABELS: [&str; 20] = [
         "1","2","3","4","5","6","7","8","9",
-        "a","b","c","d","e","f","g","h","i","j",
+        "a","b","c","d","e","f","g","h","i","j","k",
     ];
 
     let popup_w = 36u16;
-    let popup_h = 23u16;
+    let popup_h = 24u16;
     let x = area.x + area.width.saturating_sub(popup_w) / 2;
     let y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
@@ -2938,7 +3080,7 @@ fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 19])
         Line::from(""),
     ];
 
-    for i in 0..19 {
+    for i in 0..20 {
         let check = if col_visibility[i] { "✓" } else { "✗" };
         let check_style = if col_visibility[i] {
             Style::default().fg(Color::Green)
@@ -3534,7 +3676,7 @@ fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool, sele
         Span::styled("Alloc: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:.1}%", stats.alloc_pct), Style::default().fg(alloc_color)),
         Span::raw("   "),
-        Span::styled("Unrealized: ", Style::default().fg(C_GRAY)),
+        Span::styled("est. \u{0398}: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:+.0}", stats.unrealized_pnl), Style::default().fg(if stats.unrealized_pnl >= 0.0 { C_GREEN } else { C_RED })),
         Span::raw("   "),
         Span::styled("Avg POP: ", Style::default().fg(C_GRAY)),
@@ -4168,6 +4310,34 @@ fn draw_performance(
         let mut lines: Vec<Line> = Vec::new();
         lines.extend(perf_health_lines(stats, width, collapsed[0], selected_gi == Some(0)));
         lines.extend(perf_returns_lines(stats, perf, width, collapsed[1], selected_gi == Some(1)));
+
+        // Rolling 30-trade win rate sparkline
+        if !perf.rolling_win_rate.is_empty() {
+            lines.push(Line::from(""));
+            let current_wr = perf.rolling_win_rate.last().copied().unwrap_or(0.0);
+            let wr_color = if current_wr >= 60.0 { C_GREEN } else if current_wr >= 45.0 { C_YELLOW } else { C_RED };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Rolling Win Rate (30-trade): ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.1}%", current_wr), Style::default().fg(wr_color)),
+            ]));
+            // ASCII sparkline: take last 40 data points, map 0-100% to 8 levels
+            let spark_data: Vec<f64> = if perf.rolling_win_rate.len() > 40 {
+                perf.rolling_win_rate[perf.rolling_win_rate.len() - 40..].to_vec()
+            } else {
+                perf.rolling_win_rate.clone()
+            };
+            let spark_chars = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+            let spark_str: String = spark_data.iter().map(|&v| {
+                let idx = ((v / 100.0) * 7.0).round().clamp(0.0, 7.0) as usize;
+                spark_chars[idx]
+            }).collect();
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(spark_str, Style::default().fg(wr_color)),
+            ]));
+        }
+
         lines.push(Line::from(""));
 
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
@@ -4183,6 +4353,32 @@ fn draw_performance(
         lines.extend(perf_vix_lines(perf, width, collapsed[8], selected_gi == Some(8)));
         lines.extend(perf_dte_lines(perf, width));
         lines.extend(perf_ivr_entry_lines(perf, width));
+
+        // Commission Analysis section
+        if perf.total_commissions > 0.0 || perf.avg_commission_per_trade > 0.0 {
+            let comm_color = if perf.commission_pct_of_gross > 10.0 { C_RED } else if perf.commission_pct_of_gross > 5.0 { C_YELLOW } else { C_GREEN };
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled("  \u{1F4B0} COMMISSION ANALYSIS", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![
+                Span::styled("  Total Paid: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("${:.2}", perf.total_commissions), Style::default().fg(C_RED)),
+                Span::raw("   "),
+                Span::styled("Avg/Trade: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("${:.2}", perf.avg_commission_per_trade), Style::default().fg(C_WHITE)),
+                Span::raw("   "),
+                Span::styled("% of Gross: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.1}%", perf.commission_pct_of_gross), Style::default().fg(comm_color)),
+            ]));
+            if let Some(fvm) = perf.avg_fill_vs_mid {
+                let fvm_color = if fvm >= 0.0 { C_GREEN } else { C_RED };
+                lines.push(Line::from(vec![
+                    Span::styled("  Avg Fill vs Mid: ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("{:+.4}", fvm), Style::default().fg(fvm_color)),
+                    Span::styled(if fvm >= 0.0 { "  (above mid \u{2014} good)" } else { "  (below mid \u{2014} slippage)" }, Style::default().fg(C_GRAY)),
+                ]));
+            }
+        }
+
         lines.push(Line::from(""));
 
         let para = Paragraph::new(lines).scroll((analytics_scroll, 0));

@@ -67,8 +67,8 @@ pub struct AppState {
     // Chain View mode
     pub journal_chain_view: bool,
 
-    // Column visibility for trade table (19 columns)
-    pub col_visibility:  [bool; 19],
+    // Column visibility for trade table (20 columns)
+    pub col_visibility:  [bool; 20],
     pub show_col_picker: bool,
 
     // Playbook auto-match candidates (when multiple match on save)
@@ -460,7 +460,8 @@ impl AppState {
                 match self.filter_status {
                     FilterStatus::All     => true,
                     FilterStatus::Open    => chain_trades.iter().any(|t| t.is_open()),
-                    FilterStatus::Closed  => chain_trades.iter().all(|t| !t.is_open() && t.exit_reason.as_deref() != Some("expired")),
+                    FilterStatus::Closed  => chain_trades.iter().all(|t| !t.is_open() && t.exit_reason.as_deref() != Some("expired") && t.exit_reason.as_deref() != Some("rolled")),
+                    FilterStatus::Rolled  => chain_trades.iter().any(|t| t.exit_reason.as_deref() == Some("rolled")),
                     FilterStatus::Expired => chain_trades.last().map_or(false, |t| t.exit_reason.as_deref() == Some("expired")),
                 }
             }).collect();
@@ -520,7 +521,8 @@ impl AppState {
                 let status_ok = match self.filter_status {
                     FilterStatus::All     => true,
                     FilterStatus::Open    => t.is_open(),
-                    FilterStatus::Closed  => !t.is_open() && t.exit_reason.as_deref() != Some("expired"),
+                    FilterStatus::Closed  => !t.is_open() && t.exit_reason.as_deref() != Some("expired") && t.exit_reason.as_deref() != Some("rolled"),
+                    FilterStatus::Rolled  => t.exit_reason.as_deref() == Some("rolled"),
                     FilterStatus::Expired => t.exit_reason.as_deref() == Some("expired"),
                 };
                 // Ticker filter
@@ -542,8 +544,8 @@ impl AppState {
                     pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
                 }
                 SortKey::Roc    => {
-                    let ra = ta.pnl.and_then(|p| calculations::calculate_roc(p, &ta.legs, ta.credit_received, ta.quantity, ta.spread_type(), ta.bpr)).unwrap_or(f64::NEG_INFINITY);
-                    let rb = tb.pnl.and_then(|p| calculations::calculate_roc(p, &tb.legs, tb.credit_received, tb.quantity, tb.spread_type(), tb.bpr)).unwrap_or(f64::NEG_INFINITY);
+                    let ra = ta.pnl.and_then(|p| calculations::calculate_roc(p, &ta.legs, ta.credit_received, ta.quantity, ta.spread_type(), ta.bpr, ta.underlying_price)).unwrap_or(f64::NEG_INFINITY);
+                    let rb = tb.pnl.and_then(|p| calculations::calculate_roc(p, &tb.legs, tb.credit_received, tb.quantity, tb.spread_type(), tb.bpr, tb.underlying_price)).unwrap_or(f64::NEG_INFINITY);
                     ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
                 }
                 SortKey::Dte    => {
@@ -1907,8 +1909,8 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 19] {
-    let mut vis = [true; 19];
+fn parse_col_visibility(s: &str) -> [bool; 20] {
+    let mut vis = [true; 20];
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -1924,13 +1926,18 @@ fn parse_col_visibility(s: &str) -> [bool; 19] {
     } else {
         chars
     };
-    for (i, ch) in padded.iter().take(19).enumerate() {
+    // Pad to 20 with col 19 (OTM%) defaulting to ON
+    let mut padded = padded;
+    while padded.len() < 20 {
+        padded.push('1');
+    }
+    for (i, ch) in padded.iter().take(20).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 19]) -> String {
+fn col_visibility_to_string(vis: &[bool; 20]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 

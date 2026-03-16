@@ -523,6 +523,9 @@ pub struct PortfolioStats {
     // L2: theta/delta efficiency ratio
     pub theta_delta_ratio: Option<f64>,
 
+    // tastytrade KPI: net_theta / account_size × 100  (target 0.1–0.3% daily)
+    pub theta_netliq_ratio: Option<f64>,
+
     // L1: monthly P&L pace target + pace
     pub monthly_pnl_target: f64,
     pub monthly_pnl_pace: f64,
@@ -675,6 +678,12 @@ pub struct PerformanceStats {
 
     // L10: IVR entry frequency histogram (4 buckets: <25, 25-50, 50-75, 75+)
     pub ivr_entry_buckets: Vec<IvrEntryBucket>,
+
+    // Commission analysis
+    pub total_commissions: f64,
+    pub avg_commission_per_trade: f64,
+    pub commission_pct_of_gross: f64,
+    pub avg_fill_vs_mid: Option<f64>,
 }
 
 impl Default for PerformanceStats {
@@ -691,6 +700,8 @@ impl Default for PerformanceStats {
             dte_buckets: vec![], rolling_win_rate: vec![], peak_history: vec![],
             avg_premium_recapture: None, rolling_theta_capture: vec![],
             ivr_entry_buckets: vec![],
+            total_commissions: 0.0, avg_commission_per_trade: 0.0, commission_pct_of_gross: 0.0,
+            avg_fill_vs_mid: None,
         }
     }
 }

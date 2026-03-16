@@ -238,6 +238,7 @@ pub fn calculate_roc(
     quantity: i32,
     spread_type: &str,
     bpr: Option<f64>,
+    underlying_price: Option<f64>,
 ) -> Option<f64> {
     // Covered Call: stock margin (BPR) is the only valid capital basis.
     // If BPR not stored (old trades), return None — display "—" not "0%".
@@ -248,9 +249,18 @@ pub fn calculate_roc(
     let mut capital_at_risk =
         calculate_max_loss_from_legs(legs, credit_received, quantity, spread_type);
 
-    // Cash Secured Put: prefer BPR (20% margin = tastytrade platform basis).
+    // Cash Secured Put: prefer BPR; fallback to standard Reg-T 20% margin estimate.
     if spread_type == "cash_secured_put" {
-        if let Some(b) = bpr { if b > 0.0 { capital_at_risk = b; } }
+        if let Some(b) = bpr {
+            if b > 0.0 { capital_at_risk = b; }
+        } else if capital_at_risk <= 0.0 || capital_at_risk > underlying_price.unwrap_or(0.0) * 20.0 * quantity as f64 {
+            // Fallback: use 20% of underlying (Reg-T standard), not (strike - credit) which overstates
+            if let Some(u) = underlying_price {
+                if u > 0.0 {
+                    capital_at_risk = 0.20 * u * 100.0 * quantity as f64;
+                }
+            }
+        }
     }
 
     // Strangle / Straddle: prefer BPR; fall back to 2× credit proxy.
@@ -765,7 +775,7 @@ pub fn build_portfolio_stats(
             if pnl > best_pnl  { best_pnl  = pnl; }
             if pnl < worst_pnl { worst_pnl = pnl; }
 
-            if let Some(roc) = calculate_roc(pnl, &trade.legs, trade.credit_received, trade.quantity, trade.spread_type(), trade.bpr) {
+            if let Some(roc) = calculate_roc(pnl, &trade.legs, trade.credit_received, trade.quantity, trade.spread_type(), trade.bpr, trade.underlying_price) {
                 if roc.abs() > 0.001 {
                     roc_sum   += roc;
                     roc_count += 1;
@@ -926,6 +936,13 @@ pub fn build_portfolio_stats(
         None
     };
 
+    // tastytrade KPI: Θ/NetLiq = net_theta / account_size × 100 (target 0.1–0.3%)
+    let theta_netliq_ratio = if account_size > 0.0 && open_count > 0 {
+        Some((net_theta / account_size) * 100.0)
+    } else {
+        None
+    };
+
     // L3: open strategy counts sorted by count desc
     let mut open_strategy_counts: Vec<(String, usize)> = open_strategy_map.into_iter().collect();
     open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1));
@@ -969,6 +986,7 @@ pub fn build_portfolio_stats(
         next_critical_positions:  critical_positions,
         avg_p50_open:             if p50_open_count > 0 { Some(p50_open_sum / p50_open_count as f64) } else { None },
         theta_delta_ratio,
+        theta_netliq_ratio,
         monthly_pnl_target,
         monthly_pnl_pace,
         open_strategy_counts,
@@ -1279,6 +1297,41 @@ pub fn check_playbook_compliance(
         }
     }
 
+    // VIX check
+    if let Some(vix) = trade.vix_at_entry {
+        if let Some(min) = criteria.vix_min {
+            if vix < min {
+                violations.push(ComplianceViolation {
+                    field: "VIX".to_string(),
+                    rule: format!("≥ {:.1}", min),
+                    actual: format!("{:.1}", vix),
+                });
+            }
+        }
+        if let Some(max) = criteria.vix_max {
+            if vix > max {
+                violations.push(ComplianceViolation {
+                    field: "VIX".to_string(),
+                    rule: format!("≤ {:.1}", max),
+                    actual: format!("{:.1}", vix),
+                });
+            }
+        }
+    }
+
+    // POP check
+    if let Some(pop) = trade.pop {
+        if let Some(min) = criteria.min_pop {
+            if pop < min {
+                violations.push(ComplianceViolation {
+                    field: "POP".to_string(),
+                    rule: format!("≥ {:.0}%", min),
+                    actual: format!("{:.0}%", pop),
+                });
+            }
+        }
+    }
+
     violations
 }
 
@@ -1396,6 +1449,12 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     // L10: IVR entry histogram: (count, wins) for [<25, 25-50, 50-75, 75+]
     let mut ivr_entry_data: [(usize, usize); 4] = [(0, 0); 4];
 
+    // Commission analysis accumulators
+    let mut total_commissions = 0.0_f64;
+    let mut comm_count = 0u32;
+    let mut fill_vs_mid_sum = 0.0_f64;
+    let mut fill_vs_mid_count = 0u32;
+
     for t in &sorted_closed {
         let pnl = t.pnl.unwrap();
         let exit = t.exit_date.unwrap();
@@ -1421,7 +1480,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         }
 
         // Per-trade ROC for strategy breakdown
-        let roc_opt = calculate_roc(pnl, &t.legs, t.credit_received, t.quantity, &t.spread_type(), t.bpr);
+        let roc_opt = calculate_roc(pnl, &t.legs, t.credit_received, t.quantity, &t.spread_type(), t.bpr, t.underlying_price);
 
         // DTE at close
         if let Some(dte) = t.dte_at_close {
@@ -1497,7 +1556,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
         // VIX regime
         if let Some(vix) = t.vix_at_entry {
-            let bucket = if vix < 15.0 { 0 } else if vix < 20.0 { 1 } else if vix < 25.0 { 2 } else if vix < 35.0 { 3 } else { 4 };
+            let bucket = if vix < 15.0 { 0 } else if vix < 20.0 { 1 } else if vix < 30.0 { 2 } else if vix < 40.0 { 3 } else { 4 };
             vix_data[bucket].0 += 1;
             if pnl > 0.0 { vix_data[bucket].1 += 1; }
             vix_data[bucket].2 += pnl;
@@ -1533,6 +1592,20 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
             let _ = debit; // suppress unused warning
         } else {
             theta_capture_per_trade.push(0.0);
+        }
+
+        // Commission tracking
+        if let Some(comm) = t.commission {
+            if comm > 0.0 {
+                total_commissions += comm;
+                comm_count += 1;
+            }
+        }
+
+        // Fill vs mid
+        if let Some(fvm) = t.fill_vs_mid {
+            fill_vs_mid_sum += fvm;
+            fill_vs_mid_count += 1;
         }
 
         // L10: IVR entry histogram
@@ -1644,7 +1717,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     }).collect();
 
     // VIX regimes
-    let vix_regime_defs: [&str; 5] = ["Calm (<15)", "Normal (15-20)", "Elevated (20-25)", "High (25-35)", "Stress (35+)"];
+    let vix_regime_defs: [&str; 5] = ["Calm (<15)", "Normal (15-20)", "Elevated (20-30)", "High (30-40)", "Stress (40+)"];
     let vix_regimes: Vec<VixRegime> = vix_regime_defs.iter().zip(vix_data.iter()).map(|(label, (trades, wins, pnl_sum))| {
         VixRegime {
             label,
@@ -1720,6 +1793,10 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         }
     }).collect();
 
+    let avg_commission_per_trade = if comm_count > 0 { total_commissions / comm_count as f64 } else { 0.0 };
+    let commission_pct_of_gross = if gross_wins > 0.0 { (total_commissions / gross_wins) * 100.0 } else { 0.0 };
+    let avg_fill_vs_mid = if fill_vs_mid_count > 0 { Some(fill_vs_mid_sum / fill_vs_mid_count as f64) } else { None };
+
     PerformanceStats {
         win_rate: win_rate * 100.0,
         scratch_rate: scratch_rate * 100.0,
@@ -1751,6 +1828,10 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         avg_premium_recapture,
         rolling_theta_capture,
         ivr_entry_buckets,
+        total_commissions,
+        avg_commission_per_trade,
+        commission_pct_of_gross,
+        avg_fill_vs_mid,
     }
 }
 
