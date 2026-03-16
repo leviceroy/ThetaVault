@@ -34,7 +34,7 @@ pub fn calculate_campaign_metrics(chain: &[Trade]) -> CampaignMetrics {
         total_credit,
         total_debit,
         roll_count: chain.len().saturating_sub(1),
-        net_credit: total_credit, // This is simplified; true net credit depends on mechanics but sum of credits is a good proxy for "total collected"
+        net_credit: total_credit - total_debit, // net_credit = credits collected minus debits paid on rolls
     }
 }
 
@@ -191,7 +191,7 @@ pub fn calculate_bpr(
 
     // Strangle / Straddle: Reg-T margin approximation
     // Per-leg margin = max(20% * underlying - OTM + legPremium, 10% * underlying + legPremium)
-    // Total = greater leg margin + lesser leg's premium
+    // Total = max(put_margin, call_margin) — thinkorswim uses greater leg only
     if short_put.is_some() && short_call.is_some() && long_put.is_none() && long_call.is_none() {
         if let Some(up) = underlying_price.filter(|&p| p > 0.0) {
             let sp = short_put.unwrap();
@@ -202,11 +202,7 @@ pub fn calculate_bpr(
                 .max(0.10 * up + sp.premium);
             let call_margin = (0.20 * up - call_otm + sc.premium)
                 .max(0.10 * up + sc.premium);
-            let margin = if put_margin >= call_margin {
-                put_margin + sc.premium
-            } else {
-                call_margin + sp.premium
-            };
+            let margin = put_margin.max(call_margin);
             return margin * 100.0 * qty;
         }
         // Fallback: 2x credit
@@ -1166,7 +1162,9 @@ fn delta_based_pop_fallback(trade: &Trade) -> f64 {
         StrategyType::IronCondor | StrategyType::IronButterfly => 68.0,
         StrategyType::Strangle | StrategyType::Straddle => 66.0,
         _ => {
-            let delta_abs = trade.delta.map(|d| d.abs()).unwrap_or(0.30);
+            let raw_abs = trade.delta.map(|d| d.abs()).unwrap_or(0.30);
+            // Normalize: delta stored as whole degrees (e.g. 30.0) → convert to decimal
+            let delta_abs = if raw_abs > 1.0 { raw_abs / 100.0 } else { raw_abs };
             (1.0 - delta_abs).clamp(0.25, 0.95) * 100.0
         }
     }
@@ -1435,10 +1433,11 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         let held_days = (exit_date_naive - t.trade_date.date_naive()).num_days().max(0);
         held_sum += held_days as f64;
 
-        // Annualized ROC
+        // Annualized ROC — cap at 300% to prevent <7 DTE trades from inflating the average
         if let Some(roc) = roc_opt {
             if held_days > 0 {
-                ann_roc_sum   += roc * (365.0 / held_days as f64);
+                let raw_ann = roc * (365.0 / held_days as f64);
+                ann_roc_sum   += raw_ann.clamp(-300.0, 300.0); // cap prevents <7 DTE inflation
                 ann_roc_count += 1;
             }
         }
@@ -1482,9 +1481,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
             cw_ratio_count += 1;
         }
 
-        // IV crush: entry_iv - iv_at_close (both stored as decimals 0-1)
+        // IV crush: entry_iv - iv_at_close (both stored as whole % e.g. 30.0 = 30%)
         if let (Some(entry_iv), Some(close_iv)) = (t.implied_volatility, t.iv_at_close) {
-            iv_crush_sum   += (entry_iv - close_iv) * 100.0; // convert to % pts
+            iv_crush_sum   += entry_iv - close_iv; // already in % pts — no multiply needed
             iv_crush_count += 1;
         }
 

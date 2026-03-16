@@ -374,6 +374,15 @@ pub struct Trade {
 
     // Notes
     pub notes: Option<String>,
+
+    // Execution quality (ISC-27, ISC-28)
+    pub bid_ask_spread_at_entry: Option<f64>,  // bid-ask width at time of entry
+    pub fill_vs_mid: Option<f64>,              // fill price minus mid-market (negative = paid through mid)
+
+    // Assignment tracking (ISC-29)
+    pub was_assigned: bool,                    // true if option was assigned to/exercised against stock
+    pub assigned_shares: Option<i32>,          // number of shares assigned (100 per contract)
+    pub cost_basis: Option<f64>,               // cost basis per share on assigned stock
 }
 
 impl Trade {
@@ -422,6 +431,18 @@ pub struct EntryCriteria {
     pub max_bpr_pct: Option<f64>,
     #[serde(rename = "notes")]
     pub notes: Option<String>,
+
+    // Structured exit ladder (ISC-30, ISC-31, ISC-32)
+    #[serde(rename = "stopLossPct")]
+    pub stop_loss_pct: Option<f64>,      // e.g. 200.0 = close if loss exceeds 2× credit
+    #[serde(rename = "profitTargetPct")]
+    pub profit_target_pct: Option<f64>, // override target_profit_pct for this playbook ladder
+    #[serde(rename = "dteExit")]
+    pub dte_exit: Option<i32>,           // close position at this DTE regardless of P&L
+
+    // Avoidance conditions (ISC-33)
+    #[serde(rename = "whenToAvoid")]
+    pub when_to_avoid: Option<String>,   // conditions under which NOT to trade this setup
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

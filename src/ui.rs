@@ -155,7 +155,7 @@ pub fn draw_ui(
             app_mode, playbook_edit_fields, playbook_edit_field_idx, playbook_edit_scroll,
             thesis_edit_buf, perf_stats,
         ),
-        3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on),
+        3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on, stats),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct, stored_heat_ceiling, max_pos_bpr_pct),
         5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 11]),
         _ => {}
@@ -2064,6 +2064,35 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                 if m2.len() > 1 { right_lines.push(Line::from(m2)); }
             }
 
+            // Execution quality
+            {
+                let mut eq: Vec<Span> = vec![Span::styled(" ", Style::default())];
+                if let Some(ba) = trade.bid_ask_spread_at_entry {
+                    eq.push(Span::styled("Bid-Ask: ", Style::default().fg(C_GRAY)));
+                    eq.push(Span::styled(format!("${:.2}  ", ba), Style::default().fg(C_CYAN)));
+                }
+                if let Some(fvm) = trade.fill_vs_mid {
+                    let fill_color = if fvm < 0.0 { C_RED } else { C_GREEN };
+                    eq.push(Span::styled("Fill vs Mid: ", Style::default().fg(C_GRAY)));
+                    eq.push(Span::styled(format!("{:+.2}  ", fvm), Style::default().fg(fill_color)));
+                }
+                if eq.len() > 1 { right_lines.push(Line::from(eq)); }
+            }
+
+            // Assignment info
+            if trade.was_assigned {
+                let mut as_line: Vec<Span> = vec![
+                    Span::styled(" ASSIGNED  ", Style::default().fg(Color::White).bg(C_RED).add_modifier(Modifier::BOLD)),
+                ];
+                if let Some(sh) = trade.assigned_shares {
+                    as_line.push(Span::styled(format!("  {} shares", sh), Style::default().fg(C_WHITE)));
+                }
+                if let Some(cb) = trade.cost_basis {
+                    as_line.push(Span::styled(format!("  @ ${:.2}/sh", cb), Style::default().fg(C_YELLOW)));
+                }
+                right_lines.push(Line::from(as_line));
+            }
+
             // Entry reason
             if let Some(er) = &trade.entry_reason {
                 right_lines.push(Line::from(vec![
@@ -2435,13 +2464,31 @@ fn draw_playbook(
         let badge = pb.spread_type.as_deref()
             .map(|st| format!("[{}]", crate::models::StrategyType::from_str(st).badge()))
             .unwrap_or_else(|| "    ".to_string());
-        ListItem::new(vec![Line::from(vec![
+        let name_line = Line::from(vec![
             Span::styled(
                 format!(" {} ", badge),
                 Style::default().fg(pb.spread_type.as_deref().map(badge_color).unwrap_or(C_GRAY)),
             ),
             Span::styled(pb.name.clone(), Style::default().fg(C_WHITE)),
-        ])])
+        ]);
+        // Stats line: win rate, P&L, count from strategy_breakdown
+        let stats_line = if let Some(st) = pb.spread_type.as_deref() {
+            if let Some(sb) = perf_stats.strategy_breakdown.iter().find(|sb| sb.strategy.as_str() == st) {
+                let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
+                let wr_color  = if sb.win_rate >= 65.0 { C_GREEN } else if sb.win_rate >= 50.0 { C_YELLOW } else { C_RED };
+                Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(format!("{:.0}%wr ", sb.win_rate), Style::default().fg(wr_color)),
+                    Span::styled(format!("{:+.0} ", sb.total_pnl), Style::default().fg(pnl_color)),
+                    Span::styled(format!("({})", sb.trades), Style::default().fg(C_GRAY)),
+                ])
+            } else {
+                Line::from(vec![Span::styled("  no data", Style::default().fg(C_DARK))])
+            }
+        } else {
+            Line::from(vec![Span::styled("  no data", Style::default().fg(C_DARK))])
+        };
+        ListItem::new(vec![name_line, stats_line])
     }).collect();
 
     f.render_stateful_widget(
@@ -3411,10 +3458,11 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
 
     if perf.avg_annualized_roc != 0.0 {
         let ann_color = if perf.avg_annualized_roc >= 0.0 { C_GREEN } else { C_RED };
+        let capped = perf.avg_annualized_roc >= 299.9 || perf.avg_annualized_roc <= -299.9;
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled("Avg Annualized ROC: ", Style::default().fg(C_GRAY)),
-            Span::styled(format!("{:+.1}%/yr", perf.avg_annualized_roc), Style::default().fg(ann_color)),
+            Span::styled(format!("{:+.1}%/yr{}", perf.avg_annualized_roc, if capped { " ★" } else { "" }), Style::default().fg(ann_color)),
         ]));
     }
 
@@ -4259,6 +4307,7 @@ fn draw_daily_actions(
     list_state: &mut ListState,
     collapsed:  &HashSet<crate::actions::AlertKind>,
     pulse_on:   bool,
+    stats:      &crate::models::PortfolioStats,
 ) {
     use crate::actions::{AlertKind, ActionRow, build_action_rows};
 
@@ -4266,6 +4315,7 @@ fn draw_daily_actions(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5),  // stats bar + plan summary
+            Constraint::Length(7),  // morning checklist
             Constraint::Min(0),     // alert list
         ])
         .split(area);
@@ -4309,6 +4359,100 @@ fn draw_daily_actions(
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_DARK))),
         chunks[0],
     );
+
+    // ── Morning Checklist ─────────────────────────────────────────────────────
+    {
+        use crate::actions::AlertKind;
+        let bwd     = stats.net_beta_weighted_delta;
+        let vix     = stats.vix;
+        let bwd_ok  = bwd.abs() < 30.0;
+        let vix_ok  = vix.map(|v| v < 30.0).unwrap_or(true);
+        let earnings_alerts = alerts.iter().filter(|a| a.kind == AlertKind::Warning).count();
+
+        let bwd_color    = if bwd_ok { C_GREEN } else { C_YELLOW };
+        let vix_color    = if vix_ok { C_GREEN } else if vix.map(|v| v < 40.0).unwrap_or(true) { C_YELLOW } else { C_RED };
+        let earn_color   = if earnings_alerts == 0 { C_GREEN } else { C_YELLOW };
+
+        let vix_str = vix.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "N/A".to_string());
+        let regime_label = vix.map(|v| {
+            if v < 15.0 { "Calm" } else if v < 20.0 { "Normal" } else if v < 30.0 { "Elevated" } else if v < 40.0 { "High" } else { "Stress" }
+        }).unwrap_or("Unknown");
+
+        let chk_lines = vec![
+            Line::from(vec![
+                Span::styled(if bwd_ok { "  ✓" } else { "  !" }, Style::default().fg(bwd_color).add_modifier(Modifier::BOLD)),
+                Span::styled(" Portfolio Delta:  ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:+.1} BWD", bwd), Style::default().fg(bwd_color)),
+                Span::styled(if bwd_ok { "  (neutral)" } else { "  (review)" }, Style::default().fg(C_DARK)),
+            ]),
+            Line::from(vec![
+                Span::styled(if vix_ok { "  ✓" } else { "  !" }, Style::default().fg(vix_color).add_modifier(Modifier::BOLD)),
+                Span::styled(" VIX Regime:       ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{} — {}", vix_str, regime_label), Style::default().fg(vix_color)),
+            ]),
+            Line::from(vec![
+                Span::styled(if earnings_alerts == 0 { "  ✓" } else { "  !" }, Style::default().fg(earn_color).add_modifier(Modifier::BOLD)),
+                Span::styled(" Earnings Scan:    ", Style::default().fg(C_GRAY)),
+                Span::styled(
+                    if earnings_alerts == 0 { "No earnings exposure".to_string() } else { format!("{} positions near earnings", earnings_alerts) },
+                    Style::default().fg(earn_color),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  ·", Style::default().fg(C_DARK)),
+                Span::styled(" Positions open:   ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{}", stats.open_trades), Style::default().fg(C_WHITE)),
+                Span::styled("   Theta/day: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:+.2}", stats.net_theta), Style::default().fg(C_GREEN)),
+            ]),
+        ];
+        f.render_widget(
+            Paragraph::new(chk_lines)
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_DARK))
+                    .title(Span::styled(" Morning Checklist ", Style::default().fg(C_CYAN)))),
+            chunks[1],
+        );
+    }
+
+    // ── All-clear panel when no alerts ───────────────────────────────────────
+    if total == 0 {
+        let avg_dte_str = if let Some(pos) = stats.next_critical_positions.first() {
+            format!("Nearest DTE: {}d", pos.1)
+        } else {
+            "No open positions".to_string()
+        };
+        let bwd_str = format!("BWD: {:+.1}", stats.net_beta_weighted_delta);
+        let bwd_color = if stats.net_beta_weighted_delta.abs() < 30.0 { C_GREEN } else { C_YELLOW };
+        let clear_lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "  ✓ PORTFOLIO CLEAR — No Actions Required",
+                    Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(format!("Positions: {}  ", stats.open_trades), Style::default().fg(C_WHITE)),
+                Span::styled(avg_dte_str + "  ", Style::default().fg(C_CYAN)),
+                Span::styled(bwd_str, Style::default().fg(bwd_color)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Theta/day: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:+.2}  ", stats.net_theta), Style::default().fg(C_GREEN)),
+                Span::styled("Alloc: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.1}%", stats.alloc_pct), Style::default().fg(C_YELLOW)),
+            ]),
+        ];
+        f.render_widget(
+            Paragraph::new(clear_lines)
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_GREEN))),
+            chunks[2],
+        );
+        return;
+    }
 
     // ── Alert list — collapsible groups ───────────────────────────────────────
     let rows = build_action_rows(alerts, collapsed);
@@ -4386,11 +4530,11 @@ fn draw_daily_actions(
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL)
             .border_style(Style::default().fg(C_BLUE))
-            .title(Span::styled(" Morning Checklist ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))))
+            .title(Span::styled(" Daily Alerts ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))))
         .highlight_style(Style::default().bg(C_DARK).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
-    f.render_stateful_widget(list, chunks[1], list_state);
+    f.render_stateful_widget(list, chunks[2], list_state);
 }
 
 // ── Journal Help Popup ────────────────────────────────────────────────────────

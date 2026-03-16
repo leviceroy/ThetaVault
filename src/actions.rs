@@ -209,14 +209,15 @@ fn get_sector(ticker: &str) -> &'static str {
 /// Compute all alerts for open positions.
 /// Sorted by severity (Critical first), then ticker alphabetically.
 pub fn compute_alerts(
-    trades:            &[Trade],
-    live_prices:       &HashMap<String, f64>,
-    account_size:      f64,
-    current_vix:       Option<f64>,
-    net_bwd:           f64,
-    undefined_drift:   f64,
-    target_undef_pct:  f64,
-    max_drawdown_pct:  f64,
+    trades:                   &[Trade],
+    live_prices:              &HashMap<String, f64>,
+    account_size:             f64,
+    current_vix:              Option<f64>,
+    net_bwd:                  f64,
+    undefined_drift:          f64,
+    target_undef_pct:         f64,
+    max_drawdown_pct:         f64,
+    drawdown_circuit_breaker: f64,
 ) -> Vec<TradeAlert> {
     let today = Utc::now().date_naive();
     let mut alerts: Vec<TradeAlert> = Vec::new();
@@ -634,7 +635,8 @@ pub fn compute_alerts(
     }
 
     // ── Drawdown circuit breaker ─────────────────────────────────────────────
-    if max_drawdown_pct > 5.0 {
+    let cb_threshold = if drawdown_circuit_breaker > 0.0 { drawdown_circuit_breaker } else { 5.0 };
+    if max_drawdown_pct > cb_threshold {
         alerts.push(TradeAlert {
             trade_id:       -1,
             ticker:         "PORTFOLIO".to_string(),
@@ -645,10 +647,11 @@ pub fn compute_alerts(
                 "Account down {:.1}% from peak. Reduce size and reassess.",
                 max_drawdown_pct
             ),
-            detail: Some(
-                "Drawdown circuit breaker: >5% from peak. Cut position size by 50%, \
-                 close losers, and wait for high-probability setups.".to_string()
-            ),
+            detail: Some(format!(
+                "Drawdown circuit breaker: >{:.0}% from peak. Cut position size by 50%, \
+                 close losers, and wait for high-probability setups.",
+                cb_threshold
+            )),
         });
     }
 

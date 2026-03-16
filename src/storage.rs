@@ -105,6 +105,15 @@ impl Storage {
                 gamma_at_close            REAL,
                 vega_at_close             REAL,
 
+                -- Execution quality
+                bid_ask_spread_at_entry   REAL,
+                fill_vs_mid               REAL,
+
+                -- Assignment tracking
+                was_assigned              INTEGER NOT NULL DEFAULT 0,
+                assigned_shares           INTEGER,
+                cost_basis                REAL,
+
                 -- Unique constraint: prevent duplicate imports
                 UNIQUE(trade_date, ticker, strategy, short_strike, long_strike, quantity)
             )",
@@ -186,6 +195,11 @@ impl Storage {
             ("theta_at_close",           "ALTER TABLE trades ADD COLUMN theta_at_close REAL"),
             ("gamma_at_close",           "ALTER TABLE trades ADD COLUMN gamma_at_close REAL"),
             ("vega_at_close",            "ALTER TABLE trades ADD COLUMN vega_at_close REAL"),
+            ("bid_ask_spread_at_entry",  "ALTER TABLE trades ADD COLUMN bid_ask_spread_at_entry REAL"),
+            ("fill_vs_mid",              "ALTER TABLE trades ADD COLUMN fill_vs_mid REAL"),
+            ("was_assigned",             "ALTER TABLE trades ADD COLUMN was_assigned INTEGER NOT NULL DEFAULT 0"),
+            ("assigned_shares",          "ALTER TABLE trades ADD COLUMN assigned_shares INTEGER"),
+            ("cost_basis",               "ALTER TABLE trades ADD COLUMN cost_basis REAL"),
         ];
 
         for (col_name, sql) in migrations {
@@ -235,8 +249,10 @@ impl Storage {
                 trade_grade=?39, grade_notes=?40,
                 legs_json=?41, tags=?42, notes=?43, next_earnings=?44,
                 iv_at_close=?45, delta_at_close=?46, roll_count=?47,
-                theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50
-             WHERE id=?51",
+                theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50,
+                bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
+                was_assigned=?53, assigned_shares=?54, cost_basis=?55
+             WHERE id=?56",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -288,7 +304,12 @@ impl Storage {
                 t.theta_at_close,                       // 48
                 t.gamma_at_close,                       // 49
                 t.vega_at_close,                        // 50
-                id,                                     // 51
+                t.bid_ask_spread_at_entry,              // 51
+                t.fill_vs_mid,                          // 52
+                t.was_assigned as i32,                  // 53
+                t.assigned_shares,                      // 54
+                t.cost_basis,                           // 55
+                id,                                     // 56
             ],
         )?;
         Ok(())
@@ -325,7 +346,9 @@ impl Storage {
                 trade_grade, grade_notes,
                 legs_json, tags, notes, next_earnings,
                 iv_at_close, delta_at_close, roll_count,
-                theta_at_close, gamma_at_close, vega_at_close
+                theta_at_close, gamma_at_close, vega_at_close,
+                bid_ask_spread_at_entry, fill_vs_mid,
+                was_assigned, assigned_shares, cost_basis
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -342,7 +365,9 @@ impl Storage {
                 ?39, ?40,
                 ?41, ?42, ?43, ?44,
                 ?45, ?46, ?47,
-                ?48, ?49, ?50
+                ?48, ?49, ?50,
+                ?51, ?52,
+                ?53, ?54, ?55
             )",
             params![
                 trade.ticker,               // 1
@@ -395,6 +420,11 @@ impl Storage {
                 trade.theta_at_close,       // 48
                 trade.gamma_at_close,       // 49
                 trade.vega_at_close,        // 50
+                trade.bid_ask_spread_at_entry, // 51
+                trade.fill_vs_mid,          // 52
+                trade.was_assigned as i32,  // 53
+                trade.assigned_shares,      // 54
+                trade.cost_basis,           // 55
             ],
         )?;
 
@@ -418,8 +448,10 @@ impl Storage {
                 is_earnings_play, is_tested,
                 trade_grade, grade_notes,
                 legs_json, tags, notes, next_earnings,
-               iv_at_close, delta_at_close, roll_count,
-               theta_at_close, gamma_at_close, vega_at_close
+                iv_at_close, delta_at_close, roll_count,
+                theta_at_close, gamma_at_close, vega_at_close,
+                bid_ask_spread_at_entry, fill_vs_mid,
+                was_assigned, assigned_shares, cost_basis
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -512,6 +544,11 @@ impl Storage {
                 theta_at_close:            row.get(48)?,
                 gamma_at_close:            row.get(49)?,
                 vega_at_close:             row.get(50)?,
+                bid_ask_spread_at_entry:   row.get(51)?,
+                fill_vs_mid:               row.get(52)?,
+                was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
+                assigned_shares:           row.get(54)?,
+                cost_basis:                row.get(55)?,
             })
         })?;
 
@@ -543,7 +580,9 @@ impl Storage {
                 trade_grade, grade_notes,
                 legs_json, tags, notes, next_earnings,
                 iv_at_close, delta_at_close, roll_count,
-                theta_at_close, gamma_at_close, vega_at_close
+                theta_at_close, gamma_at_close, vega_at_close,
+                bid_ask_spread_at_entry, fill_vs_mid,
+                was_assigned, assigned_shares, cost_basis
             FROM trades WHERE id = ?1"
         )?;
 
@@ -635,6 +674,11 @@ impl Storage {
                 theta_at_close:            row.get(48)?,
                 gamma_at_close:            row.get(49)?,
                 vega_at_close:             row.get(50)?,
+                bid_ask_spread_at_entry:   row.get(51)?,
+                fill_vs_mid:               row.get(52)?,
+                was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
+                assigned_shares:           row.get(54)?,
+                cost_basis:                row.get(55)?,
             })
         })?;
 
@@ -799,6 +843,10 @@ For earnings plays, use the weekly cycle — we need the stock to move toward ou
             vix_min:            None,
             vix_max:            None,
             max_bpr_pct:        None,
+            stop_loss_pct:      None,
+            profit_target_pct:  None,
+            dte_exit:           None,
+            when_to_avoid:      None,
             notes:              None,
         };
         let pb = PlaybookStrategy {

@@ -166,6 +166,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             theta_at_close: None,
             gamma_at_close: None,
             vega_at_close: None,
+            bid_ask_spread_at_entry: None,
+            fill_vs_mid: None,
+            was_assigned: false,
+            assigned_shares: None,
+            cost_basis: None,
         };
         storage.insert_trade(&trade)?;
     }

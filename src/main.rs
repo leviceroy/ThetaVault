@@ -27,6 +27,7 @@ pub struct AppState {
     pub max_heat_pct:         f64,
     pub max_pos_bpr_pct:      f64,   // max BPR per position as % of account (default 5.0)
     pub monthly_pnl_target:   f64,
+    pub drawdown_circuit_breaker_pct: f64, // drawdown % threshold for circuit breaker alert (default 5.0)
     pub current_vix:          Option<f64>,
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
@@ -167,6 +168,9 @@ impl AppState {
         let monthly_pnl_target = storage.get_setting("monthly_pnl_target")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
+        let drawdown_circuit_breaker_pct = storage.get_setting("drawdown_circuit_breaker_pct")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(5.0);
         let col_visibility_str = storage.get_setting("col_visibility")
             .unwrap_or_else(|| "1111111111111111111".to_string());
         let col_visibility = parse_col_visibility(&col_visibility_str);
@@ -189,7 +193,7 @@ impl AppState {
         let alerts = theta_vault_rust::actions::compute_alerts(
             &trades, &live_prices, account_size, current_vix,
             stats.net_beta_weighted_delta, stats.drift, stats.target_undefined_pct,
-            stats.max_drawdown_pct,
+            stats.max_drawdown_pct, drawdown_circuit_breaker_pct,
         );
         let mut actions_list_state = ListState::default();
         if !alerts.is_empty() {
@@ -206,6 +210,7 @@ impl AppState {
             max_heat_pct,
             max_pos_bpr_pct,
             monthly_pnl_target,
+            drawdown_circuit_breaker_pct,
             col_visibility,
             show_col_picker: false,
             playbook_match_candidates: Vec::new(),
@@ -246,7 +251,8 @@ impl AppState {
             perf_overview_max_scroll: u16::MAX,
             perf_analytics_scroll: 0,
             perf_analytics_max_scroll: u16::MAX,
-            perf_collapsed:   [false; 11],
+            // Default: all sections collapsed except Health (0) which is always most important
+            perf_collapsed:   [false, true, true, true, true, true, true, true, true, true, true],
             cal_year:      0,
             cal_month:     0,
             cal_day:       0,
@@ -287,7 +293,7 @@ impl AppState {
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
-            self.stats.max_drawdown_pct,
+            self.stats.max_drawdown_pct, self.drawdown_circuit_breaker_pct,
         );
         if !self.alerts.is_empty() && self.actions_list_state.selected().is_none() {
             self.actions_list_state.select(Some(0));
@@ -1013,7 +1019,7 @@ impl AppState {
     }
 
     pub fn start_admin_settings(&mut self) {
-        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target);
+        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target, self.drawdown_circuit_breaker_pct);
         self.admin_field_idx = 0;
         self.admin_scroll    = 0;
         self.app_mode        = AppMode::AdminSettings;
@@ -1371,6 +1377,13 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::bool_field("Earnings Play",  t.is_earnings_play));
     f.push(EditField::bool_field("Is Tested",      t.is_tested));
 
+    // ── Execution Quality
+    f.push(EditField::number("Bid-Ask Spread",
+        &t.bid_ask_spread_at_entry.map(|v| format!("{:.2}", v)).unwrap_or_default())
+        .with_section("── Execution Quality ─────────────────────────────────────────────"));
+    f.push(EditField::number("Fill vs Mid",
+        &t.fill_vs_mid.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+
     f
 }
 
@@ -1505,6 +1518,8 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     };
     t.is_earnings_play = field_str(fields, "Earnings Play") == "true";
     t.is_tested        = field_str(fields, "Is Tested") == "true";
+    t.bid_ask_spread_at_entry = field_opt_f64(fields, "Bid-Ask Spread");
+    t.fill_vs_mid             = field_opt_f64(fields, "Fill vs Mid");
     t.next_earnings = {
         let s = field_str(fields, "Earnings Date");
         if s.is_empty() { None } else { chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok() }
@@ -1556,6 +1571,14 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::number("Vega at Close",  &t.vega_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
     f.push(EditField::number("Close Commission",  ""));
 
+    // Assignment tracking
+    f.push(EditField::bool_field("Assigned", t.was_assigned)
+        .with_section("── Assignment ────────────────────────────────────────────────────"));
+    f.push(EditField::number("Assigned Shares",
+        &t.assigned_shares.map(|v| v.to_string()).unwrap_or_default()));
+    f.push(EditField::number("Cost Basis/Share",
+        &t.cost_basis.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+
     // Per-leg close premiums
     f.push(EditField::text("", "").with_section("── Close Premiums (BTC/STC price per contract) ─────────────────────"));
     for leg in &t.legs {
@@ -1580,6 +1603,10 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.theta_at_close = field_opt_f64(fields, "Theta at Close");
     t.gamma_at_close = field_opt_f64(fields, "Gamma at Close");
     t.vega_at_close  = field_opt_f64(fields, "Vega at Close");
+    t.was_assigned   = field_str(fields, "Assigned") == "true";
+    t.assigned_shares = fields.iter().find(|f| f.label == "Assigned Shares")
+        .and_then(|f| if f.value.is_empty() { None } else { f.value.parse::<i32>().ok() });
+    t.cost_basis     = field_opt_f64(fields, "Cost Basis/Share");
     let close_comm = field_opt_f64(fields, "Close Commission").unwrap_or(0.0);
 
     // Per-leg close premiums
@@ -1678,7 +1705,21 @@ fn build_playbook_edit_fields(pb: &models::PlaybookStrategy) -> Vec<EditField> {
         &ec.and_then(|e| e.vix_max).map(|v| format!("{:.1}", v)).unwrap_or_default()));
     f.push(EditField::number("Max BPR %",
         &ec.and_then(|e| e.max_bpr_pct).map(|v| format!("{:.1}", v)).unwrap_or_default()));
+
+    // Structured exit ladder
+    f.push(EditField::number("Stop Loss %",
+        &ec.and_then(|e| e.stop_loss_pct).map(|v| format!("{:.0}", v)).unwrap_or_default())
+        .with_section("── Exit Ladder ──────────────────────────────────────────────────"));
+    f.push(EditField::number("Profit Target %",
+        &ec.and_then(|e| e.profit_target_pct).map(|v| format!("{:.0}", v)).unwrap_or_default()));
+    f.push(EditField::number("DTE Exit",
+        &ec.and_then(|e| e.dte_exit).map(|v| v.to_string()).unwrap_or_default()));
+
+    // Avoidance conditions
     f.push(EditField::text("When to Avoid",
+        &ec.and_then(|e| e.when_to_avoid.clone()).unwrap_or_default())
+        .with_section("── Avoidance ────────────────────────────────────────────────────"));
+    f.push(EditField::text("Notes",
         &ec.and_then(|e| e.notes.clone()).unwrap_or_default()));
 
     // Thesis section
@@ -1719,7 +1760,12 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
     let vix_min              = field_opt_f64(fields, "VIX Min");
     let vix_max              = field_opt_f64(fields, "VIX Max");
     let max_bpr_pct          = field_opt_f64(fields, "Max BPR %");
-    let ec_notes             = field_opt_str(fields, "When to Avoid");
+    let stop_loss_pct        = field_opt_f64(fields, "Stop Loss %");
+    let profit_target_pct    = field_opt_f64(fields, "Profit Target %");
+    let dte_exit             = fields.iter().find(|f| f.label == "DTE Exit")
+        .and_then(|f| if f.value.is_empty() { None } else { f.value.parse::<i32>().ok() });
+    let when_to_avoid        = field_opt_str(fields, "When to Avoid");
+    let ec_notes             = field_opt_str(fields, "Notes");
 
     let has_criteria = min_ivr.is_some() || max_ivr.is_some()
         || min_delta.is_some() || max_delta.is_some()
@@ -1727,7 +1773,8 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
         || max_allocation_pct.is_some() || target_profit_pct.is_some()
         || management_rule.is_some() || min_pop.is_some()
         || vix_min.is_some() || vix_max.is_some() || max_bpr_pct.is_some()
-        || ec_notes.is_some();
+        || stop_loss_pct.is_some() || profit_target_pct.is_some() || dte_exit.is_some()
+        || when_to_avoid.is_some() || ec_notes.is_some();
 
     let entry_criteria = if has_criteria {
         Some(models::EntryCriteria {
@@ -1744,6 +1791,10 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
             vix_min,
             vix_max,
             max_bpr_pct,
+            stop_loss_pct,
+            profit_target_pct,
+            dte_exit,
+            when_to_avoid,
             notes: ec_notes,
         })
     } else {
@@ -1763,7 +1814,7 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
 // Admin settings helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64) -> Vec<EditField> {
+fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64, drawdown_circuit_breaker_pct: f64) -> Vec<EditField> {
     vec![
         EditField::number("Account Size", &format!("{:.2}", account_size))
             .with_section("── Account ───────────────────────────────────────────────────────"),
@@ -1772,17 +1823,19 @@ fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr
             .with_section("── Risk Limits (tastytrade defaults) ─────────────────────────────"),
         EditField::number("Max Pos BPR %",      &format!("{}", max_pos_bpr_pct)),
         EditField::number("Target Undefined %", &format!("{:.1}", target_undefined_pct)),
+        EditField::number("Drawdown Breaker %", &format!("{:.1}", drawdown_circuit_breaker_pct)),
     ]
 }
 
 fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
-    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)
+    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)
 {
     let mut new_account      = None;
     let mut new_max_heat     = None;
     let mut new_max_pos_bpr  = None;
     let mut new_target_undef = None;
     let mut new_monthly_tgt  = None;
+    let mut new_drawdown_cb  = None;
     for field in fields {
         match field.label.as_str() {
             "Account Size" => {
@@ -1815,10 +1868,16 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
                     new_target_undef = Some(v);
                 }
             }
+            "Drawdown Breaker %" => {
+                if let Ok(v) = field.value.parse::<f64>() {
+                    let _ = storage.set_setting("drawdown_circuit_breaker_pct", &v.to_string());
+                    new_drawdown_cb = Some(v);
+                }
+            }
             _ => {}
         }
     }
-    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt)
+    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt, new_drawdown_cb)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1918,7 +1977,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 app.alerts = theta_vault_rust::actions::compute_alerts(
                     &app.trades, &app.live_prices, app.account_size, app.current_vix,
                     app.stats.net_beta_weighted_delta, app.stats.drift, app.stats.target_undefined_pct,
-                    app.stats.max_drawdown_pct,
+                    app.stats.max_drawdown_pct, app.drawdown_circuit_breaker_pct,
                 );
                 if !app.alerts.is_empty() {
                     app.actions_list_state.select(Some(0));
@@ -2313,12 +2372,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let fields = app.admin_fields.clone();
-                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly) = apply_admin_fields(&fields, &storage);
-                        if let Some(v) = new_acct    { app.account_size         = v; }
-                        if let Some(v) = new_heat    { app.max_heat_pct         = v; }
-                        if let Some(v) = new_pos_bpr { app.max_pos_bpr_pct      = v; }
-                        if let Some(v) = new_undef   { app.target_undefined_pct = v; }
-                        if let Some(v) = new_monthly { app.monthly_pnl_target   = v; }
+                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly, new_drawdown_cb) = apply_admin_fields(&fields, &storage);
+                        if let Some(v) = new_acct       { app.account_size                  = v; }
+                        if let Some(v) = new_heat       { app.max_heat_pct                  = v; }
+                        if let Some(v) = new_pos_bpr    { app.max_pos_bpr_pct               = v; }
+                        if let Some(v) = new_undef      { app.target_undefined_pct          = v; }
+                        if let Some(v) = new_monthly    { app.monthly_pnl_target            = v; }
+                        if let Some(v) = new_drawdown_cb { app.drawdown_circuit_breaker_pct = v; }
                         app.cancel_mode();
                         app.reload(&storage);
                     }
