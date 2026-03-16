@@ -42,8 +42,10 @@ pub struct AppState {
     pub under_tauri: bool,
 
     // KPI info popups
-    pub dash_kpi_popup:     bool,
-    pub perf_kpi_popup:     bool,
+    pub dash_kpi_popup:          bool,
+    pub dash_kpi_scroll:         u16,
+    pub dash_kpi_max_scroll:     u16,
+    pub perf_kpi_popup:          bool,
     pub journal_help_popup: bool,
     pub journal_help_scroll: u16,
     pub journal_help_max_scroll: u16,
@@ -86,6 +88,8 @@ pub struct AppState {
     pub perf_analytics_scroll:    u16,
     pub perf_analytics_max_scroll: u16,
     pub perf_collapsed:   [bool; 11], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry
+    pub perf_section_cursor: usize,  // 0-based index into current subtab's navigable section list
+    pub perf_scroll_dirty:   bool,   // true → scroll refresh block should sync scroll to cursor
 
     // Calendar popup state
     pub cal_year:      i32,
@@ -200,6 +204,25 @@ impl AppState {
             actions_list_state.select(Some(0));
         }
 
+        // Pre-collapse all alert groups except the first non-empty one in canonical order
+        let collapsed_action_kinds_init: HashSet<theta_vault_rust::actions::AlertKind> = {
+            use theta_vault_rust::actions::AlertKind;
+            let order = [
+                AlertKind::Defense, AlertKind::MaxLoss, AlertKind::GammaRisk,
+                AlertKind::Warning, AlertKind::DeltaExtreme, AlertKind::UndefinedDrift,
+                AlertKind::Drawdown, AlertKind::RollChain, AlertKind::Manage,
+                AlertKind::Close, AlertKind::Roll, AlertKind::Sizing, AlertKind::Ok,
+            ];
+            let first = order.iter()
+                .find(|k| alerts.iter().any(|a| &a.kind == *k))
+                .cloned();
+            order.iter()
+                .filter(|k| alerts.iter().any(|a| &a.kind == *k))
+                .filter(|k| Some(*k) != first.as_ref())
+                .cloned()
+                .collect()
+        };
+
         let mut app = AppState {
             trades,
             playbooks,
@@ -221,11 +244,13 @@ impl AppState {
             spy_monthly: std::collections::HashMap::new(),
             alerts,
             actions_list_state,
-            collapsed_action_kinds: HashSet::new(),
+            collapsed_action_kinds: collapsed_action_kinds_init,
             pulse_on:             false,
             under_tauri: std::env::var("THETA_VAULT_TAURI").is_ok(),
-            dash_kpi_popup:     false,
-            perf_kpi_popup:     false,
+            dash_kpi_popup:          false,
+            dash_kpi_scroll:         0,
+            dash_kpi_max_scroll:     0,
+            perf_kpi_popup:          false,
             journal_help_popup: false,
             journal_help_scroll: 0,
             journal_help_max_scroll: 0,
@@ -251,8 +276,10 @@ impl AppState {
             perf_overview_max_scroll: u16::MAX,
             perf_analytics_scroll: 0,
             perf_analytics_max_scroll: u16::MAX,
-            // Default: all sections collapsed except Health (0) which is always most important
-            perf_collapsed:   [false, true, true, true, true, true, true, true, true, true, true],
+            // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
+            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true],
+            perf_section_cursor: 0,
+            perf_scroll_dirty:   false,
             cal_year:      0,
             cal_month:     0,
             cal_day:       0,
@@ -596,15 +623,9 @@ impl AppState {
                 }
             }
             5 => {
-                if self.perf_subtab == 0 {
-                    if self.perf_overview_scroll < self.perf_overview_max_scroll {
-                        self.perf_overview_scroll = self.perf_overview_scroll.saturating_add(1);
-                    }
-                } else {
-                    if self.perf_analytics_scroll < self.perf_analytics_max_scroll {
-                        self.perf_analytics_scroll = self.perf_analytics_scroll.saturating_add(1);
-                    }
-                }
+                let count = perf_section_count(self.perf_subtab);
+                self.perf_section_cursor = (self.perf_section_cursor + 1) % count;
+                self.perf_scroll_dirty = true;
             }
             _ => {}
         }
@@ -653,11 +674,13 @@ impl AppState {
                 self.dash_open_scroll = self.dash_open_scroll.saturating_sub(1);
             }
             5 => {
-                if self.perf_subtab == 0 {
-                    self.perf_overview_scroll = self.perf_overview_scroll.saturating_sub(1);
+                let count = perf_section_count(self.perf_subtab);
+                self.perf_section_cursor = if self.perf_section_cursor == 0 {
+                    count - 1
                 } else {
-                    self.perf_analytics_scroll = self.perf_analytics_scroll.saturating_sub(1);
-                }
+                    self.perf_section_cursor - 1
+                };
+                self.perf_scroll_dirty = true;
             }
             _ => {}
         }
@@ -1912,6 +1935,27 @@ fn col_visibility_to_string(vis: &[bool; 19]) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Perf tab cursor helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn perf_section_count(subtab: usize) -> usize {
+    if subtab == 0 { 3 } else { 6 }
+}
+
+/// Maps (subtab, cursor) → `perf_collapsed` global index.
+/// Overview map: [0=Health, 1=Returns, 3=Growth]
+/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX]
+fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
+    const OVERVIEW_MAP:  [usize; 3] = [0, 1, 3];
+    const ANALYTICS_MAP: [usize; 6] = [2, 4, 5, 6, 7, 8];
+    match subtab {
+        0 => OVERVIEW_MAP.get(cursor).copied(),
+        1 => ANALYTICS_MAP.get(cursor).copied(),
+        _ => None,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1923,6 +1967,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // One-time migrations / seed data
     let _ = storage.migrate_zebra_type();
     let _ = storage.ensure_ratio_spread_playbook();
+    let _ = storage.backfill_ivr_all_trades();
     let mut app = AppState::new(&storage);
 
     // ── Yahoo Finance startup fetch (10 s timeout)
@@ -2054,6 +2099,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 app.perf_analytics_max_scroll = theta_vault_rust::ui::count_perf_analytics_lines(
                     &app.stats, &app.perf_stats, content_w, &app.perf_collapsed, &app.spy_monthly
                 ).saturating_sub(visible_h) as u16;
+
+                // Sync scroll to cursor position after cursor movement
+                if app.perf_scroll_dirty {
+                    app.perf_scroll_dirty = false;
+                    let target = theta_vault_rust::ui::perf_header_scroll_for_cursor(
+                        app.perf_section_cursor,
+                        app.perf_subtab,
+                        &app.perf_collapsed,
+                        &app.stats,
+                        &app.perf_stats,
+                        &app.spy_monthly,
+                        content_w,
+                    );
+                    if app.perf_subtab == 0 {
+                        app.perf_overview_scroll = target.min(app.perf_overview_max_scroll);
+                    } else {
+                        app.perf_analytics_scroll = target.min(app.perf_analytics_max_scroll);
+                    }
+                }
             }
         }
 
@@ -2120,6 +2184,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.pulse_on,
             app.under_tauri,
             app.dash_kpi_popup,
+            app.dash_kpi_scroll,
+            &mut app.dash_kpi_max_scroll,
             app.perf_kpi_popup,
             app.journal_help_popup,
             app.journal_help_scroll,
@@ -2137,6 +2203,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &app.spy_monthly,
             &app.live_prices,
             &app.perf_collapsed,
+            app.perf_section_cursor,
             &app.col_visibility,
             app.show_col_picker,
             app.journal_chain_view,
@@ -2178,6 +2245,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // ── Popups (KPIs, Help) ──────────────────────────────────────────────────
+            if app.dash_kpi_popup && app.selected_tab == 0 {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
+                        app.dash_kpi_popup = false;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.dash_kpi_scroll = app.dash_kpi_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.dash_kpi_scroll < app.dash_kpi_max_scroll {
+                            app.dash_kpi_scroll += 1;
+                        }
+                    }
+                    KeyCode::PageUp => {
+                        app.dash_kpi_scroll = app.dash_kpi_scroll.saturating_sub(10);
+                    }
+                    KeyCode::PageDown => {
+                        app.dash_kpi_scroll = std::cmp::min(
+                            app.dash_kpi_scroll + 10,
+                            app.dash_kpi_max_scroll,
+                        );
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             if app.journal_help_popup && app.selected_tab == 1 {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
@@ -2242,7 +2336,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // Save
                         if let Some(tid) = app.edit_trade_id {
                             if let Some(orig) = app.trades.iter().find(|t| t.id == tid).cloned() {
-                                let updated = app.build_updated_trade(&orig);
+                                let mut updated = app.build_updated_trade(&orig);
+                                // Auto-compute IVR if implied_volatility is set and iv_rank is blank
+                                if updated.iv_rank.is_none() {
+                                    if let Some(iv) = updated.implied_volatility {
+                                        if let Ok(Some(ivr)) = storage.compute_ivr_for_ticker(&updated.ticker, iv) {
+                                            updated.iv_rank = Some(ivr);
+                                        }
+                                    }
+                                }
                                 let _ = storage.update_trade(tid, &updated);
                                 app.cancel_mode();
                                 app.reload(&storage);
@@ -2501,6 +2603,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.detail_scroll = 0;
                     app.perf_overview_scroll = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_section_cursor = 0;
+                    app.perf_scroll_dirty = false;
                     app.cancel_mode();
                 }
                 KeyCode::BackTab => {
@@ -2509,6 +2613,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.detail_scroll = 0;
                     app.perf_overview_scroll = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_section_cursor = 0;
+                    app.perf_scroll_dirty = false;
                     app.cancel_mode();
                 }
 
@@ -2520,6 +2626,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Dashboard KPI popup toggle
                 KeyCode::Char('i') | KeyCode::Char('I') if app.selected_tab == 0 => {
                     app.dash_kpi_popup = !app.dash_kpi_popup;
+                    if app.dash_kpi_popup { app.dash_kpi_scroll = 0; }
                 }
 
                 // Journal help popup toggle
@@ -2541,12 +2648,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         app.perf_subtab -= 1;
                         app.perf_overview_scroll = 0;
                         app.perf_analytics_scroll = 0;
+                        app.perf_section_cursor = 0;
+                        app.perf_scroll_dirty = false;
                     }
                 }
                 KeyCode::Char(']') | KeyCode::Char('/') if app.selected_tab == 5 => {
                     app.perf_subtab = if app.perf_subtab == 0 { 1 } else { 0 };
                     app.perf_overview_scroll = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_section_cursor = 0;
+                    app.perf_scroll_dirty = false;
                 }
 
                 // Performance section collapse/expand (keys 1-9, context-sensitive)
@@ -2797,6 +2908,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 } else {
                                     app.selected_trade_chain = vec![trade.clone()];
                                 }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Perf tab controls (Enter, PageUp, PageDown)
+                _ if app.selected_tab == 5 => {
+                    match key.code {
+                        KeyCode::Enter => {
+                            if let Some(gi) = perf_cursor_to_gi(app.perf_subtab, app.perf_section_cursor) {
+                                app.perf_collapsed[gi] = !app.perf_collapsed[gi];
+                                // do NOT reset scroll — keep view on toggled header
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => app.nav_down(),
+                        KeyCode::Up   | KeyCode::Char('k') => app.nav_up(),
+                        KeyCode::PageDown => {
+                            // Scroll content without moving cursor
+                            if app.perf_subtab == 0 {
+                                app.perf_overview_scroll = app.perf_overview_scroll.saturating_add(5).min(app.perf_overview_max_scroll);
+                            } else {
+                                app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_add(5).min(app.perf_analytics_max_scroll);
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            if app.perf_subtab == 0 {
+                                app.perf_overview_scroll = app.perf_overview_scroll.saturating_sub(5);
+                            } else {
+                                app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_sub(5);
                             }
                         }
                         _ => {}

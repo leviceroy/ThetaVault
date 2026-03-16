@@ -74,6 +74,8 @@ pub fn draw_ui(
     pulse_on:                bool,
     under_tauri:             bool,
     dash_kpi_popup:          bool,
+    dash_kpi_scroll:         u16,
+    dash_kpi_max_scroll:     &mut u16,
     perf_kpi_popup:          bool,
     journal_help_popup:      bool,
     journal_help_scroll:     u16,
@@ -91,6 +93,7 @@ pub fn draw_ui(
     spy_monthly:             &std::collections::HashMap<(i32, u32), f64>,
     live_prices:             &std::collections::HashMap<String, f64>,
     perf_collapsed:          &[bool; 11],
+    perf_section_cursor:     usize,
     col_visibility:          &[bool; 19],
     show_col_picker:         bool,
     journal_chain_view:      bool,
@@ -157,7 +160,7 @@ pub fn draw_ui(
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on, stats),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct, stored_heat_ceiling, max_pos_bpr_pct),
-        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 11]),
+        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 11], perf_section_cursor),
         _ => {}
     }
 
@@ -178,7 +181,7 @@ pub fn draw_ui(
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  R:Refresh ",
         (4, AppMode::AdminSettings) => " ↑↓/Tab:Field  Ctrl+S:Save  Esc:Cancel ",
         (4, _)                     => " Q:Quit  E:Edit Settings  R:Refresh ",
-        (5, _)                     => " Q:Quit  ↑↓:Scroll  /:Switch-Tab  1-N:Collapse  i:KPI  Tab:Switch  R:Refresh ",
+        (5, _)                     => " Q:Quit  ↑↓:Nav  Enter:Toggle  PgUp/Dn:Scroll  /:SubTab  1-N:Collapse  i:KPI  Tab:Switch  R:Refresh ",
         _                          => " Q:Quit  Tab:Switch  R:Refresh ",
     };
     f.render_widget(
@@ -193,7 +196,7 @@ pub fn draw_ui(
 
     // ── KPI info popup (Dashboard tab, i key)
     if dash_kpi_popup && selected_tab == 0 {
-        draw_kpi_popup(f, chunks[1], stats, max_heat_pct);
+        draw_kpi_popup(f, chunks[1], stats, max_heat_pct, dash_kpi_scroll, dash_kpi_max_scroll);
     }
 
     // ── Performance KPI popup (Perf tab, i key)
@@ -589,8 +592,30 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, trades: &[T
         ]),
         Line::from(vec![
             Span::styled("  Θ/day    ", Style::default().fg(C_GRAY)),
-            Span::styled(format!("${:.2}", stats.net_theta), Style::default().fg(C_GREEN)),
+            Span::styled(
+                format!("${:.2}", stats.net_theta),
+                Style::default().fg(if stats.net_theta >= 0.0 { C_GREEN } else { C_YELLOW }),
+            ),
         ]),
+        {
+            // tastytrade KPI: Θ/NetLiq — target 0.1–0.3% daily
+            if let Some(ratio) = stats.theta_netliq_ratio {
+                let nl_color = if ratio >= 0.1 && ratio <= 0.3 { C_GREEN }
+                               else if ratio < 0.1 { C_YELLOW }
+                               else { C_RED };
+                let bar = if ratio < 0.1 { "░▓░" } else if ratio <= 0.3 { "▓▓░" } else { "▓▓▓" };
+                Line::from(vec![
+                    Span::styled("  Θ/NetLiq ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("{:.2}%", ratio), Style::default().fg(nl_color)),
+                    Span::styled(format!(" [{}] 0.1–0.3%", bar), Style::default().fg(C_DARK)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("  Θ/NetLiq ", Style::default().fg(C_GRAY)),
+                    Span::styled("—", Style::default().fg(C_GRAY)),
+                ])
+            }
+        },
         {
             let bwd_val = stats.net_beta_weighted_delta;
             // tastytrade goal: delta-neutral (BWD near 0). Near 0 = green, far = red.
@@ -1211,21 +1236,29 @@ fn draw_trade_table(
                     Cell::from(gtc_str).style(gtc_style),
                     Cell::from(be_str).style(Style::default().fg(C_GRAY)),
                     {
-                        let bpr_str = t.bpr.map_or("—".to_string(), |b| format!("${:.0}", b));
-                        Cell::from(bpr_str).style(Style::default().fg(C_YELLOW))
+                        if t.is_open() {
+                            let bpr_str = t.bpr.map_or("—".to_string(), |b| format!("${:.0}", b));
+                            Cell::from(bpr_str).style(Style::default().fg(C_YELLOW))
+                        } else {
+                            Cell::from("—").style(Style::default().fg(C_GRAY))
+                        }
                     },
                     // BPR% — position BPR relative to account size, traffic-light coloring
                     {
-                        match t.bpr {
-                            None => Cell::from("—").style(Style::default().fg(C_GRAY)),
-                            Some(b) if account_size > 0.0 => {
-                                let pct = b / account_size * 100.0;
-                                let color = if pct > max_pos_bpr_pct { C_RED }
-                                            else if pct > max_pos_bpr_pct * 0.75 { C_YELLOW }
-                                            else { C_GREEN };
-                                Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
-                            },
-                            _ => Cell::from("—").style(Style::default().fg(C_GRAY)),
+                        if !t.is_open() {
+                            Cell::from("—").style(Style::default().fg(C_GRAY))
+                        } else {
+                            match t.bpr {
+                                None => Cell::from("—").style(Style::default().fg(C_GRAY)),
+                                Some(b) if account_size > 0.0 => {
+                                    let pct = b / account_size * 100.0;
+                                    let color = if pct > max_pos_bpr_pct { C_RED }
+                                                else if pct > max_pos_bpr_pct * 0.75 { C_YELLOW }
+                                                else { C_GREEN };
+                                    Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
+                                },
+                                _ => Cell::from("—").style(Style::default().fg(C_GRAY)),
+                            }
                         }
                     },
                     Cell::from(format!("${:.0}", max_profit)).style(Style::default().fg(C_GRAY)),
@@ -2007,9 +2040,14 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         }
     }
 
+    // Cache playbook lookup — used in both MANAGEMENT and PLAYBOOK COMPLIANCE blocks
+    let trade_playbook: Option<&crate::models::PlaybookStrategy> = trade.playbook_id
+        .and_then(|pid| playbooks.iter().find(|p| p.id == pid));
+
     // ── RIGHT COLUMN: MANAGEMENT ─────────────────────────────────────────────
     {
-        let has_mgmt = trade.management_rule.is_some()
+        let has_mgmt = trade.is_open()
+            || trade.management_rule.is_some()
             || trade.target_profit_pct.is_some()
             || trade.trade_grade.is_some()
             || trade.commission.is_some()
@@ -2028,7 +2066,13 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             // Rule / Target / Grade on one line
             {
                 let mut m1: Vec<Span> = vec![Span::styled(" ", Style::default())];
-                if let Some(m) = &trade.management_rule {
+                // Use trade's own rule; fall back to playbook rule if available
+                let effective_rule: Option<String> = trade.management_rule.clone().or_else(|| {
+                    trade_playbook
+                        .and_then(|pb| pb.entry_criteria.as_ref())
+                        .and_then(|ec| ec.management_rule.clone())
+                });
+                if let Some(m) = &effective_rule {
                     m1.push(Span::styled("Rule: ", Style::default().fg(C_GRAY)));
                     m1.push(Span::styled(format!("{}  ", m), Style::default().fg(C_CYAN)));
                 }
@@ -2161,8 +2205,8 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
 
     // ── RIGHT COLUMN: Playbook compliance ────────────────────────────────────
     if trade.is_open() {
-        if let Some(pid) = trade.playbook_id {
-            if let Some(pb) = playbooks.iter().find(|p| p.id == pid) {
+        if let Some(pb) = trade_playbook {
+            {
                 right_lines.push(Line::from(""));
                 right_lines.push(Line::from(vec![Span::styled(
                     format!(" ── PLAYBOOK: {} {}", pb.name, "─".repeat(40usize.saturating_sub(pb.name.len()))),
@@ -2186,6 +2230,64 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                             ]));
                         }
                     }
+
+                    // Exit ladder — only render when at least one rule is set
+                    let has_ladder = ec.dte_exit.is_some()
+                        || ec.profit_target_pct.is_some()
+                        || ec.stop_loss_pct.is_some()
+                        || ec.management_rule.is_some()
+                        || ec.when_to_avoid.is_some()
+                        || ec.vix_min.is_some()
+                        || ec.vix_max.is_some();
+                    if has_ladder {
+                        right_lines.push(Line::from(vec![Span::styled(
+                            format!(" ── MANAGEMENT RULES {}", "─".repeat(47)),
+                            sep_style,
+                        )]));
+                        if let Some(dte) = ec.dte_exit {
+                            right_lines.push(Line::from(vec![
+                                Span::styled("   Close at ", Style::default().fg(C_GRAY)),
+                                Span::styled(format!("{} DTE", dte), Style::default().fg(C_YELLOW)),
+                            ]));
+                        }
+                        if let Some(tgt) = ec.profit_target_pct {
+                            right_lines.push(Line::from(vec![
+                                Span::styled("   Take profit at ", Style::default().fg(C_GRAY)),
+                                Span::styled(format!("{:.0}%", tgt), Style::default().fg(C_GREEN)),
+                            ]));
+                        }
+                        if let Some(sl) = ec.stop_loss_pct {
+                            right_lines.push(Line::from(vec![
+                                Span::styled("   Stop loss at ", Style::default().fg(C_GRAY)),
+                                Span::styled(format!("{:.0}% of credit", sl), Style::default().fg(C_RED)),
+                            ]));
+                        }
+                        if let Some(rule) = &ec.management_rule {
+                            right_lines.push(Line::from(vec![
+                                Span::styled("   Rule: ", Style::default().fg(C_GRAY)),
+                                Span::styled(rule.clone(), Style::default().fg(C_CYAN)),
+                            ]));
+                        }
+                        if let Some(avoid) = &ec.when_to_avoid {
+                            right_lines.push(Line::from(vec![
+                                Span::styled("   Avoid: ", Style::default().fg(C_GRAY)),
+                                Span::styled(avoid.clone(), Style::default().fg(Color::Rgb(249, 115, 22))),
+                            ]));
+                        }
+                        if ec.vix_min.is_some() || ec.vix_max.is_some() {
+                            let mut vix_spans = vec![Span::styled("   VIX gate: ", Style::default().fg(C_GRAY))];
+                            if let Some(vmin) = ec.vix_min {
+                                vix_spans.push(Span::styled(format!("≥{:.0}", vmin), Style::default().fg(C_WHITE)));
+                            }
+                            if ec.vix_min.is_some() && ec.vix_max.is_some() {
+                                vix_spans.push(Span::styled(" – ", Style::default().fg(C_GRAY)));
+                            }
+                            if let Some(vmax) = ec.vix_max {
+                                vix_spans.push(Span::styled(format!("≤{:.0}", vmax), Style::default().fg(C_WHITE)));
+                            }
+                            right_lines.push(Line::from(vix_spans));
+                        }
+                    }
                 } else {
                     right_lines.push(Line::from(vec![
                         Span::styled(" Playbook: ", Style::default().fg(C_GRAY)),
@@ -2194,6 +2296,16 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                     ]));
                 }
             }
+        } else {
+            // No playbook assigned — show minimal block so user knows it's available
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(vec![Span::styled(
+                format!(" ── PLAYBOOK {}", "─".repeat(55)),
+                sep_style,
+            )]));
+            right_lines.push(Line::from(vec![
+                Span::styled("   No playbook assigned", Style::default().fg(C_GRAY)),
+            ]));
         }
     }
 
@@ -2327,6 +2439,7 @@ pub fn count_detail_lines_left(
 
 /// Count how many lines the RIGHT column of `draw_trade_detail` would push.
 /// Covers: MANAGEMENT, Campaign/Roll Chain, Playbook compliance, Legs breakdown.
+/// MUST mirror draw_trade_detail right-column rendering exactly.
 pub fn count_detail_lines_right(
     trade:     &crate::models::Trade,
     chain:     &[crate::models::Trade],
@@ -2334,8 +2447,13 @@ pub fn count_detail_lines_right(
 ) -> usize {
     let mut n = 0usize;
 
-    // ── MANAGEMENT block
-    let has_mgmt = trade.management_rule.is_some()
+    // Cache playbook — mirrors renderer
+    let trade_playbook: Option<&crate::models::PlaybookStrategy> = trade.playbook_id
+        .and_then(|pid| playbooks.iter().find(|p| p.id == pid));
+
+    // ── MANAGEMENT block — mirrors has_mgmt gate in renderer
+    let has_mgmt = trade.is_open()
+        || trade.management_rule.is_some()
         || trade.target_profit_pct.is_some()
         || trade.trade_grade.is_some()
         || trade.commission.is_some()
@@ -2343,19 +2461,29 @@ pub fn count_detail_lines_right(
         || trade.is_tested
         || !trade.tags.is_empty()
         || trade.entry_reason.is_some()
-        || trade.notes.as_ref().map(|n| !n.is_empty()).unwrap_or(false);
+        || trade.notes.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     if has_mgmt {
-        n += 1; // MANAGEMENT separator (no leading blank on right col)
-        // m1: Rule / Target / Grade
-        if trade.management_rule.is_some() || trade.target_profit_pct.is_some() || trade.trade_grade.is_some() {
+        n += 1; // MANAGEMENT separator
+        // m1: effective_rule (own or playbook fallback) / target / grade
+        let effective_rule = trade.management_rule.is_some() || trade_playbook
+            .and_then(|pb| pb.entry_criteria.as_ref())
+            .and_then(|ec| ec.management_rule.as_ref())
+            .is_some();
+        if effective_rule || trade.target_profit_pct.is_some() || trade.trade_grade.is_some() {
             n += 1;
         }
-        // m2: Comm / BPR / Rolls / flags
+        // m2: comm / bpr / rolls / flags
         if trade.commission.is_some() || trade.bpr.is_some() || trade.roll_count > 0
             || trade.is_earnings_play || trade.is_tested
         {
             n += 1;
         }
+        // execution quality line
+        if trade.bid_ask_spread_at_entry.is_some() || trade.fill_vs_mid.is_some() {
+            n += 1;
+        }
+        // assignment
+        if trade.was_assigned { n += 1; }
         if trade.entry_reason.is_some() { n += 1; }
         if trade.rolled_from_id.is_some() { n += 1; }
         if !trade.tags.is_empty() { n += 1; }
@@ -2371,23 +2499,43 @@ pub fn count_detail_lines_right(
     if chain.len() > 1 {
         n += 1; // blank
         n += 1; // campaign summary line
-        n += chain.len(); // one line per chain trade
+        n += chain.len();
     }
 
-    // ── PLAYBOOK block (open trades with a playbook assigned)
+    // ── PLAYBOOK block — mirrors renderer exactly
     if trade.is_open() {
-        if let Some(pid) = trade.playbook_id {
-            if let Some(pb) = playbooks.iter().find(|p| p.id == pid) {
-                n += 1; // blank
-                n += 1; // PLAYBOOK separator
-                if let Some(ec) = &pb.entry_criteria {
-                    let violations = crate::calculations::check_playbook_compliance(trade, ec);
-                    n += 1; // compliance header line
-                    n += violations.len(); // one line per violation detail
-                } else {
-                    n += 1; // "(no criteria)" line
+        if let Some(pb) = trade_playbook {
+            n += 1; // blank
+            n += 1; // PLAYBOOK separator
+            if let Some(ec) = &pb.entry_criteria {
+                let violations = crate::calculations::check_playbook_compliance(trade, ec);
+                n += 1; // compliance status line
+                n += violations.len();
+                // Exit ladder sub-block
+                let has_ladder = ec.dte_exit.is_some()
+                    || ec.profit_target_pct.is_some()
+                    || ec.stop_loss_pct.is_some()
+                    || ec.management_rule.is_some()
+                    || ec.when_to_avoid.is_some()
+                    || ec.vix_min.is_some()
+                    || ec.vix_max.is_some();
+                if has_ladder {
+                    n += 1; // MANAGEMENT RULES separator
+                    if ec.dte_exit.is_some()         { n += 1; }
+                    if ec.profit_target_pct.is_some() { n += 1; }
+                    if ec.stop_loss_pct.is_some()    { n += 1; }
+                    if ec.management_rule.is_some()  { n += 1; }
+                    if ec.when_to_avoid.is_some()    { n += 1; }
+                    if ec.vix_min.is_some() || ec.vix_max.is_some() { n += 1; }
                 }
+            } else {
+                n += 1; // "(no criteria)" line
             }
+        } else {
+            // "No playbook assigned" fallback
+            n += 1; // blank
+            n += 1; // PLAYBOOK separator
+            n += 1; // "No playbook assigned"
         }
     }
 
@@ -2407,8 +2555,8 @@ pub fn count_perf_overview_lines(
     width: usize,
     collapsed: &[bool; 11],
 ) -> usize {
-    perf_health_lines(stats, width, collapsed[0]).len()
-    + perf_returns_lines(stats, perf, width, collapsed[1]).len()
+    perf_health_lines(stats, width, collapsed[0], false).len()
+    + perf_returns_lines(stats, perf, width, collapsed[1], false).len()
     + 1  // trailing blank
 }
 
@@ -2419,15 +2567,51 @@ pub fn count_perf_analytics_lines(
     collapsed: &[bool; 11],
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
 ) -> usize {
-    perf_advanced_lines(stats, width, collapsed[2]).len()
-    + perf_strategy_lines(perf, width, collapsed[4]).len()
-    + perf_ticker_lines(perf, width, collapsed[5]).len()
-    + perf_monthly_lines(perf, spy_monthly, width, collapsed[6]).len()
-    + perf_ivr_lines(perf, width, collapsed[7]).len()
-    + perf_vix_lines(perf, width, collapsed[8]).len()
+    perf_advanced_lines(stats, width, collapsed[2], false).len()
+    + perf_strategy_lines(perf, width, collapsed[4], false).len()
+    + perf_ticker_lines(perf, width, collapsed[5], false).len()
+    + perf_monthly_lines(perf, spy_monthly, width, collapsed[6], false).len()
+    + perf_ivr_lines(perf, width, collapsed[7], false).len()
+    + perf_vix_lines(perf, width, collapsed[8], false).len()
     + perf_dte_lines(perf, width).len()
     + perf_ivr_entry_lines(perf, width).len()
     + 1
+}
+
+/// Returns the scroll offset that positions the selected section header near the top of the
+/// scrollable Paragraph for the given subtab + cursor position.
+pub fn perf_header_scroll_for_cursor(
+    cursor: usize,
+    subtab: usize,
+    collapsed: &[bool; 11],
+    stats: &crate::models::PortfolioStats,
+    perf: &crate::models::PerformanceStats,
+    spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
+    width: usize,
+) -> u16 {
+    if subtab == 0 {
+        match cursor {
+            0 => 0,
+            1 => perf_health_lines(stats, width, collapsed[0], false).len() as u16,
+            // cursor 2 = Growth chart (widget above paragraph); scroll paragraph to top
+            _ => 0,
+        }
+    } else {
+        let advanced_len = perf_advanced_lines(stats, width, collapsed[2], false).len();
+        let strategy_len = perf_strategy_lines(perf, width, collapsed[4], false).len();
+        let ticker_len   = perf_ticker_lines(perf, width, collapsed[5], false).len();
+        let monthly_len  = perf_monthly_lines(perf, spy_monthly, width, collapsed[6], false).len();
+        let ivr_len      = perf_ivr_lines(perf, width, collapsed[7], false).len();
+        match cursor {
+            0 => 0,
+            1 => advanced_len as u16,
+            2 => (advanced_len + strategy_len) as u16,
+            3 => (advanced_len + strategy_len + ticker_len) as u16,
+            4 => (advanced_len + strategy_len + ticker_len + monthly_len) as u16,
+            5 => (advanced_len + strategy_len + ticker_len + monthly_len + ivr_len) as u16,
+            _ => 0,
+        }
+    }
 }
 
 pub fn count_thesis_lines(text: &str, inner_width: usize) -> usize {
@@ -3297,27 +3481,29 @@ fn draw_equity_curve(f: &mut Frame, area: Rect, trades: &[&Trade]) {
 
 // ── Performance Tab ───────────────────────────────────────────────────────────
 
-fn perf_section_header(title: &str, width: usize, collapsed: bool, num: Option<u8>) -> Line<'static> {
-    let toggle = if collapsed { "▶" } else { "▼" };
-    let num_prefix = match num {
+fn perf_section_header(title: &str, width: usize, collapsed: bool, num: Option<u8>, selected: bool) -> Line<'static> {
+    let toggle = if selected { "►" } else if collapsed { "▶" } else { "▼" };
+    let num_str = match num {
         Some(n) if n < 10 => format!("[{}] ", n),
         Some(_)           => "[0] ".to_string(),
-        None              => "    ".to_string(),
+        None              => String::new(),
     };
-    let header_text = format!("{} ━━━ {}{} ", num_prefix, toggle, title);
-    let bar_len = width.saturating_sub(header_text.len() + 2).max(2);
+    let prefix_len = 8 + num_str.len() + title.len();
+    let bar_len = width.saturating_sub(prefix_len).max(2);
     let bar = "━".repeat(bar_len);
+    let hdr_color = if selected { C_YELLOW } else { C_CYAN };
     Line::from(vec![
-        Span::styled(num_prefix, Style::default().fg(C_DARK).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{} ━━━ {} ", toggle, title), Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{} ━━━ ", toggle), Style::default().fg(hdr_color).add_modifier(Modifier::BOLD)),
+        Span::styled(num_str, Style::default().fg(C_YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{} ", title), Style::default().fg(hdr_color).add_modifier(Modifier::BOLD)),
         Span::styled(bar, Style::default().fg(C_DARK)),
     ])
 }
 
-fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🛡 PORTFOLIO HEALTH", width, collapsed, Some(1)),
+        perf_section_header("🛡 PORTFOLIO HEALTH", width, collapsed, Some(1), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3376,10 +3562,10 @@ fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> V
     lines
 }
 
-fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📈 RETURNS", width, collapsed, Some(2)),
+        perf_section_header("📈 RETURNS", width, collapsed, Some(2), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3506,10 +3692,10 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     lines
 }
 
-fn perf_advanced_lines(stats: &PortfolioStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_advanced_lines(stats: &PortfolioStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⚙ ADVANCED METRICS", width, collapsed, Some(1)),
+        perf_section_header("⚙ ADVANCED METRICS", width, collapsed, Some(1), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3544,11 +3730,12 @@ fn perf_advanced_lines(stats: &PortfolioStats, width: usize, collapsed: bool) ->
     lines
 }
 
-fn draw_perf_growth_chart(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &PerformanceStats, collapsed: bool) {
+fn draw_perf_growth_chart(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &PerformanceStats, collapsed: bool, selected: bool) {
+    let border_color = if selected { C_YELLOW } else { C_DARK };
     if collapsed {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(C_DARK))
+            .border_style(Style::default().fg(border_color))
             .title(Span::styled(" 📊 ACCOUNT GROWTH ▶ (key 3) ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)));
         f.render_widget(block, area);
         return;
@@ -3556,7 +3743,7 @@ fn draw_perf_growth_chart(f: &mut Frame, area: Rect, stats: &PortfolioStats, per
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(C_DARK))
+        .border_style(Style::default().fg(border_color))
         .title(Span::styled(" 📊 ACCOUNT GROWTH ▼ (key 3) ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)));
 
     let history = &perf.balance_history;
@@ -3619,10 +3806,10 @@ fn draw_perf_growth_chart(f: &mut Frame, area: Rect, stats: &PortfolioStats, per
     f.render_widget(chart, area);
 }
 
-fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⚔ STRATEGY BREAKDOWN", width, collapsed, Some(2)),
+        perf_section_header("⚔ STRATEGY BREAKDOWN", width, collapsed, Some(2), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3689,10 +3876,10 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -
     lines
 }
 
-fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🎯 TICKER BREAKDOWN", width, collapsed, Some(3)),
+        perf_section_header("🎯 TICKER BREAKDOWN", width, collapsed, Some(3), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3736,10 +3923,11 @@ fn perf_monthly_lines(
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
     width: usize,
     collapsed: bool,
+    selected: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📅 MONTHLY P&L", width, collapsed, Some(4)),
+        perf_section_header("📅 MONTHLY P&L", width, collapsed, Some(4), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3781,10 +3969,10 @@ fn perf_monthly_lines(
     lines
 }
 
-fn perf_ivr_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_ivr_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📊 IV RANK AT ENTRY", width, collapsed, Some(5)),
+        perf_section_header("📊 IV RANK AT ENTRY", width, collapsed, Some(5), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3818,10 +4006,10 @@ fn perf_ivr_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec
     lines
 }
 
-fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec<Line<'static>> {
+fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("🌡 VIX REGIME", width, collapsed, Some(6)),
+        perf_section_header("🌡 VIX REGIME", width, collapsed, Some(6), selected),
     ];
     if collapsed { return lines; }
     lines.push(Line::from(""));
@@ -3858,7 +4046,7 @@ fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool) -> Vec
 fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⏱ EXIT DTE ANALYSIS", width, false, None),
+        perf_section_header("⏱ EXIT DTE ANALYSIS", width, false, None, false),
     ];
     lines.push(Line::from(""));
     if perf.dte_buckets.is_empty() {
@@ -3894,7 +4082,7 @@ fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
 fn perf_ivr_entry_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, false, None),
+        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, false, None, false),
     ];
     lines.push(Line::from(""));
     if perf.ivr_entry_buckets.iter().all(|b| b.count == 0) {
@@ -3932,6 +4120,7 @@ fn draw_performance(
     analytics_scroll: u16,
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
     collapsed: &[bool; 11],
+    perf_section_cursor: usize,
 ) {
     let outer = Block::default()
         .borders(Borders::ALL)
@@ -3957,6 +4146,15 @@ fn draw_performance(
 
     let content_area = tab_chunks[1];
 
+    // Determine which collapsed[] index the cursor points to
+    const OVERVIEW_MAP:  [usize; 3] = [0, 1, 3];
+    const ANALYTICS_MAP: [usize; 6] = [2, 4, 5, 6, 7, 8];
+    let selected_gi: Option<usize> = if perf_subtab == 0 {
+        OVERVIEW_MAP.get(perf_section_cursor).copied()
+    } else {
+        ANALYTICS_MAP.get(perf_section_cursor).copied()
+    };
+
     if perf_subtab == 0 {
         // OVERVIEW: growth chart (fixed) + health/returns (scrollable)
         let chart_h: u16 = if collapsed[3] { 3 } else { 18 };
@@ -3965,11 +4163,11 @@ fn draw_performance(
             .constraints([Constraint::Length(chart_h), Constraint::Min(0)])
             .split(content_area);
 
-        draw_perf_growth_chart(f, chunks[0], stats, perf, collapsed[3]);
+        draw_perf_growth_chart(f, chunks[0], stats, perf, collapsed[3], selected_gi == Some(3));
 
         let mut lines: Vec<Line> = Vec::new();
-        lines.extend(perf_health_lines(stats, width, collapsed[0]));
-        lines.extend(perf_returns_lines(stats, perf, width, collapsed[1]));
+        lines.extend(perf_health_lines(stats, width, collapsed[0], selected_gi == Some(0)));
+        lines.extend(perf_returns_lines(stats, perf, width, collapsed[1], selected_gi == Some(1)));
         lines.push(Line::from(""));
 
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
@@ -3977,12 +4175,12 @@ fn draw_performance(
     } else {
         // ANALYTICS: all sections scrollable
         let mut lines: Vec<Line> = Vec::new();
-        lines.extend(perf_advanced_lines(stats, width, collapsed[2]));
-        lines.extend(perf_strategy_lines(perf, width, collapsed[4]));
-        lines.extend(perf_ticker_lines(perf, width, collapsed[5]));
-        lines.extend(perf_monthly_lines(perf, spy_monthly, width, collapsed[6]));
-        lines.extend(perf_ivr_lines(perf, width, collapsed[7]));
-        lines.extend(perf_vix_lines(perf, width, collapsed[8]));
+        lines.extend(perf_advanced_lines(stats, width, collapsed[2], selected_gi == Some(2)));
+        lines.extend(perf_strategy_lines(perf, width, collapsed[4], selected_gi == Some(4)));
+        lines.extend(perf_ticker_lines(perf, width, collapsed[5], selected_gi == Some(5)));
+        lines.extend(perf_monthly_lines(perf, spy_monthly, width, collapsed[6], selected_gi == Some(6)));
+        lines.extend(perf_ivr_lines(perf, width, collapsed[7], selected_gi == Some(7)));
+        lines.extend(perf_vix_lines(perf, width, collapsed[8], selected_gi == Some(8)));
         lines.extend(perf_dte_lines(perf, width));
         lines.extend(perf_ivr_entry_lines(perf, width));
         lines.push(Line::from(""));
@@ -3994,9 +4192,9 @@ fn draw_performance(
 
 // ── KPI Popup ─────────────────────────────────────────────────────────────────
 
-fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pct: f64) {
-    let w: u16 = 76.min(area.width.saturating_sub(4));
-    let h: u16 = 28.min(area.height.saturating_sub(4));
+fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pct: f64, scroll: u16, max_scroll: &mut u16) {
+    let w: u16 = 82.min(area.width.saturating_sub(4));
+    let h: u16 = 42.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let dialog = Rect::new(x, y, w, h);
@@ -4004,106 +4202,180 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pc
 
     let bwd_source = if stats.spy_price.is_some() { "live SPY" } else { "no SPY price" };
 
-    // VIX-adaptive heat ceiling for current VIX
     let vix_heat_target = stats.vix.map(|v| vix_max_heat(v));
     let heat_line = if let Some(vh) = vix_heat_target {
         format!(
-            "${:.0} BPR / ${:.0} acct = {:.1}% alloc. VIX target: {:.0}%, eff cap: {:.0}%. >100% = margin.",
+            "${:.0} BPR / ${:.0} acct = {:.1}% alloc. VIX tgt: {:.0}%, eff cap: {:.0}%.",
             stats.total_open_bpr, stats.account_size, stats.alloc_pct, vh, max_heat_pct
         )
     } else {
         format!(
-            "${:.0} BPR / ${:.0} acct = {:.1}% allocated (eff cap {:.0}%). >100% = using margin.",
+            "${:.0} BPR / ${:.0} acct = {:.1}% allocated (eff cap {:.0}%).",
             stats.total_open_bpr, stats.account_size, stats.alloc_pct, max_heat_pct
         )
     };
     let vix_line = stats.vix.map_or(
-        "unavailable  —  VIX adaptive heat: <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%".to_string(),
+        "unavailable  —  <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%".to_string(),
         |v| {
             let regime = if v >= 40.0 { "EXTREME" } else if v >= 30.0 { "HIGH" } else if v >= 20.0 { "ELEVATED" } else if v >= 15.0 { "NORMAL" } else { "CALM" };
             let vh = vix_max_heat(v);
-            format!("{:.1}  [{regime}] adaptive cap: {:.0}%.  Regimes: <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%", v, vh)
+            format!("{:.1} [{regime}] cap: {:.0}%.  Regimes: <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%", v, vh)
         },
     );
 
-    // VIX-adaptive regime for VIX row second line
-    let vix_regime_row = stats.vix.map_or(
-        "           Regimes: <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%".to_string(),
-        |v| {
-            let vh = vix_max_heat(v);
-            format!("           adaptive cap: {:.0}%.  Regimes: <15→25%  15-20→30%  20-30→35%  30-40→40%  ≥40→50%", vh)
-        },
-    );
+    let lbl = |s: &'static str| Span::styled(s, Style::default().fg(C_YELLOW));
+    let sub = |s: &'static str| Span::styled(s, Style::default().fg(C_GRAY));
+    let pad = Span::styled("           ", Style::default().fg(C_YELLOW));
 
     let lines = vec![
-        Line::from(vec![Span::styled("  KPI Reference  (tastytrade philosophy)", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("  ◆ KPI Reference  (tastytrade philosophy)", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
         Line::from(""),
+        Line::from(vec![Span::styled("  ── SIDEBAR STATS ───────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
         Line::from(vec![
-            Span::styled("  Balance  ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("account_size + realized_pnl = ${:.2}", stats.balance), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  P&L      ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("realized P&L from closed trades = ${:+.2}", stats.realized_pnl), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Unreal   ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("est. θ×days×100×qty = ${:+.0}  (theta heuristic)", stats.unrealized_pnl), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  BWD      ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("Σ(δ×β×price/SPY×qty×100) = {:+.1}Δ  [{}].", stats.net_beta_weighted_delta, bwd_source), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("           ", Style::default().fg(C_YELLOW)),
-            Span::styled("Goal: near 0 (delta-neutral).  Green ≤5  Yellow ≤15  Red >15.", Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Vega     ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("net vega = {:+.0}V  (/1% IV ≈ ${:+.0}).  Negative = normal for premium sellers.", stats.net_vega, stats.net_vega), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("           ", Style::default().fg(C_YELLOW)),
-            Span::styled("Yellow = normal short.  Red = long (unusual).  LightRed = dangerously short (<-5000).", Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Heat     ", Style::default().fg(C_YELLOW)),
-            Span::styled(heat_line, Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("           ", Style::default().fg(C_YELLOW)),
-            Span::styled("VIX adaptive: lowers cap in low-VIX, raises cap in high-VIX.", Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Risk     ", Style::default().fg(C_YELLOW)),
+            lbl("  Target    "),
             Span::styled(format!("undefined/defined BPR split = {:.0}/{:.0}  (tgt {:.0}/{:.0})", stats.undefined_risk_pct, stats.defined_risk_pct, stats.target_undefined_pct, 100.0 - stats.target_undefined_pct), Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
-            Span::styled("  VIX      ", Style::default().fg(C_YELLOW)),
-            Span::styled(vix_line, Style::default().fg(C_WHITE)),
+            pad.clone(),
+            sub("tastytrade: ~75% undefined-risk (CSP/STR/CC), ~25% defined (verticals/IC)."),
         ]),
         Line::from(vec![
-            Span::styled(vix_regime_row, Style::default().fg(C_GRAY)),
+            lbl("  Drift     "),
+            Span::styled(format!("how far undefined_pct is from target = {:+.1}%", stats.drift), Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
-            Span::styled("  POP      ", Style::default().fg(C_YELLOW)),
-            Span::styled(format!("avg probability of profit = {:.1}%  across {} open positions", stats.avg_pop, stats.open_trades), Style::default().fg(C_WHITE)),
+            pad.clone(),
+            sub("Best: near 0. Green ≤2%. Yellow ≤5%. Red >5% — rebalance risk type."),
+        ]),
+        Line::from(vec![
+            lbl("  Win Rate  "),
+            Span::styled(format!("closed winners / total closed = {:.1}%", stats.win_rate * 100.0), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: 60–70% for premium sellers. Higher = discipline. < 50% = edge issue."),
+        ]),
+        Line::from(vec![
+            lbl("  Θ/day     "),
+            Span::styled(format!("net daily theta on open positions = ${:+.2}", stats.net_theta), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: positive and growing with position size. Drives theta capture."),
+        ]),
+        Line::from(vec![
+            lbl("  Θ/NetLiq  "),
+            Span::styled(
+                stats.theta_netliq_ratio.map_or("— (no open positions)".to_string(), |r| format!("{:.3}%  net_theta / account_size × 100", r)),
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: 0.1–0.3% daily (tastytrade target). Green=0.1-0.3% Yellow=<0.1% Red=>0.3%."),
+        ]),
+        Line::from(vec![
+            lbl("  β-WΔ      "),
+            Span::styled(format!("Σ(δ×β×price/SPY×qty×100) = {:+.1}Δ  [{}]", stats.net_beta_weighted_delta, bwd_source), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: near 0 (delta-neutral). Green ≤5. Yellow ≤15. Red >15."),
+        ]),
+        Line::from(vec![
+            lbl("  Θ/|Δ|     "),
+            Span::styled(
+                stats.theta_delta_ratio.map_or("— (BWD near zero)".to_string(), |r| format!("{:.2}  theta earned per unit of directional risk", r)),
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: ≥1.0 (theta-dominated). 0.5–1.0 balanced. <0.5 = delta-dominated."),
+        ]),
+        Line::from(vec![
+            lbl("  Max DD    "),
+            Span::styled(format!("peak-to-trough decline = -${:.0}  ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: < 5% ideal, < 10% acceptable. Alert at 5%. Cut size if hit."),
+        ]),
+        Line::from(vec![
+            lbl("  Avg ROC   "),
+            Span::styled(format!("avg return on capital (BPR) = {:.1}%  per closed trade", stats.avg_roc), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: 5–15% per trade. tastytrade target ~10% per occurrence on BPR."),
         ]),
         Line::from(""),
+        Line::from(vec![Span::styled("  ── CARDS (TOP ROW) ─────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
         Line::from(vec![
-            Span::styled("  rules:   ", Style::default().fg(C_GRAY)),
+            lbl("  Balance   "),
+            Span::styled(format!("account_size + realized_pnl = ${:.2}", stats.balance), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  P&L       "),
+            Span::styled(format!("realized P&L from closed trades = ${:+.2}", stats.realized_pnl), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Unreal    "),
+            Span::styled(format!("est. θ×days×100×qty = ${:+.0}  (theta heuristic, not mark-to-market)", stats.unrealized_pnl), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  BWD Card  "),
+            Span::styled("beta-weighted delta of full portfolio (see β-WΔ above)", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Vega      "),
+            Span::styled(format!("net vega {:+.0}V  (/1% IV ≈ ${:+.0}).  Negative = normal for prem. sellers.", stats.net_vega, stats.net_vega), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Yellow = normal short vega. Red = long vega (unusual). LightRed = dangerously short."),
+        ]),
+        Line::from(vec![
+            lbl("  Heat      "),
+            Span::styled(heat_line, Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("VIX adaptive: lowers cap in calm markets, raises cap in high-VIX."),
+        ]),
+        Line::from(vec![
+            lbl("  POP       "),
+            Span::styled(format!("avg probability of profit = {:.1}%  across {} open positions", stats.avg_pop, stats.open_trades), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: ≥ 66% avg POP (sell at 1SD or better). Drives long-run win rate."),
+        ]),
+        Line::from(vec![
+            lbl("  VIX       "),
+            Span::styled(vix_line, Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled("  ── RULES ──────────────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
+        Line::from(vec![
+            Span::styled("  management: ", Style::default().fg(C_GRAY)),
             Span::styled("Close at 50% max profit  ·  Manage at 21 DTE  ·  No earnings", Style::default().fg(C_GRAY)),
         ]),
         Line::from(vec![
-            Span::styled("  sizing:  ", Style::default().fg(C_GRAY)),
+            Span::styled("  sizing:     ", Style::default().fg(C_GRAY)),
             Span::styled("Max 5% BPR/trade  ·  Heat < 50% total  ·  Undefined ≤ 75%", Style::default().fg(C_GRAY)),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled("  Press i to close", Style::default().fg(C_DARK))]),
+        Line::from(vec![Span::styled("  ↑/↓ or j/k scroll  ·  i/Esc close", Style::default().fg(C_DARK))]),
     ];
+
+    let content_lines = lines.len() as u16;
+    let inner_h = h.saturating_sub(2);
+    *max_scroll = content_lines.saturating_sub(inner_h);
 
     f.render_widget(
         Paragraph::new(lines)
+            .scroll((scroll, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -4410,7 +4682,7 @@ fn draw_daily_actions(
                 Span::styled(" Positions open:   ", Style::default().fg(C_GRAY)),
                 Span::styled(format!("{}", stats.open_trades), Style::default().fg(C_WHITE)),
                 Span::styled("   Theta/day: ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("{:+.2}", stats.net_theta), Style::default().fg(C_GREEN)),
+                Span::styled(format!("{:+.2}", stats.net_theta), Style::default().fg(if stats.net_theta >= 0.0 { C_GREEN } else { C_YELLOW })),
             ]),
         ];
         f.render_widget(
@@ -4448,7 +4720,7 @@ fn draw_daily_actions(
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Theta/day: ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("{:+.2}  ", stats.net_theta), Style::default().fg(C_GREEN)),
+                Span::styled(format!("{:+.2}  ", stats.net_theta), Style::default().fg(if stats.net_theta >= 0.0 { C_GREEN } else { C_YELLOW })),
                 Span::styled("Alloc: ", Style::default().fg(C_GRAY)),
                 Span::styled(format!("{:.1}%", stats.alloc_pct), Style::default().fg(C_YELLOW)),
             ]),
