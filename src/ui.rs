@@ -836,8 +836,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let dash_otm_cell = {
             if let Some(u) = t.underlying_price {
                 let short_put = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortPut)
-                    .map(|l| l.strike)
-                    .or(if t.short_strike > 0.0 { Some(t.short_strike) } else { None });
+                    .map(|l| l.strike);
                 let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
                     .map(|l| l.strike);
                 let otm_pct = match (short_put, short_call) {
@@ -1434,8 +1433,7 @@ fn draw_trade_table(
                             match underlying {
                                 Some(u) if u > 0.0 => {
                                     let short_put = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortPut)
-                                        .map(|l| l.strike)
-                                        .or(if t.short_strike > 0.0 { Some(t.short_strike) } else { None });
+                                        .map(|l| l.strike);
                                     let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
                                         .map(|l| l.strike);
                                     let otm_pct = match (short_put, short_call) {
