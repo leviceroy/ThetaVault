@@ -906,7 +906,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         &mut open_table_state,
     );
 
-    let closed: Vec<&Trade> = trades.iter().filter(|t| t.pnl.is_some()).collect();
+    let mut closed: Vec<&Trade> = trades.iter().filter(|t| t.pnl.is_some()).collect();
+    closed.sort_by_key(|t| t.exit_date.unwrap_or(t.trade_date));
     draw_equity_curve(f, right_rows[2], &closed);
 }
 
