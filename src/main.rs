@@ -28,6 +28,8 @@ pub struct AppState {
     pub max_pos_bpr_pct:      f64,   // max BPR per position as % of account (default 5.0)
     pub monthly_pnl_target:   f64,
     pub drawdown_circuit_breaker_pct: f64, // drawdown % threshold for circuit breaker alert (default 5.0)
+    pub default_profit_target_pct: f64,   // global default profit target % (0 = use per-strategy defaults)
+    pub default_mgmt_dte:     i32,        // DTE at which to trigger management alerts (tastytrade default: 21)
     pub current_vix:          Option<f64>,
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
@@ -67,8 +69,8 @@ pub struct AppState {
     // Chain View mode
     pub journal_chain_view: bool,
 
-    // Column visibility for trade table (20 columns)
-    pub col_visibility:  [bool; 20],
+    // Column visibility for trade table (21 columns — last is EM)
+    pub col_visibility:  [bool; 21],
     pub show_col_picker: bool,
 
     // Playbook auto-match candidates (when multiple match on save)
@@ -175,6 +177,12 @@ impl AppState {
         let drawdown_circuit_breaker_pct = storage.get_setting("drawdown_circuit_breaker_pct")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(5.0);
+        let default_profit_target_pct = storage.get_setting("default_profit_target_pct")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let default_mgmt_dte = storage.get_setting("default_mgmt_dte")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(21);
         let col_visibility_str = storage.get_setting("col_visibility")
             .unwrap_or_else(|| "1111111111111111111".to_string());
         let col_visibility = parse_col_visibility(&col_visibility_str);
@@ -198,6 +206,7 @@ impl AppState {
             &trades, &live_prices, account_size, current_vix,
             stats.net_beta_weighted_delta, stats.drift, stats.target_undefined_pct,
             stats.max_drawdown_pct, drawdown_circuit_breaker_pct,
+            default_profit_target_pct, default_mgmt_dte,
         );
         let mut actions_list_state = ListState::default();
         if !alerts.is_empty() {
@@ -234,6 +243,8 @@ impl AppState {
             max_pos_bpr_pct,
             monthly_pnl_target,
             drawdown_circuit_breaker_pct,
+            default_profit_target_pct,
+            default_mgmt_dte,
             col_visibility,
             show_col_picker: false,
             playbook_match_candidates: Vec::new(),
@@ -321,6 +332,7 @@ impl AppState {
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
             self.stats.max_drawdown_pct, self.drawdown_circuit_breaker_pct,
+            self.default_profit_target_pct, self.default_mgmt_dte,
         );
         if !self.alerts.is_empty() && self.actions_list_state.selected().is_none() {
             self.actions_list_state.select(Some(0));
@@ -1044,7 +1056,7 @@ impl AppState {
     }
 
     pub fn start_admin_settings(&mut self) {
-        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target, self.drawdown_circuit_breaker_pct);
+        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target, self.drawdown_circuit_breaker_pct, self.default_profit_target_pct, self.default_mgmt_dte);
         self.admin_field_idx = 0;
         self.admin_scroll    = 0;
         self.app_mode        = AppMode::AdminSettings;
@@ -1839,7 +1851,7 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
 // Admin settings helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64, drawdown_circuit_breaker_pct: f64) -> Vec<EditField> {
+fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64, drawdown_circuit_breaker_pct: f64, default_profit_target_pct: f64, default_mgmt_dte: i32) -> Vec<EditField> {
     vec![
         EditField::number("Account Size", &format!("{:.2}", account_size))
             .with_section("── Account ───────────────────────────────────────────────────────"),
@@ -1849,18 +1861,23 @@ fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr
         EditField::number("Max Pos BPR %",      &format!("{}", max_pos_bpr_pct)),
         EditField::number("Target Undefined %", &format!("{:.1}", target_undefined_pct)),
         EditField::number("Drawdown Breaker %", &format!("{:.1}", drawdown_circuit_breaker_pct)),
+        EditField::number("Default Profit Target %", &format!("{:.1}", default_profit_target_pct))
+            .with_section("── Trade Management ─────────────────────────────────────────────"),
+        EditField::number("Default Mgmt DTE", &format!("{}", default_mgmt_dte)),
     ]
 }
 
 fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
-    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)
+    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<i32>)
 {
-    let mut new_account      = None;
-    let mut new_max_heat     = None;
-    let mut new_max_pos_bpr  = None;
-    let mut new_target_undef = None;
-    let mut new_monthly_tgt  = None;
-    let mut new_drawdown_cb  = None;
+    let mut new_account       = None;
+    let mut new_max_heat      = None;
+    let mut new_max_pos_bpr   = None;
+    let mut new_target_undef  = None;
+    let mut new_monthly_tgt   = None;
+    let mut new_drawdown_cb   = None;
+    let mut new_profit_target = None;
+    let mut new_mgmt_dte      = None;
     for field in fields {
         match field.label.as_str() {
             "Account Size" => {
@@ -1899,18 +1916,30 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
                     new_drawdown_cb = Some(v);
                 }
             }
+            "Default Profit Target %" => {
+                if let Ok(v) = field.value.parse::<f64>() {
+                    let _ = storage.set_setting("default_profit_target_pct", &v.to_string());
+                    new_profit_target = Some(v);
+                }
+            }
+            "Default Mgmt DTE" => {
+                if let Ok(v) = field.value.parse::<i32>() {
+                    let _ = storage.set_setting("default_mgmt_dte", &v.to_string());
+                    new_mgmt_dte = Some(v);
+                }
+            }
             _ => {}
         }
     }
-    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt, new_drawdown_cb)
+    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt, new_drawdown_cb, new_profit_target, new_mgmt_dte)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 20] {
-    let mut vis = [true; 20];
+fn parse_col_visibility(s: &str) -> [bool; 21] {
+    let mut vis = [true; 21];
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -1926,18 +1955,18 @@ fn parse_col_visibility(s: &str) -> [bool; 20] {
     } else {
         chars
     };
-    // Pad to 20 with col 19 (OTM%) defaulting to ON
+    // Pad to 21 with col 19 (OTM%) and col 20 (EM) defaulting to ON
     let mut padded = padded;
-    while padded.len() < 20 {
+    while padded.len() < 21 {
         padded.push('1');
     }
-    for (i, ch) in padded.iter().take(20).enumerate() {
+    for (i, ch) in padded.iter().take(21).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 20]) -> String {
+fn col_visibility_to_string(vis: &[bool; 21]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
@@ -2030,6 +2059,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &app.trades, &app.live_prices, app.account_size, app.current_vix,
                     app.stats.net_beta_weighted_delta, app.stats.drift, app.stats.target_undefined_pct,
                     app.stats.max_drawdown_pct, app.drawdown_circuit_breaker_pct,
+                    app.default_profit_target_pct, app.default_mgmt_dte,
                 );
                 if !app.alerts.is_empty() {
                     app.actions_list_state.select(Some(0));
@@ -2214,6 +2244,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &app.col_visibility,
             app.show_col_picker,
             app.journal_chain_view,
+            app.default_profit_target_pct,
+            app.default_mgmt_dte,
         ))?;
 
         let has_event = event::poll(std::time::Duration::from_millis(750))?;
@@ -2481,13 +2513,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let fields = app.admin_fields.clone();
-                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly, new_drawdown_cb) = apply_admin_fields(&fields, &storage);
-                        if let Some(v) = new_acct       { app.account_size                  = v; }
-                        if let Some(v) = new_heat       { app.max_heat_pct                  = v; }
-                        if let Some(v) = new_pos_bpr    { app.max_pos_bpr_pct               = v; }
-                        if let Some(v) = new_undef      { app.target_undefined_pct          = v; }
-                        if let Some(v) = new_monthly    { app.monthly_pnl_target            = v; }
-                        if let Some(v) = new_drawdown_cb { app.drawdown_circuit_breaker_pct = v; }
+                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly, new_drawdown_cb, new_profit_target, new_mgmt_dte) = apply_admin_fields(&fields, &storage);
+                        if let Some(v) = new_acct          { app.account_size                  = v; }
+                        if let Some(v) = new_heat          { app.max_heat_pct                  = v; }
+                        if let Some(v) = new_pos_bpr       { app.max_pos_bpr_pct               = v; }
+                        if let Some(v) = new_undef         { app.target_undefined_pct          = v; }
+                        if let Some(v) = new_monthly       { app.monthly_pnl_target            = v; }
+                        if let Some(v) = new_drawdown_cb   { app.drawdown_circuit_breaker_pct  = v; }
+                        if let Some(v) = new_profit_target { app.default_profit_target_pct     = v; }
+                        if let Some(v) = new_mgmt_dte      { app.default_mgmt_dte              = v; }
                         app.cancel_mode();
                         app.reload(&storage);
                     }
@@ -2717,6 +2751,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     'h' => Some(16), // Exit
                                     'i' => Some(17), // Held
                                     'j' => Some(18), // Status
+                                    'k' => Some(19), // OTM%
+                                    'l' => Some(20), // EM
                                     _ => None,
                                 };
                                 if let Some(i) = idx {

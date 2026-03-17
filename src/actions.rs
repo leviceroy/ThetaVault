@@ -218,6 +218,8 @@ pub fn compute_alerts(
     target_undef_pct:         f64,
     max_drawdown_pct:         f64,
     drawdown_circuit_breaker: f64,
+    default_profit_target_pct: f64,
+    mgmt_dte:                 i32,
 ) -> Vec<TradeAlert> {
     let today = Utc::now().date_naive();
     let mut alerts: Vec<TradeAlert> = Vec::new();
@@ -447,8 +449,11 @@ pub fn compute_alerts(
         };
 
         // ── 4. CLOSE: Profit target reached ──────────────────────────────────
-        let target_pct = trade.target_profit_pct
-            .unwrap_or_else(|| trade.strategy.default_profit_target_pct());
+        // Cascade: per-trade → global default (if >0) → per-strategy default
+        let target_pct = trade.target_profit_pct.unwrap_or_else(|| {
+            if default_profit_target_pct > 0.0 { default_profit_target_pct }
+            else { trade.strategy.default_profit_target_pct() }
+        });
         let gtc_price = (trade.credit_received * (1.0 - target_pct / 100.0) * 100.0)
             .round() / 100.0;
 
@@ -492,8 +497,8 @@ pub fn compute_alerts(
             }
         }
 
-        // ── 6. MANAGE: 21 DTE ────────────────────────────────────────────────
-        if dte <= 21 && dte > 0 {
+        // ── 6. MANAGE: configurable DTE (default 21, tastytrade standard) ───
+        if dte <= mgmt_dte as i64 && dte > 0 {
             let mgmt = trade.management_rule.as_deref().unwrap_or("Roll or close");
             let (kind, detail) = if trade.credit_received > 0.0 {
                 (AlertKind::Roll,

@@ -532,6 +532,9 @@ pub struct PortfolioStats {
 
     // L3: strategy distribution for open trades (sorted by count desc)
     pub open_strategy_counts: Vec<(String, usize)>,
+
+    // Item 13: portfolio stress test scenarios
+    pub stress_test: Vec<StressPoint>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -570,6 +573,25 @@ pub struct MonthlyPnl {
     pub month: u32,
     pub pnl: f64,
     pub trade_count: usize,
+}
+
+/// Item 4: Time-in-Trade histogram bucket
+#[derive(Debug, Clone)]
+pub struct HeldBucket {
+    pub label: &'static str,
+    pub trades: usize,
+    pub wins: usize,
+    pub win_rate: f64,  // 0.0–100.0
+    pub avg_pnl: f64,
+}
+
+/// Item 13: Portfolio stress test scenario
+#[derive(Debug, Clone)]
+pub struct StressPoint {
+    pub spy_move_pct: f64,     // e.g. -20.0
+    pub total_pnl: f64,        // sum across all open positions
+    pub worst_ticker: String,  // ticker with most negative P&L at this move
+    pub worst_pnl: f64,        // that position's P&L
 }
 
 /// L10: IVR entry frequency histogram bucket
@@ -679,6 +701,9 @@ pub struct PerformanceStats {
     // L10: IVR entry frequency histogram (4 buckets: <25, 25-50, 50-75, 75+)
     pub ivr_entry_buckets: Vec<IvrEntryBucket>,
 
+    // Item 4: time-in-trade histogram (5 buckets: 0-7, 7-14, 14-21, 21-30, 30+)
+    pub held_buckets: Vec<HeldBucket>,
+
     // Commission analysis
     pub total_commissions: f64,
     pub avg_commission_per_trade: f64,
@@ -700,6 +725,7 @@ impl Default for PerformanceStats {
             dte_buckets: vec![], rolling_win_rate: vec![], peak_history: vec![],
             avg_premium_recapture: None, rolling_theta_capture: vec![],
             ivr_entry_buckets: vec![],
+            held_buckets: vec![],
             total_commissions: 0.0, avg_commission_per_trade: 0.0, commission_pct_of_gross: 0.0,
             avg_fill_vs_mid: None,
         }

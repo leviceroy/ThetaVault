@@ -947,6 +947,36 @@ pub fn build_portfolio_stats(
     let mut open_strategy_counts: Vec<(String, usize)> = open_strategy_map.into_iter().collect();
     open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1));
 
+    // Item 13: Portfolio stress test (beta-adjusted, 7 scenarios)
+    use crate::models::StressPoint;
+    let open_trades_for_stress: Vec<&Trade> = trades.iter().filter(|t| t.is_open()).collect();
+    let stress_test: Vec<StressPoint> = [-20.0f64, -15.0, -10.0, -5.0, 0.0, 5.0, 10.0].iter().map(|&move_pct| {
+        let mut total = 0.0f64;
+        let mut worst_pnl = f64::MAX;
+        let mut worst_ticker = String::new();
+        for trade in &open_trades_for_stress {
+            if let Some(underlying) = trade.underlying_price {
+                if underlying > 0.0 && !trade.legs.is_empty() {
+                    let beta = beta_map.get(trade.ticker.as_str()).copied().unwrap_or(1.0);
+                    let adjusted = underlying * (1.0 + (move_pct / 100.0) * beta);
+                    let pnl = calculate_payoff_at_price(&trade.legs, trade.credit_received, adjusted)
+                              * trade.quantity as f64;
+                    total += pnl;
+                    if pnl < worst_pnl {
+                        worst_pnl = pnl;
+                        worst_ticker = trade.ticker.clone();
+                    }
+                }
+            }
+        }
+        StressPoint {
+            spy_move_pct: move_pct,
+            total_pnl: total,
+            worst_ticker: if worst_ticker.is_empty() { "—".to_string() } else { worst_ticker },
+            worst_pnl: if worst_pnl == f64::MAX { 0.0 } else { worst_pnl },
+        }
+    }).collect();
+
     PortfolioStats {
         total_pnl,
         realized_pnl,
@@ -990,6 +1020,7 @@ pub fn build_portfolio_stats(
         monthly_pnl_target,
         monthly_pnl_pace,
         open_strategy_counts,
+        stress_test,
     }
 }
 
@@ -1378,7 +1409,7 @@ fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max
 
 pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::models::PerformanceStats {
     use chrono::Datelike;
-    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket};
+    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket, HeldBucket};
 
     // Step 1: filter and sort closed trades by exit_date ascending
     let mut sorted_closed: Vec<&Trade> = trades.iter()
@@ -1793,6 +1824,37 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         }
     }).collect();
 
+    // Item 4: Time-in-Trade histogram (5 buckets by calendar days held)
+    let held_bucket_defs: [(&'static str, i64, i64); 5] = [
+        ("0–7d",   0,  7),
+        ("7–14d",  7, 14),
+        ("14–21d", 14, 21),
+        ("21–30d", 21, 30),
+        ("30+d",   30, i64::MAX),
+    ];
+    let mut held_data: [(usize, usize, f64); 5] = [(0, 0, 0.0); 5];
+    for t in &sorted_closed {
+        if let Some(pnl) = t.pnl {
+            if let Some(exit) = t.exit_date {
+                let days = (exit.date_naive() - t.trade_date.date_naive()).num_days().max(0);
+                if let Some(bi) = held_bucket_defs.iter().position(|&(_, lo, hi)| days >= lo && days < hi) {
+                    held_data[bi].0 += 1;
+                    if pnl > 0.0 { held_data[bi].1 += 1; }
+                    held_data[bi].2 += pnl;
+                }
+            }
+        }
+    }
+    let held_buckets: Vec<HeldBucket> = held_bucket_defs.iter().zip(held_data.iter()).map(|((label, _, _), (trades, wins, pnl_sum))| {
+        HeldBucket {
+            label,
+            trades: *trades,
+            wins: *wins,
+            win_rate: if *trades > 0 { *wins as f64 / *trades as f64 * 100.0 } else { 0.0 },
+            avg_pnl: if *trades > 0 { pnl_sum / *trades as f64 } else { 0.0 },
+        }
+    }).collect();
+
     let avg_commission_per_trade = if comm_count > 0 { total_commissions / comm_count as f64 } else { 0.0 };
     let commission_pct_of_gross = if gross_wins > 0.0 { (total_commissions / gross_wins) * 100.0 } else { 0.0 };
     let avg_fill_vs_mid = if fill_vs_mid_count > 0 { Some(fill_vs_mid_sum / fill_vs_mid_count as f64) } else { None };
@@ -1828,6 +1890,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         avg_premium_recapture,
         rolling_theta_capture,
         ivr_entry_buckets,
+        held_buckets,
         total_commissions,
         avg_commission_per_trade,
         commission_pct_of_gross,
