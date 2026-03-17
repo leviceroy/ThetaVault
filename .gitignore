@@ -9,6 +9,12 @@
 # Schwab transaction export files (personal financial data)
 *.json
 
+# One-time migration / fix scripts (not reusable utilities)
+scripts/backfill_import_log.py
+scripts/fix_db_spy_meta.py
+scripts/fix_ic_theta.py
+scripts/fix_import_20260303.py
+
 # Python bytecode
 __pycache__/
 *.py[cod]
