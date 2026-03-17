@@ -80,6 +80,7 @@ pub fn draw_ui(
     journal_help_popup:      bool,
     journal_help_scroll:     u16,
     journal_help_max_scroll: &mut u16,
+    journal_help_page:       u8,
     max_heat_pct:            f64,   // effective (VIX-adaptive, capped by ceiling)
     stored_heat_ceiling:     f64,   // raw stored setting, for Admin display only
     max_pos_bpr_pct:         f64,
@@ -219,7 +220,7 @@ pub fn draw_ui(
 
     // ── Journal help popup (Journal tab, 'i' key)
     if journal_help_popup && selected_tab == 1 {
-        draw_journal_help_popup(f, chunks[1], journal_help_scroll, journal_help_max_scroll);
+        draw_journal_help_popup(f, chunks[1], journal_help_scroll, journal_help_max_scroll, journal_help_page);
     }
 }
 
@@ -5239,7 +5240,7 @@ fn draw_daily_actions(
 
 // ── Journal Help Popup ────────────────────────────────────────────────────────
 
-fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &mut u16) {
+fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &mut u16, page: u8) {
     let w: u16 = 70.min(area.width.saturating_sub(4));
     let h: u16 = 40.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
@@ -5247,47 +5248,104 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
     let dialog = Rect::new(x, y, w, h);
     f.render_widget(Clear, dialog);
 
-    let lines = vec![
-        Line::from(vec![Span::styled("  Journal Keyboard Shortcuts", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  ── Navigation ──────────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![Span::styled("  ↑/↓        ", Style::default().fg(C_YELLOW)), Span::styled("Move selection up/down", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  PgUp/PgDn  ", Style::default().fg(C_YELLOW)), Span::styled("Page up/down (10 rows)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  Home/End   ", Style::default().fg(C_YELLOW)), Span::styled("Jump to first/last trade", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  Enter      ", Style::default().fg(C_YELLOW)), Span::styled("Toggle trade detail panel", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  Tab        ", Style::default().fg(C_YELLOW)), Span::styled("Switch to next tab", Style::default().fg(C_WHITE))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  ── Filtering & Sorting ─────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![Span::styled("  f          ", Style::default().fg(C_YELLOW)), Span::styled("Filter by ticker (type ticker, Esc to clear)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  /          ", Style::default().fg(C_YELLOW)), Span::styled("Search trades", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  s          ", Style::default().fg(C_YELLOW)), Span::styled("Cycle sort key (Date/Ticker/P&L/DTE/Status)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  S          ", Style::default().fg(C_YELLOW)), Span::styled("Toggle sort direction (asc/desc)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  1-5        ", Style::default().fg(C_YELLOW)), Span::styled("Filter: All/Open/Closed/Winners/Losers", Style::default().fg(C_WHITE))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  ── Trade Actions ───────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![Span::styled("  e          ", Style::default().fg(C_YELLOW)), Span::styled("Edit selected trade", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  n          ", Style::default().fg(C_YELLOW)), Span::styled("New trade", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  c/C        ", Style::default().fg(C_YELLOW)), Span::styled("Close selected trade", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  x          ", Style::default().fg(C_YELLOW)), Span::styled("Delete selected trade (with confirm)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  a          ", Style::default().fg(C_YELLOW)), Span::styled("Analyze (payoff chart)", Style::default().fg(C_WHITE))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  ── Display ─────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![Span::styled("  v          ", Style::default().fg(C_YELLOW)), Span::styled("Column visibility picker", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  G          ", Style::default().fg(C_YELLOW)), Span::styled("Toggle Chain View (group by ticker)", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  R          ", Style::default().fg(C_YELLOW)), Span::styled("Refresh data from database", Style::default().fg(C_WHITE))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  ── Trade Statuses ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![Span::styled("  OPEN       ", Style::default().fg(C_GREEN)), Span::styled("Active position, not yet closed", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  CLOSED     ", Style::default().fg(C_GRAY)), Span::styled("Position closed, P&L realized", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  WINNER     ", Style::default().fg(C_GREEN)), Span::styled("Closed with positive P&L", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  LOSER      ", Style::default().fg(C_RED)), Span::styled("Closed with negative P&L", Style::default().fg(C_WHITE))]),
-        Line::from(vec![Span::styled("  SCRATCH    ", Style::default().fg(C_YELLOW)), Span::styled("Closed near breakeven (< $10)", Style::default().fg(C_WHITE))]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Press i/Esc to close", Style::default().fg(C_DARK))]),
-    ];
+    let def = |col: &'static str, desc: &'static str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("  {:<12}", col), Style::default().fg(C_YELLOW)),
+            Span::styled(desc, Style::default().fg(C_WHITE)),
+        ])
+    };
+
+    let lines: Vec<Line> = if page == 0 {
+        vec![
+            Line::from(vec![Span::styled("  Journal Keyboard Shortcuts  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Field Glossary", Style::default().fg(C_DARK))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Navigation ──────────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            Line::from(vec![Span::styled("  ↑/↓        ", Style::default().fg(C_YELLOW)), Span::styled("Move selection up/down", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  PgUp/PgDn  ", Style::default().fg(C_YELLOW)), Span::styled("Page up/down (10 rows)", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  Home/End   ", Style::default().fg(C_YELLOW)), Span::styled("Jump to first/last trade", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  Enter      ", Style::default().fg(C_YELLOW)), Span::styled("Toggle trade detail panel", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  Tab        ", Style::default().fg(C_YELLOW)), Span::styled("Switch help page (Shortcuts ↔ Field Glossary)", Style::default().fg(C_WHITE))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Filtering & Sorting ─────────────────────────────────", Style::default().fg(C_GRAY))]),
+            Line::from(vec![Span::styled("  f          ", Style::default().fg(C_YELLOW)), Span::styled("Cycle filter: All/Open/Closed/Rolled/Expired", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  /          ", Style::default().fg(C_YELLOW)), Span::styled("Search by ticker", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  s          ", Style::default().fg(C_YELLOW)), Span::styled("Cycle sort key (Date/Ticker/P&L/DTE/Status)", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  S          ", Style::default().fg(C_YELLOW)), Span::styled("Toggle sort direction (asc/desc)", Style::default().fg(C_WHITE))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Trade Actions ───────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            Line::from(vec![Span::styled("  e          ", Style::default().fg(C_YELLOW)), Span::styled("Edit selected trade", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  n          ", Style::default().fg(C_YELLOW)), Span::styled("New trade", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  c/C        ", Style::default().fg(C_YELLOW)), Span::styled("Close selected trade", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  x          ", Style::default().fg(C_YELLOW)), Span::styled("Delete selected trade (with confirm)", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  a          ", Style::default().fg(C_YELLOW)), Span::styled("Analyze (payoff chart)", Style::default().fg(C_WHITE))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Display ─────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            Line::from(vec![Span::styled("  v          ", Style::default().fg(C_YELLOW)), Span::styled("Column visibility picker", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  G          ", Style::default().fg(C_YELLOW)), Span::styled("Toggle Chain View (group by ticker)", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  R          ", Style::default().fg(C_YELLOW)), Span::styled("Refresh data from database", Style::default().fg(C_WHITE))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Trade Statuses ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            Line::from(vec![Span::styled("  OPEN       ", Style::default().fg(C_GREEN)), Span::styled("Active position, not yet closed", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  CLOSED     ", Style::default().fg(C_GRAY)), Span::styled("Position closed, P&L realized", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  ROLLED     ", Style::default().fg(C_CYAN)), Span::styled("Position rolled to a new expiration", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  SCRATCH    ", Style::default().fg(C_YELLOW)), Span::styled("Closed near breakeven (< $10)", Style::default().fg(C_WHITE))]),
+            Line::from(vec![Span::styled("  EXPIRED    ", Style::default().fg(C_GRAY)), Span::styled("Expired worthless (full profit)", Style::default().fg(C_WHITE))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Field Glossary →", Style::default().fg(C_DARK))]),
+        ]
+    } else {
+        vec![
+            Line::from(vec![Span::styled("  Field Glossary  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Keyboard Shortcuts", Style::default().fg(C_DARK))]),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Entry Fields ────────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("Date",         "Trade entry date"),
+            def("Ticker",       "Underlying symbol (e.g. SPY, AAPL)"),
+            def("Spot",         "Underlying price at entry"),
+            def("ER",           "Earnings Release date — [!] means ER within expiration"),
+            def("Str",          "Strategy type: IC, SPV, SCV, CSP, CC, CAL, etc."),
+            def("Qty",          "Number of contracts"),
+            def("Credit",       "Net premium collected (or debit paid, shown negative)"),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Risk & Targets ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("GTC",          "Good Till Cancel order price — profit target on the books"),
+            def("BE",           "Breakeven price(s) at expiration"),
+            def("BPR",          "Buying Power Reduction — margin held by broker"),
+            def("BPR%",         "BPR as % of account size (position sizing check)"),
+            def("MaxPft",       "Maximum profit if all legs expire worthless"),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Performance ─────────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("P&L",          "Realized P&L (closed) or unrealized estimate (open)"),
+            def("ROC%",         "Return on Capital = P&L ÷ BPR × 100"),
+            def("$V/d",         "Dollar Theta — premium decay per calendar day"),
+            def("DTE",          "Days To Expiration remaining from today"),
+            def("Exit",         "Date position was closed or rolled"),
+            def("Held",         "Calendar days the position was held"),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Market Context ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("OTM%",         "How far the short strike is Out-of-The-Money"),
+            def("EM",           "Expected Move ±1SD: underlying × (IV/100) × √(DTE/365)"),
+            Line::from(""),
+            Line::from(vec![Span::styled("  ── Strategy Abbreviations ──────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("IC",           "Iron Condor — sell OTM call spread + put spread"),
+            def("SPV",          "Short Put Vertical (bull put spread)"),
+            def("SCV",          "Short Call Vertical (bear call spread)"),
+            def("CSP",          "Cash Secured Put — sell naked put"),
+            def("CC",           "Covered Call — sell call against long stock"),
+            def("CAL",          "Calendar Spread — sell near, buy far expiration"),
+            def("LDS",          "Long Diagonal Spread"),
+            Line::from(""),
+            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Shortcuts ←", Style::default().fg(C_DARK))]),
+        ]
+    };
+
+    let title = if page == 0 {
+        " ? Journal Help  [1/2]  (Tab: Field Glossary) "
+    } else {
+        " ? Field Glossary  [2/2]  (Tab: Shortcuts) "
+    };
 
     let content_lines = lines.len() as u16;
-    let inner_h = h.saturating_sub(2); // borders
+    let inner_h = h.saturating_sub(2);
     *max_scroll = content_lines.saturating_sub(inner_h);
 
     f.render_widget(
@@ -5298,7 +5356,7 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(C_CYAN))
-                    .title(Span::styled(" ? Journal Help  (i/Esc to close) ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))),
+                    .title(Span::styled(title, Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))),
             ),
         dialog,
     );

@@ -51,6 +51,7 @@ pub struct AppState {
     pub journal_help_popup: bool,
     pub journal_help_scroll: u16,
     pub journal_help_max_scroll: u16,
+    pub journal_help_page: u8,
 
     // Admin settings form
     pub admin_fields:    Vec<EditField>,
@@ -265,6 +266,7 @@ impl AppState {
             journal_help_popup: false,
             journal_help_scroll: 0,
             journal_help_max_scroll: 0,
+            journal_help_page: 0,
             admin_fields:    Vec::new(),
             admin_field_idx: 0,
             admin_scroll:    0,
@@ -2227,6 +2229,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.journal_help_popup,
             app.journal_help_scroll,
             &mut app.journal_help_max_scroll,
+            app.journal_help_page,
             effective_max_heat,
             app.max_heat_pct,
             app.max_pos_bpr_pct,
@@ -2315,6 +2318,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
                         app.journal_help_popup = false;
+                        app.journal_help_page = 0;
+                    }
+                    KeyCode::Tab => {
+                        app.journal_help_page = 1 - app.journal_help_page;
+                        app.journal_help_scroll = 0;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if app.journal_help_scroll > 0 {
@@ -2675,6 +2683,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.journal_help_popup = !app.journal_help_popup;
                     if app.journal_help_popup {
                         app.journal_help_scroll = 0;
+                        app.journal_help_page = 0;
                     }
                 }
 
