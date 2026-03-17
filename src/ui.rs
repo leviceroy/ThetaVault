@@ -841,13 +841,18 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
                     .map(|l| l.strike);
                 let otm_pct = match (short_put, short_call) {
-                    (Some(sp), _) => Some((u - sp) / u * 100.0),
+                    (Some(sp), Some(sc)) => {
+                        let put_otm  = (u - sp) / u * 100.0;
+                        let call_otm = (sc - u) / u * 100.0;
+                        Some(put_otm.min(call_otm))
+                    }
+                    (Some(sp), None) => Some((u - sp) / u * 100.0),
                     (None, Some(sc)) => Some((sc - u) / u * 100.0),
                     _ => None,
                 };
                 match otm_pct {
                     Some(p) if p >= 0.0 => {
-                        let c = if p < 3.0 { C_RED } else if p < 7.0 { C_YELLOW } else { C_GREEN };
+                        let c = if p < 5.0 { C_RED } else if p < 10.0 { C_YELLOW } else { C_GREEN };
                         Cell::from(format!("{:.1}%", p)).style(Style::default().fg(c))
                     }
                     Some(_p) => Cell::from("ITM").style(Style::default().fg(C_RED)),
@@ -1434,9 +1439,11 @@ fn draw_trade_table(
                                     let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
                                         .map(|l| l.strike);
                                     let otm_pct = match (short_put, short_call) {
-                                        (Some(sp), Some(_sc)) => {
-                                            // For two-sided (strangle/IC): show put side OTM%
-                                            Some((u - sp) / u * 100.0)
+                                        (Some(sp), Some(sc)) => {
+                                            // IC/strangle: show the TIGHTER side (least cushion)
+                                            let put_otm  = (u - sp) / u * 100.0;
+                                            let call_otm = (sc - u) / u * 100.0;
+                                            Some(put_otm.min(call_otm))
                                         }
                                         (Some(sp), None) => Some((u - sp) / u * 100.0),
                                         (None, Some(sc)) => Some((sc - u) / u * 100.0),
@@ -1444,10 +1451,11 @@ fn draw_trade_table(
                                     };
                                     match otm_pct {
                                         Some(pct) if pct >= 0.0 => {
-                                            let color = if pct < 3.0 { C_RED } else if pct < 7.0 { C_YELLOW } else { C_GREEN };
+                                            // ≥10% = well cushioned (green), 5-10% = normal (yellow), <5% = at risk (red)
+                                            let color = if pct < 5.0 { C_RED } else if pct < 10.0 { C_YELLOW } else { C_GREEN };
                                             Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
                                         }
-                                        Some(pct) => Cell::from(format!("{:.1}%", pct.abs())).style(Style::default().fg(C_RED)), // ITM
+                                        Some(pct) => Cell::from(format!("ITM {:.1}%", pct.abs())).style(Style::default().fg(C_RED)), // ITM
                                         None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
                                     }
                                 }
