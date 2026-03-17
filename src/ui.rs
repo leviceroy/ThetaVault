@@ -200,7 +200,7 @@ pub fn draw_ui(
 
     // ── KPI info popup (Dashboard tab, i key)
     if dash_kpi_popup && selected_tab == 0 {
-        draw_kpi_popup(f, chunks[1], stats, max_heat_pct, dash_kpi_scroll, dash_kpi_max_scroll);
+        draw_kpi_popup(f, chunks[1], stats, perf_stats, max_heat_pct, dash_kpi_scroll, dash_kpi_max_scroll, default_mgmt_dte);
     }
 
     // ── Performance KPI popup (Perf tab, i key)
@@ -4621,7 +4621,7 @@ fn draw_performance(
 
 // ── KPI Popup ─────────────────────────────────────────────────────────────────
 
-fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pct: f64, scroll: u16, max_scroll: &mut u16) {
+fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &PerformanceStats, max_heat_pct: f64, scroll: u16, max_scroll: &mut u16, default_mgmt_dte: i32) {
     let w: u16 = 82.min(area.width.saturating_sub(4));
     let h: u16 = 42.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
@@ -4749,6 +4749,32 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pc
             Span::styled(format!("realized P&L from closed trades = ${:+.2}", stats.realized_pnl), Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
+            lbl("  R:R       "),
+            Span::styled(
+                if perf.avg_loss > 0.0 {
+                    format!("avg_win / avg_loss = 1:{:.2}  (winners are {:.0}% the size of losers)",
+                        perf.avg_win / perf.avg_loss,
+                        perf.avg_win / perf.avg_loss * 100.0)
+                } else { "— (no losing trades yet)".to_string() },
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: ≥ 1.0 means winners ≥ losers. Premium sellers often < 1 but offset by high win rate."),
+        ]),
+        Line::from(vec![
+            lbl("  EV        "),
+            Span::styled(
+                format!("win_rate × avg_win − loss_rate × avg_loss = ${:+.0}/trade", perf.expected_value),
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Best: positive. Measures mathematical edge per trade. The holy grail of trading."),
+        ]),
+        Line::from(vec![
             lbl("  Unreal    "),
             Span::styled(format!("est. θ×days×100×qty = ${:+.0}  (theta heuristic, not mark-to-market)", stats.unrealized_pnl), Style::default().fg(C_WHITE)),
         ]),
@@ -4788,7 +4814,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, max_heat_pc
         Line::from(vec![Span::styled("  ── RULES ──────────────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
         Line::from(vec![
             Span::styled("  management: ", Style::default().fg(C_GRAY)),
-            Span::styled("Close at 50% max profit  ·  Manage at 21 DTE  ·  No earnings", Style::default().fg(C_GRAY)),
+            Span::styled(format!("Close at 50% max profit  ·  Manage at {} DTE  ·  No earnings", default_mgmt_dte), Style::default().fg(C_GRAY)),
         ]),
         Line::from(vec![
             Span::styled("  sizing:     ", Style::default().fg(C_GRAY)),
