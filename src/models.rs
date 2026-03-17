@@ -383,6 +383,7 @@ pub struct Trade {
     pub was_assigned: bool,                    // true if option was assigned to/exercised against stock
     pub assigned_shares: Option<i32>,          // number of shares assigned (100 per contract)
     pub cost_basis: Option<f64>,               // cost basis per share on assigned stock
+    pub close_notes: Option<String>,           // exit thesis / close notes
 }
 
 impl Trade {
@@ -602,6 +603,14 @@ pub struct IvrEntryBucket {
     pub win_rate: f64,    // 0.0–100.0
 }
 
+/// Item 4: P&L distribution histogram bucket
+#[derive(Debug, Clone)]
+pub struct PnlBucket {
+    pub label: &'static str,
+    pub count: usize,
+    pub pct: f64,   // % of closed trades in this bucket
+}
+
 /// IVR bucket: win rate by IV Rank at entry
 #[derive(Debug, Clone)]
 pub struct IvrBucket {
@@ -709,6 +718,12 @@ pub struct PerformanceStats {
     pub avg_commission_per_trade: f64,
     pub commission_pct_of_gross: f64,
     pub avg_fill_vs_mid: Option<f64>,
+
+    // Rolling window configuration
+    pub rolling_window_used: usize,
+
+    // Item 4: P&L distribution histogram
+    pub pnl_buckets: Vec<PnlBucket>,
 }
 
 impl Default for PerformanceStats {
@@ -728,6 +743,8 @@ impl Default for PerformanceStats {
             held_buckets: vec![],
             total_commissions: 0.0, avg_commission_per_trade: 0.0, commission_pct_of_gross: 0.0,
             avg_fill_vs_mid: None,
+            rolling_window_used: 30,
+            pnl_buckets: vec![],
         }
     }
 }

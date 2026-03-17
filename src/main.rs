@@ -30,6 +30,10 @@ pub struct AppState {
     pub drawdown_circuit_breaker_pct: f64, // drawdown % threshold for circuit breaker alert (default 5.0)
     pub default_profit_target_pct: f64,   // global default profit target % (0 = use per-strategy defaults)
     pub default_mgmt_dte:     i32,        // DTE at which to trigger management alerts (tastytrade default: 21)
+    pub risk_free_rate_pct:   f64,        // risk-free rate % for Sharpe/Sortino (default 4.5)
+    pub rolling_window:       usize,      // rolling window trade count (default 30)
+    pub export_status:        Option<String>, // CSV export status message
+    pub export_status_tick:   u8,         // countdown to clear export_status
     pub current_vix:          Option<f64>,
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
@@ -90,7 +94,7 @@ pub struct AppState {
     pub perf_overview_max_scroll: u16,
     pub perf_analytics_scroll:    u16,
     pub perf_analytics_max_scroll: u16,
-    pub perf_collapsed:   [bool; 13], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=Held 12=Commission
+    pub perf_collapsed:   [bool; 14], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=PnlDist 12=Held 13=Commission
     pub perf_section_cursor: usize,  // 0-based index into current subtab's navigable section list
     pub perf_scroll_dirty:   bool,   // true → scroll refresh block should sync scroll to cursor
 
@@ -184,6 +188,12 @@ impl AppState {
         let default_mgmt_dte = storage.get_setting("default_mgmt_dte")
             .and_then(|s| s.parse::<i32>().ok())
             .unwrap_or(21);
+        let risk_free_rate_pct = storage.get_setting("risk_free_rate_pct")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(4.5);
+        let rolling_window = storage.get_setting("rolling_window")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(30);
         let col_visibility_str = storage.get_setting("col_visibility")
             .unwrap_or_else(|| "1111111111111111111".to_string());
         let col_visibility = parse_col_visibility(&col_visibility_str);
@@ -192,7 +202,7 @@ impl AppState {
         let spy_price: Option<f64> = None;
         let live_prices = std::collections::HashMap::new();
         let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, target_undefined_pct, monthly_pnl_target);
-        let perf_stats = calculations::build_performance_stats(&trades, account_size);
+        let perf_stats = calculations::build_performance_stats(&trades, account_size, risk_free_rate_pct, rolling_window);
 
         let mut table_state = TableState::default();
         if !trades.is_empty() {
@@ -246,6 +256,10 @@ impl AppState {
             drawdown_circuit_breaker_pct,
             default_profit_target_pct,
             default_mgmt_dte,
+            risk_free_rate_pct,
+            rolling_window,
+            export_status: None,
+            export_status_tick: 0,
             col_visibility,
             show_col_picker: false,
             playbook_match_candidates: Vec::new(),
@@ -290,7 +304,7 @@ impl AppState {
             perf_analytics_scroll: 0,
             perf_analytics_max_scroll: u16::MAX,
             // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
-            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true, true, true],
+            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true, true, true, true],
             perf_section_cursor: 0,
             perf_scroll_dirty:   false,
             cal_year:      0,
@@ -329,7 +343,7 @@ impl AppState {
         self.trades      = storage.get_all_trades().unwrap_or_default();
         self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
         self.stats       = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct, self.monthly_pnl_target);
-        self.perf_stats  = calculations::build_performance_stats(&self.trades, self.account_size);
+        self.perf_stats  = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
@@ -1058,7 +1072,7 @@ impl AppState {
     }
 
     pub fn start_admin_settings(&mut self) {
-        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target, self.drawdown_circuit_breaker_pct, self.default_profit_target_pct, self.default_mgmt_dte);
+        self.admin_fields    = build_admin_settings_fields(self.account_size, self.max_heat_pct, self.max_pos_bpr_pct, self.target_undefined_pct, self.monthly_pnl_target, self.drawdown_circuit_breaker_pct, self.default_profit_target_pct, self.default_mgmt_dte, self.risk_free_rate_pct, self.rolling_window);
         self.admin_field_idx = 0;
         self.admin_scroll    = 0;
         self.app_mode        = AppMode::AdminSettings;
@@ -1618,6 +1632,10 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::number("Cost Basis/Share",
         &t.cost_basis.map(|v| format!("{:.2}", v)).unwrap_or_default()));
 
+    // Exit thesis
+    f.push(EditField::text("Close Notes", t.close_notes.as_deref().unwrap_or(""))
+        .with_section("── Exit Thesis ─────────────────────────────────────────────────────"));
+
     // Per-leg close premiums
     f.push(EditField::text("", "").with_section("── Close Premiums (BTC/STC price per contract) ─────────────────────"));
     for leg in &t.legs {
@@ -1646,6 +1664,7 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.assigned_shares = fields.iter().find(|f| f.label == "Assigned Shares")
         .and_then(|f| if f.value.is_empty() { None } else { f.value.parse::<i32>().ok() });
     t.cost_basis     = field_opt_f64(fields, "Cost Basis/Share");
+    t.close_notes    = field_opt_str(fields, "Close Notes");
     let close_comm = field_opt_f64(fields, "Close Commission").unwrap_or(0.0);
 
     // Per-leg close premiums
@@ -1674,6 +1693,21 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     if let Some(exit) = t.exit_date {
         let dte = (t.expiration_date.date_naive() - exit.date_naive()).num_days().max(0) as i32;
         t.dte_at_close = Some(dte);
+    }
+
+    // Auto-grade if no grade set
+    if t.trade_grade.is_none() {
+        if let Some(pnl) = t.pnl {
+            let max_profit = t.credit_received * 100.0 * t.quantity as f64;
+            let pct_of_max = if max_profit > 0.0 { pnl / max_profit * 100.0 } else { 0.0 };
+            let managed_on_time = t.dte_at_close.map(|d| d >= 21).unwrap_or(false);
+            let grade = if pct_of_max >= 85.0 && managed_on_time { "A" }
+                else if pct_of_max >= 65.0 { "B" }
+                else if pct_of_max >= 40.0 { "C" }
+                else if pct_of_max >= 0.0  { "D" }
+                else { "F" };
+            t.trade_grade = Some(grade.to_string());
+        }
     }
 }
 
@@ -1853,7 +1887,7 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
 // Admin settings helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64, drawdown_circuit_breaker_pct: f64, default_profit_target_pct: f64, default_mgmt_dte: i32) -> Vec<EditField> {
+fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr_pct: f64, target_undefined_pct: f64, monthly_pnl_target: f64, drawdown_circuit_breaker_pct: f64, default_profit_target_pct: f64, default_mgmt_dte: i32, risk_free_rate_pct: f64, rolling_window: usize) -> Vec<EditField> {
     vec![
         EditField::number("Account Size", &format!("{:.2}", account_size))
             .with_section("── Account ───────────────────────────────────────────────────────"),
@@ -1866,11 +1900,14 @@ fn build_admin_settings_fields(account_size: f64, max_heat_pct: f64, max_pos_bpr
         EditField::number("Default Profit Target %", &format!("{:.1}", default_profit_target_pct))
             .with_section("── Trade Management ─────────────────────────────────────────────"),
         EditField::number("Default Mgmt DTE", &format!("{}", default_mgmt_dte)),
+        EditField::number("Risk-Free Rate %", &format!("{:.2}", risk_free_rate_pct))
+            .with_section("── Performance Benchmarks ──────────────────────────────────────"),
+        EditField::number("Rolling Window (trades)", &format!("{}", rolling_window)),
     ]
 }
 
 fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
-    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<i32>)
+    -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<i32>, Option<f64>, Option<usize>)
 {
     let mut new_account       = None;
     let mut new_max_heat      = None;
@@ -1880,6 +1917,8 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
     let mut new_drawdown_cb   = None;
     let mut new_profit_target = None;
     let mut new_mgmt_dte      = None;
+    let mut new_rf_rate       = None;
+    let mut new_rolling_window = None;
     for field in fields {
         match field.label.as_str() {
             "Account Size" => {
@@ -1930,10 +1969,22 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
                     new_mgmt_dte = Some(v);
                 }
             }
+            "Risk-Free Rate %" => {
+                if let Ok(v) = field.value.parse::<f64>() {
+                    let _ = storage.set_setting("risk_free_rate_pct", &v.to_string());
+                    new_rf_rate = Some(v);
+                }
+            }
+            "Rolling Window (trades)" => {
+                if let Ok(v) = field.value.parse::<usize>() {
+                    let _ = storage.set_setting("rolling_window", &v.to_string());
+                    new_rolling_window = Some(v);
+                }
+            }
             _ => {}
         }
     }
-    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt, new_drawdown_cb, new_profit_target, new_mgmt_dte)
+    (new_account, new_max_heat, new_max_pos_bpr, new_target_undef, new_monthly_tgt, new_drawdown_cb, new_profit_target, new_mgmt_dte, new_rf_rate, new_rolling_window)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1977,15 +2028,15 @@ fn col_visibility_to_string(vis: &[bool; 21]) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn perf_section_count(subtab: usize) -> usize {
-    if subtab == 0 { 3 } else { 10 }
+    if subtab == 0 { 3 } else { 11 }
 }
 
 /// Maps (subtab, cursor) → `perf_collapsed` global index.
 /// Overview map: [0=Health, 1=Returns, 3=Growth]
-/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=Held, 12=Commission]
+/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission]
 fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
     const OVERVIEW_MAP:  [usize; 3]  = [0, 1, 3];
-    const ANALYTICS_MAP: [usize; 10] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const ANALYTICS_MAP: [usize; 11] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
     match subtab {
         0 => OVERVIEW_MAP.get(cursor).copied(),
         1 => ANALYTICS_MAP.get(cursor).copied(),
@@ -2249,7 +2300,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.journal_chain_view,
             app.default_profit_target_pct,
             app.default_mgmt_dte,
+            app.export_status.as_deref(),
         ))?;
+        // Decrement export status tick
+        if app.export_status_tick > 0 {
+            app.export_status_tick -= 1;
+            if app.export_status_tick == 0 {
+                app.export_status = None;
+            }
+        }
 
         let has_event = event::poll(std::time::Duration::from_millis(750))?;
         if !has_event {
@@ -2521,7 +2580,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let fields = app.admin_fields.clone();
-                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly, new_drawdown_cb, new_profit_target, new_mgmt_dte) = apply_admin_fields(&fields, &storage);
+                        let (new_acct, new_heat, new_pos_bpr, new_undef, new_monthly, new_drawdown_cb, new_profit_target, new_mgmt_dte, new_rf_rate, new_rolling_window) = apply_admin_fields(&fields, &storage);
                         if let Some(v) = new_acct          { app.account_size                  = v; }
                         if let Some(v) = new_heat          { app.max_heat_pct                  = v; }
                         if let Some(v) = new_pos_bpr       { app.max_pos_bpr_pct               = v; }
@@ -2530,6 +2589,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if let Some(v) = new_drawdown_cb   { app.drawdown_circuit_breaker_pct  = v; }
                         if let Some(v) = new_profit_target { app.default_profit_target_pct     = v; }
                         if let Some(v) = new_mgmt_dte      { app.default_mgmt_dte              = v; }
+                        if let Some(v) = new_rf_rate       { app.risk_free_rate_pct            = v; }
+                        if let Some(v) = new_rolling_window { app.rolling_window              = v; }
                         app.cancel_mode();
                         app.reload(&storage);
                     }
@@ -2728,8 +2789,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Admin tab — open settings editor
                 _ if app.selected_tab == 4 => {
                     match key.code {
-                        KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
+                        KeyCode::Char('e') | KeyCode::Enter => {
                             app.start_admin_settings();
+                        }
+                        KeyCode::Char('E') => {
+                            match storage.export_trades_csv("theta_vault_export.csv") {
+                                Ok(()) => {
+                                    app.export_status = Some("✓ Exported to theta_vault_export.csv".to_string());
+                                    app.export_status_tick = 120;
+                                }
+                                Err(e) => {
+                                    app.export_status = Some(format!("✗ Export failed: {}", e));
+                                    app.export_status_tick = 120;
+                                }
+                            }
                         }
                         _ => {}
                     }

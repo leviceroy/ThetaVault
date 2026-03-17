@@ -200,6 +200,7 @@ impl Storage {
             ("was_assigned",             "ALTER TABLE trades ADD COLUMN was_assigned INTEGER NOT NULL DEFAULT 0"),
             ("assigned_shares",          "ALTER TABLE trades ADD COLUMN assigned_shares INTEGER"),
             ("cost_basis",               "ALTER TABLE trades ADD COLUMN cost_basis REAL"),
+            ("close_notes",              "ALTER TABLE trades ADD COLUMN close_notes TEXT"),
         ];
 
         for (col_name, sql) in migrations {
@@ -251,8 +252,9 @@ impl Storage {
                 iv_at_close=?45, delta_at_close=?46, roll_count=?47,
                 theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50,
                 bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
-                was_assigned=?53, assigned_shares=?54, cost_basis=?55
-             WHERE id=?56",
+                was_assigned=?53, assigned_shares=?54, cost_basis=?55,
+                close_notes=?56
+             WHERE id=?57",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -309,7 +311,8 @@ impl Storage {
                 t.was_assigned as i32,                  // 53
                 t.assigned_shares,                      // 54
                 t.cost_basis,                           // 55
-                id,                                     // 56
+                t.close_notes.as_deref(),               // 56
+                id,                                     // 57
             ],
         )?;
         Ok(())
@@ -348,7 +351,8 @@ impl Storage {
                 iv_at_close, delta_at_close, roll_count,
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
-                was_assigned, assigned_shares, cost_basis
+                was_assigned, assigned_shares, cost_basis,
+                close_notes
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -367,7 +371,8 @@ impl Storage {
                 ?45, ?46, ?47,
                 ?48, ?49, ?50,
                 ?51, ?52,
-                ?53, ?54, ?55
+                ?53, ?54, ?55,
+                ?56
             )",
             params![
                 trade.ticker,               // 1
@@ -425,10 +430,77 @@ impl Storage {
                 trade.was_assigned as i32,  // 53
                 trade.assigned_shares,      // 54
                 trade.cost_basis,           // 55
+                trade.close_notes.as_deref(), // 56
             ],
         )?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn export_trades_csv(&self, path: &str) -> Result<()> {
+        use std::io::{BufWriter, Write};
+        let trades = self.get_all_trades()?;
+        let file = std::fs::File::create(path).map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let mut w = BufWriter::new(file);
+        // Helper: quote a string if it contains commas/quotes/newlines
+        fn csv_field(s: &str) -> String {
+            if s.contains(',') || s.contains('"') || s.contains('\n') {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s.to_string()
+            }
+        }
+        let _ = writeln!(w, "id,ticker,strategy,trade_date,expiration_date,quantity,credit_received,debit_paid,pnl,bpr,entry_dte,dte_at_close,exit_date,exit_reason,delta,theta,gamma,vega,pop,underlying_price,iv_rank,vix_at_entry,implied_volatility,underlying_price_at_close,iv_at_close,commission,target_profit_pct,management_rule,trade_grade,grade_notes,notes,close_notes,tags,is_earnings_play,is_tested,bid_ask_spread_at_entry,fill_vs_mid,was_assigned,assigned_shares,cost_basis,roll_count,rolled_from_id,playbook_id,next_earnings");
+        for t in &trades {
+            let row = format!("{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                t.id,
+                csv_field(&t.ticker),
+                csv_field(t.strategy.as_str()),
+                t.trade_date.format("%Y-%m-%d"),
+                t.expiration_date.format("%Y-%m-%d"),
+                t.quantity,
+                t.credit_received,
+                t.debit_paid.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.pnl.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.bpr.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.entry_dte.map_or(String::new(), |v| v.to_string()),
+                t.dte_at_close.map_or(String::new(), |v| v.to_string()),
+                t.exit_date.map_or(String::new(), |d| d.format("%Y-%m-%d").to_string()),
+                csv_field(t.exit_reason.as_deref().unwrap_or("")),
+                t.delta.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.theta.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.gamma.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.vega.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.pop.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.underlying_price.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.iv_rank.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.vix_at_entry.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.implied_volatility.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.underlying_price_at_close.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.iv_at_close.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.commission.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.target_profit_pct.map_or(String::new(), |v| format!("{:.1}", v)),
+                csv_field(t.management_rule.as_deref().unwrap_or("")),
+                csv_field(t.trade_grade.as_deref().unwrap_or("")),
+                csv_field(t.grade_notes.as_deref().unwrap_or("")),
+                csv_field(t.notes.as_deref().unwrap_or("")),
+                csv_field(t.close_notes.as_deref().unwrap_or("")),
+                csv_field(&t.tags.join(";")),
+                if t.is_earnings_play { "1" } else { "0" },
+                if t.is_tested { "1" } else { "0" },
+                t.bid_ask_spread_at_entry.map_or(String::new(), |v| format!("{:.4}", v)),
+                t.fill_vs_mid.map_or(String::new(), |v| format!("{:.4}", v)),
+                if t.was_assigned { "1" } else { "0" },
+                t.assigned_shares.map_or(String::new(), |v| v.to_string()),
+                t.cost_basis.map_or(String::new(), |v| format!("{:.2}", v)),
+                t.roll_count,
+                t.rolled_from_id.map_or(String::new(), |v| v.to_string()),
+                t.playbook_id.map_or(String::new(), |v| v.to_string()),
+                t.next_earnings.map_or(String::new(), |d| d.format("%Y-%m-%d").to_string()),
+            );
+            let _ = writeln!(w, "{}", row);
+        }
+        Ok(())
     }
 
     pub fn get_all_trades(&self) -> Result<Vec<Trade>> {
@@ -451,7 +523,8 @@ impl Storage {
                 iv_at_close, delta_at_close, roll_count,
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
-                was_assigned, assigned_shares, cost_basis
+                was_assigned, assigned_shares, cost_basis,
+                close_notes
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -549,6 +622,7 @@ impl Storage {
                 was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
                 assigned_shares:           row.get(54)?,
                 cost_basis:                row.get(55)?,
+                close_notes:               row.get(56)?,
             })
         })?;
 
@@ -582,7 +656,8 @@ impl Storage {
                 iv_at_close, delta_at_close, roll_count,
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
-                was_assigned, assigned_shares, cost_basis
+                was_assigned, assigned_shares, cost_basis,
+                close_notes
             FROM trades WHERE id = ?1"
         )?;
 
@@ -679,6 +754,7 @@ impl Storage {
                 was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
                 assigned_shares:           row.get(54)?,
                 cost_basis:                row.get(55)?,
+                close_notes:               row.get(56)?,
             })
         })?;
 

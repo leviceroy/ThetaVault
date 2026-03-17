@@ -1406,7 +1406,7 @@ fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max
     annual_return_pct / max_drawdown_pct
 }
 
-pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::models::PerformanceStats {
+pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_rate_pct: f64, rolling_window: usize) -> crate::models::PerformanceStats {
     use chrono::Datelike;
     use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket, HeldBucket};
 
@@ -1662,7 +1662,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let daily_returns: Vec<f64> = daily_pnl_map.values()
         .map(|p| p / account_size)
         .collect();
-    let sharpe_ratio = calculate_sharpe_ratio(&daily_returns, 0.045);
+    let sharpe_ratio = calculate_sharpe_ratio(&daily_returns, risk_free_rate_pct / 100.0);
 
     // Step 5: trade frequency
     let first_exit = sorted_closed.first().unwrap().exit_date.unwrap().date_naive();
@@ -1722,7 +1722,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     monthly_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
 
     let avg_annualized_roc = if ann_roc_count > 0 { ann_roc_sum / ann_roc_count as f64 } else { 0.0 };
-    let sortino_ratio = calculate_sortino_ratio(&daily_returns, 0.045);
+    let sortino_ratio = calculate_sortino_ratio(&daily_returns, risk_free_rate_pct / 100.0);
     let total_pnl = gross_wins - gross_losses;
     let (_, max_drawdown_pct, _) = calculate_drawdown(&balance_history);
     let calmar_ratio = calculate_calmar_ratio(total_pnl, account_size, span_days, max_drawdown_pct);
@@ -1789,7 +1789,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
     // M8: rolling 30-trade win rate
     let rolling_win_rate: Vec<f64> = sorted_closed.iter().enumerate().map(|(i, _)| {
-        let start = i.saturating_sub(29);
+        let start = i.saturating_sub(rolling_window.saturating_sub(1));
         let window = &sorted_closed[start..=i];
         let wins = window.iter().filter(|t| t.pnl.unwrap_or(0.0) > 0.0).count();
         wins as f64 / window.len() as f64 * 100.0
@@ -1808,7 +1808,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
 
     // L7: rolling 30-trade theta capture
     let rolling_theta_capture: Vec<f64> = theta_capture_per_trade.iter().enumerate().map(|(i, _)| {
-        let start = i.saturating_sub(29);
+        let start = i.saturating_sub(rolling_window.saturating_sub(1));
         let window = &theta_capture_per_trade[start..=i];
         window.iter().sum::<f64>() / window.len() as f64
     }).collect();
@@ -1858,6 +1858,33 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
     let commission_pct_of_gross = if gross_wins > 0.0 { (total_commissions / gross_wins) * 100.0 } else { 0.0 };
     let avg_fill_vs_mid = if fill_vs_mid_count > 0 { Some(fill_vs_mid_sum / fill_vs_mid_count as f64) } else { None };
 
+    // Item 4: P&L distribution histogram (6 buckets)
+    use crate::models::PnlBucket;
+    let pnl_bucket_defs: [(&'static str, f64, f64); 6] = [
+        ("<  -$500",       f64::NEG_INFINITY, -500.0),
+        ("-$500 to -$100", -500.0,            -100.0),
+        ("-$100 to $0",    -100.0,               0.0),
+        ("  $0 to $100",      0.0,             100.0),
+        ("$100 to $500",    100.0,             500.0),
+        (">   $500",         500.0, f64::INFINITY),
+    ];
+    let closed_count = sorted_closed.len();
+    let mut pnl_counts = [0usize; 6];
+    for t in &sorted_closed {
+        if let Some(pnl) = t.pnl {
+            if let Some(bi) = pnl_bucket_defs.iter().position(|&(_, lo, hi)| pnl >= lo && pnl < hi) {
+                pnl_counts[bi] += 1;
+            }
+        }
+    }
+    let pnl_buckets: Vec<PnlBucket> = pnl_bucket_defs.iter().zip(pnl_counts.iter()).map(|((label, _, _), &count)| {
+        PnlBucket {
+            label,
+            count,
+            pct: if closed_count > 0 { count as f64 / closed_count as f64 * 100.0 } else { 0.0 },
+        }
+    }).collect();
+
     PerformanceStats {
         win_rate: win_rate * 100.0,
         scratch_rate: scratch_rate * 100.0,
@@ -1894,6 +1921,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64) -> crate::mo
         avg_commission_per_trade,
         commission_pct_of_gross,
         avg_fill_vs_mid,
+        rolling_window_used: rolling_window,
+        pnl_buckets,
     }
 }
 
