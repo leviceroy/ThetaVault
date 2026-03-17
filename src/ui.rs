@@ -818,6 +818,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         Cell::from("BPR").style(Style::default().fg(C_CYAN)),
         Cell::from("OTM%").style(Style::default().fg(C_CYAN)),
         Cell::from("P&L%").style(Style::default().fg(C_CYAN)),
+        Cell::from("GTC").style(Style::default().fg(C_GRAY)),
+        Cell::from("BPR%").style(Style::default().fg(C_GRAY)),
+        Cell::from("Action").style(Style::default().fg(C_GRAY)),
     ])
     .style(Style::default().bg(C_DARK));
 
@@ -846,14 +849,14 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         };
         let bpr_str  = t.bpr.map_or("\u{2014}".to_string(), |b| format!("${:.0}", b));
         let cr_color = if t.credit_received >= 0.0 { C_GREEN } else { C_RED };
-        // OTM% for dashboard
-        let dash_otm_cell = {
+        // OTM% for dashboard — exposes otm_pct scalar for Action column
+        let (otm_pct, dash_otm_cell) = {
             if let Some(u) = t.underlying_price {
                 let short_put = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortPut)
                     .map(|l| l.strike);
                 let short_call = t.legs.iter().find(|l| l.leg_type == crate::models::LegType::ShortCall)
                     .map(|l| l.strike);
-                let otm_pct = match (short_put, short_call) {
+                let otm = match (short_put, short_call) {
                     (Some(sp), Some(sc)) => {
                         let put_otm  = (u - sp) / u * 100.0;
                         let call_otm = (sc - u) / u * 100.0;
@@ -863,31 +866,83 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                     (None, Some(sc)) => Some((sc - u) / u * 100.0),
                     _ => None,
                 };
-                match otm_pct {
+                let cell = match otm {
                     Some(p) if p >= 0.0 => {
                         let c = if p < 5.0 { C_RED } else if p < 10.0 { C_YELLOW } else { C_GREEN };
                         Cell::from(format!("{:.1}%", p)).style(Style::default().fg(c))
                     }
-                    Some(_p) => Cell::from("ITM").style(Style::default().fg(C_RED)),
-                    None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
-                }
+                    Some(_) => Cell::from("ITM").style(Style::default().fg(C_RED)),
+                    None    => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                };
+                (otm, cell)
             } else {
-                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+                (None, Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)))
             }
         };
-        // Est P&L% (theta-based % of max profit captured)
-        let dash_pnl_pct_cell = {
+        // Est P&L% (theta-based % of max profit captured) — exposes pct_of_max for Action column
+        let (pct_of_max, dash_pnl_pct_cell) = {
             let max_profit_d = crate::calculations::calculate_max_profit(t.credit_received, t.quantity);
             if max_profit_d > 0.0 {
                 let held = (Utc::now().date_naive() - t.trade_date.date_naive()).num_days().max(0) as f64;
                 let theta_est = t.theta.map_or(0.0, |th| th * held * 100.0 * t.quantity as f64);
                 let pct = (theta_est / max_profit_d * 100.0).clamp(-999.0, 999.0);
                 let c = if pct >= 50.0 { C_GREEN } else if pct >= 25.0 { C_YELLOW } else { C_GRAY };
-                Cell::from(format!("{:.0}%", pct)).style(Style::default().fg(c))
+                (pct, Cell::from(format!("{:.0}%", pct)).style(Style::default().fg(c)))
             } else {
-                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+                (0.0_f64, Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)))
             }
         };
+        // ── GTC: Good Till Cancel buy-to-close target price ───────────────────────
+        let target_pct = t.target_profit_pct
+            .unwrap_or_else(|| t.strategy.default_profit_target_pct());
+        let (gtc_str, gtc_color) = if t.credit_received > 0.0 {
+            let gtc = t.credit_received * (1.0 - target_pct / 100.0);
+            (format!("${:.2}", gtc), C_CYAN)
+        } else {
+            ("\u{2014}".to_string(), C_GRAY)
+        };
+
+        // ── BPR%: BPR as % of account size ────────────────────────────────────────
+        let (bpr_pct_str, bpr_pct_color) = match t.bpr {
+            Some(b) if stats.account_size > 0.0 => {
+                let pct = b / stats.account_size * 100.0;
+                let color = if pct > 5.0 { C_RED } else if pct > 2.0 { C_YELLOW } else { C_GREEN };
+                (format!("{:.1}%", pct), color)
+            }
+            _ => ("\u{2014}".to_string(), C_GRAY),
+        };
+
+        // ── Action: tastytrade management signal ──────────────────────────────────
+        let sp_strike = t.legs.iter()
+            .find(|l| l.leg_type == crate::models::LegType::ShortPut)
+            .map(|l| l.strike);
+        let sc_strike = t.legs.iter()
+            .find(|l| l.leg_type == crate::models::LegType::ShortCall)
+            .map(|l| l.strike);
+        let put_itm  = sp_strike.map(|sp| t.underlying_price.map_or(false, |u| u < sp)).unwrap_or(false);
+        let call_itm = sc_strike.map(|sc| t.underlying_price.map_or(false, |u| u > sc)).unwrap_or(false);
+
+        let (action_str, action_color): (&str, Color) =
+            if pct_of_max >= target_pct || pct_of_max >= 50.0 {
+                ("TAKE", C_GREEN)
+            } else if pct_of_max <= -200.0 {
+                ("STOP", C_RED)
+            } else if dte <= 7 {
+                ("CLOSE", C_RED)
+            } else if put_itm {
+                ("ROLL\u{2193}", C_RED)
+            } else if call_itm {
+                ("ROLL\u{2191}", C_RED)
+            } else if otm_pct.map_or(false, |o| o < 5.0) && dte <= 21 {
+                ("DEFEND", C_YELLOW)
+            } else if dte <= 21 {
+                ("21DTE", C_YELLOW)
+            } else if otm_pct.map_or(false, |o| o < 5.0) {
+                ("TEST", C_YELLOW)
+            } else {
+                ("\u{2014}", C_GRAY)
+            };
+
         Row::new(vec![
             Cell::from(t.ticker.clone()).style(Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
             Cell::from(t.trade_date.format("%m/%d/%y").to_string()).style(Style::default().fg(C_GRAY)),
@@ -898,6 +953,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Cell::from(bpr_str).style(Style::default().fg(C_YELLOW)),
             dash_otm_cell,
             dash_pnl_pct_cell,
+            Cell::from(gtc_str).style(Style::default().fg(gtc_color)),
+            Cell::from(bpr_pct_str).style(Style::default().fg(bpr_pct_color)),
+            Cell::from(action_str).style(Style::default().fg(action_color)),
         ])
     }).collect();
 
@@ -914,6 +972,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Constraint::Length(8),
             Constraint::Length(5),
             Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Length(5),
+            Constraint::Length(6),
         ])
         .header(open_header)
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
@@ -5510,7 +5571,7 @@ fn draw_daily_actions(
 // ── Journal Help Popup ────────────────────────────────────────────────────────
 
 fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &mut u16, page: u8) {
-    let w: u16 = 70.min(area.width.saturating_sub(4));
+    let w: u16 = 76.min(area.width.saturating_sub(4));
     let h: u16 = 40.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
@@ -5620,7 +5681,6 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
     f.render_widget(
         Paragraph::new(lines)
             .scroll((scroll, 0))
-            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
