@@ -1054,7 +1054,7 @@ fn draw_filter_bar(
 
     let mut spans: Vec<Span> = vec![Span::styled(" Filter: ", Style::default().fg(C_GRAY))];
 
-    for s in [FilterStatus::All, FilterStatus::Open, FilterStatus::Closed, FilterStatus::Expired] {
+    for s in [FilterStatus::All, FilterStatus::Open, FilterStatus::Closed, FilterStatus::Rolled, FilterStatus::Expired] {
         let active = s == filter_status;
         let style = if active {
             Style::default().bg(C_BLUE).fg(C_WHITE).add_modifier(Modifier::BOLD)
