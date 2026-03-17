@@ -906,7 +906,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let (bpr_pct_str, bpr_pct_color) = match t.bpr {
             Some(b) if stats.account_size > 0.0 => {
                 let pct = b / stats.account_size * 100.0;
-                let color = if pct > 5.0 { C_RED } else if pct > 2.0 { C_YELLOW } else { C_GREEN };
+                let color = if pct > 5.0 { C_RED } else if pct > 3.0 { C_YELLOW } else if pct >= 1.0 { C_GREEN } else { C_YELLOW };
                 (format!("{:.1}%", pct), color)
             }
             _ => ("\u{2014}".to_string(), C_GRAY),
