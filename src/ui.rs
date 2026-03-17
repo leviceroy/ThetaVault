@@ -1455,7 +1455,7 @@ fn draw_trade_table(
                                             let color = if pct < 5.0 { C_RED } else if pct < 10.0 { C_YELLOW } else { C_GREEN };
                                             Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
                                         }
-                                        Some(pct) => Cell::from(format!("ITM {:.1}%", pct.abs())).style(Style::default().fg(C_RED)), // ITM
+                                        Some(pct) => Cell::from(format!("-{:.1}%", pct.abs())).style(Style::default().fg(C_RED)), // ITM — negative shown in red
                                         None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
                                     }
                                 }
