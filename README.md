@@ -1,6 +1,8 @@
 # ThetaVault 2.0 (Rust Edition)
 
-A high-performance, terminal-based options trading journal inspired by `sandbox-quant` and the tastytrade mechanics.
+![ThetaVault Screenshots](docs/collage.png)
+
+A high-performance, terminal-based options trading journal inspired by the tastytrade mechanics.
 
 ## 🚀 Why Rust?
 - **Zero Latency:** Instant startup and UI updates.
