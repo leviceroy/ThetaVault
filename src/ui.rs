@@ -3646,13 +3646,31 @@ fn draw_equity_curve(f: &mut Frame, area: Rect, trades: &[&Trade]) {
         .style(Style::default().fg(if running >= 0.0 { C_GREEN } else { C_RED }))
         .data(&data);
 
+    // Build date labels for x-axis timeline
+    let fmt_date = |t: &Trade| -> String {
+        let dt = t.exit_date.unwrap_or(t.trade_date);
+        dt.format("%b '%y").to_string()
+    };
+    let first_label  = fmt_date(trades[0]);
+    let last_label   = fmt_date(trades[trades.len() - 1]);
+    let x_labels = if trades.len() >= 3 {
+        let mid_idx = trades.len() / 2;
+        vec![
+            Span::styled(first_label, Style::default().fg(C_GRAY)),
+            Span::styled(fmt_date(trades[mid_idx]), Style::default().fg(C_GRAY)),
+            Span::styled(last_label, Style::default().fg(C_GRAY)),
+        ]
+    } else {
+        vec![
+            Span::styled(first_label, Style::default().fg(C_GRAY)),
+            Span::styled(last_label, Style::default().fg(C_GRAY)),
+        ]
+    };
+
     let chart = Chart::new(vec![main_line])
         .x_axis(Axis::default()
             .bounds([0.0, total_trades])
-            .labels(vec![
-                Span::styled("START", Style::default().fg(C_GRAY)),
-                Span::styled(format!("{} TRADES", trades.len()), Style::default().fg(C_GRAY)),
-            ]))
+            .labels(x_labels))
         .y_axis(Axis::default()
             .bounds([y_min - y_pad, y_max + y_pad])
             .labels(vec![
