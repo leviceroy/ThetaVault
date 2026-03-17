@@ -89,7 +89,7 @@ pub struct AppState {
     pub perf_overview_max_scroll: u16,
     pub perf_analytics_scroll:    u16,
     pub perf_analytics_max_scroll: u16,
-    pub perf_collapsed:   [bool; 11], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry
+    pub perf_collapsed:   [bool; 13], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=Held 12=Commission
     pub perf_section_cursor: usize,  // 0-based index into current subtab's navigable section list
     pub perf_scroll_dirty:   bool,   // true → scroll refresh block should sync scroll to cursor
 
@@ -288,7 +288,7 @@ impl AppState {
             perf_analytics_scroll: 0,
             perf_analytics_max_scroll: u16::MAX,
             // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
-            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true],
+            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true, true, true],
             perf_section_cursor: 0,
             perf_scroll_dirty:   false,
             cal_year:      0,
@@ -1975,15 +1975,15 @@ fn col_visibility_to_string(vis: &[bool; 21]) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn perf_section_count(subtab: usize) -> usize {
-    if subtab == 0 { 3 } else { 6 }
+    if subtab == 0 { 3 } else { 10 }
 }
 
 /// Maps (subtab, cursor) → `perf_collapsed` global index.
 /// Overview map: [0=Health, 1=Returns, 3=Growth]
-/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX]
+/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=Held, 12=Commission]
 fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
-    const OVERVIEW_MAP:  [usize; 3] = [0, 1, 3];
-    const ANALYTICS_MAP: [usize; 6] = [2, 4, 5, 6, 7, 8];
+    const OVERVIEW_MAP:  [usize; 3]  = [0, 1, 3];
+    const ANALYTICS_MAP: [usize; 10] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     match subtab {
         0 => OVERVIEW_MAP.get(cursor).copied(),
         1 => ANALYTICS_MAP.get(cursor).copied(),
@@ -2701,13 +2701,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.perf_scroll_dirty = false;
                 }
 
-                // Performance section collapse/expand (keys 1-9, context-sensitive)
-                KeyCode::Char(c) if app.selected_tab == 5 && ('1'..='9').contains(&c) => {
-                    let ki = (c as usize) - ('1' as usize);
+                // Performance section collapse/expand (keys 1-9 + 0 for section 10, context-sensitive)
+                KeyCode::Char(c) if app.selected_tab == 5 && (('1'..='9').contains(&c) || c == '0') => {
+                    let ki = if c == '0' { 9 } else { (c as usize) - ('1' as usize) };
                     let gi: Option<usize> = if app.perf_subtab == 0 {
                         match ki { 0 => Some(0), 1 => Some(1), 2 => Some(3), _ => None }
                     } else {
-                        match ki { 0 => Some(2), 1 => Some(4), 2 => Some(5), 3 => Some(6), 4 => Some(7), 5 => Some(8), _ => None }
+                        match ki { 0 => Some(2), 1 => Some(4), 2 => Some(5), 3 => Some(6), 4 => Some(7), 5 => Some(8), 6 => Some(9), 7 => Some(10), 8 => Some(11), 9 => Some(12), _ => None }
                     };
                     if let Some(gi) = gi {
                         app.perf_collapsed[gi] = !app.perf_collapsed[gi];

@@ -92,7 +92,7 @@ pub fn draw_ui(
     thesis_edit_buf:         &str,
     spy_monthly:             &std::collections::HashMap<(i32, u32), f64>,
     live_prices:             &std::collections::HashMap<String, f64>,
-    perf_collapsed:          &[bool; 11],
+    perf_collapsed:          &[bool; 13],
     perf_section_cursor:     usize,
     col_visibility:          &[bool; 21],
     show_col_picker:         bool,
@@ -163,7 +163,7 @@ pub fn draw_ui(
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on, stats),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct, stored_heat_ceiling, max_pos_bpr_pct, default_mgmt_dte),
-        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 11], perf_section_cursor),
+        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 13], perf_section_cursor),
         _ => {}
     }
 
@@ -2741,7 +2741,7 @@ pub fn count_perf_overview_lines(
     stats: &crate::models::PortfolioStats,
     perf:  &crate::models::PerformanceStats,
     width: usize,
-    collapsed: &[bool; 11],
+    collapsed: &[bool; 13],
 ) -> usize {
     perf_health_lines(stats, width, collapsed[0], false).len()
     + perf_returns_lines(stats, perf, width, collapsed[1], false).len()
@@ -2752,7 +2752,7 @@ pub fn count_perf_analytics_lines(
     stats: &crate::models::PortfolioStats,
     perf:  &crate::models::PerformanceStats,
     width: usize,
-    collapsed: &[bool; 11],
+    collapsed: &[bool; 13],
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
 ) -> usize {
     perf_advanced_lines(stats, width, collapsed[2], false).len()
@@ -2761,10 +2761,10 @@ pub fn count_perf_analytics_lines(
     + perf_monthly_lines(perf, spy_monthly, width, collapsed[6], false).len()
     + perf_ivr_lines(perf, width, collapsed[7], false).len()
     + perf_vix_lines(perf, width, collapsed[8], false).len()
-    + perf_dte_lines(perf, width).len()
-    + perf_ivr_entry_lines(perf, width).len()
-    + perf_held_lines(perf, width).len()
-    + perf_commission_lines(perf).len()
+    + perf_dte_lines(perf, width, collapsed[9], false).len()
+    + perf_ivr_entry_lines(perf, width, collapsed[10], false).len()
+    + perf_held_lines(perf, width, collapsed[11], false).len()
+    + perf_commission_lines(perf, collapsed[12], false).len()
     + 1
 }
 
@@ -2773,7 +2773,7 @@ pub fn count_perf_analytics_lines(
 pub fn perf_header_scroll_for_cursor(
     cursor: usize,
     subtab: usize,
-    collapsed: &[bool; 11],
+    collapsed: &[bool; 13],
     stats: &crate::models::PortfolioStats,
     perf: &crate::models::PerformanceStats,
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
@@ -2792,13 +2792,22 @@ pub fn perf_header_scroll_for_cursor(
         let ticker_len   = perf_ticker_lines(perf, width, collapsed[5], false).len();
         let monthly_len  = perf_monthly_lines(perf, spy_monthly, width, collapsed[6], false).len();
         let ivr_len      = perf_ivr_lines(perf, width, collapsed[7], false).len();
+        let vix_len      = perf_vix_lines(perf, width, collapsed[8], false).len();
+        let dte_len      = perf_dte_lines(perf, width, collapsed[9], false).len();
+        let ivr_entry_len = perf_ivr_entry_lines(perf, width, collapsed[10], false).len();
+        let held_len     = perf_held_lines(perf, width, collapsed[11], false).len();
+        let base = advanced_len + strategy_len + ticker_len + monthly_len + ivr_len;
         match cursor {
             0 => 0,
             1 => advanced_len as u16,
             2 => (advanced_len + strategy_len) as u16,
             3 => (advanced_len + strategy_len + ticker_len) as u16,
             4 => (advanced_len + strategy_len + ticker_len + monthly_len) as u16,
-            5 => (advanced_len + strategy_len + ticker_len + monthly_len + ivr_len) as u16,
+            5 => (base) as u16,
+            6 => (base + vix_len) as u16,
+            7 => (base + vix_len + dte_len) as u16,
+            8 => (base + vix_len + dte_len + ivr_entry_len) as u16,
+            9 => (base + vix_len + dte_len + ivr_entry_len + held_len) as u16,
             _ => 0,
         }
     }
@@ -3929,15 +3938,17 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     lines
 }
 
-fn perf_commission_lines(perf: &PerformanceStats) -> Vec<Line<'static>> {
+fn perf_commission_lines(perf: &PerformanceStats, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     if perf.total_commissions <= 0.0 && perf.avg_commission_per_trade <= 0.0 {
         return vec![];
     }
-    let comm_color = if perf.commission_pct_of_gross > 10.0 { C_RED } else if perf.commission_pct_of_gross > 5.0 { C_YELLOW } else { C_GREEN };
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![Span::styled("  \u{1F4B0} COMMISSION ANALYSIS", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
-        Line::from(vec![
+        perf_section_header("\u{1F4B0} COMMISSION ANALYSIS", 80, collapsed, Some(10), selected),
+    ];
+    if collapsed { return lines; }
+    let comm_color = if perf.commission_pct_of_gross > 10.0 { C_RED } else if perf.commission_pct_of_gross > 5.0 { C_YELLOW } else { C_GREEN };
+    lines.push(Line::from(vec![
             Span::styled("  Total Paid: ", Style::default().fg(C_GRAY)),
             Span::styled(format!("${:.2}", perf.total_commissions), Style::default().fg(C_RED)),
             Span::raw("   "),
@@ -3946,8 +3957,8 @@ fn perf_commission_lines(perf: &PerformanceStats) -> Vec<Line<'static>> {
             Span::raw("   "),
             Span::styled("% of Gross: ", Style::default().fg(C_GRAY)),
             Span::styled(format!("{:.1}%", perf.commission_pct_of_gross), Style::default().fg(comm_color)),
-        ]),
-    ];
+        ]));
+
     if let Some(fvm) = perf.avg_fill_vs_mid {
         let fvm_color = if fvm >= 0.0 { C_GREEN } else { C_RED };
         lines.push(Line::from(vec![
@@ -4324,11 +4335,12 @@ fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool, select
     lines
 }
 
-fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
+fn perf_dte_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⏱ EXIT DTE ANALYSIS", width, false, None, false),
+        perf_section_header("⏱ EXIT DTE ANALYSIS", width, collapsed, Some(7), selected),
     ];
+    if collapsed { return lines; }
     lines.push(Line::from(""));
     if perf.dte_buckets.is_empty() {
         lines.push(Line::from(vec![Span::styled("  No DTE data yet.", Style::default().fg(C_GRAY))]));
@@ -4367,11 +4379,12 @@ fn perf_dte_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn perf_ivr_entry_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
+fn perf_ivr_entry_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, false, None, false),
+        perf_section_header("📈 IVR ENTRY HISTOGRAM", width, collapsed, Some(8), selected),
     ];
+    if collapsed { return lines; }
     lines.push(Line::from(""));
     if perf.ivr_entry_buckets.iter().all(|b| b.count == 0) {
         lines.push(Line::from(vec![Span::styled("  No IVR entry data yet — log iv_rank at entry to populate.", Style::default().fg(C_GRAY))]));
@@ -4453,11 +4466,12 @@ fn draw_perf_monthly_chart(f: &mut Frame, area: Rect, perf: &PerformanceStats) {
     f.render_widget(chart, area);
 }
 
-fn perf_held_lines(perf: &PerformanceStats, width: usize) -> Vec<Line<'static>> {
+fn perf_held_lines(perf: &PerformanceStats, width: usize, collapsed: bool, selected: bool) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        perf_section_header("⏳ TIME IN TRADE", width, false, None, false),
+        perf_section_header("⏳ TIME IN TRADE", width, collapsed, Some(9), selected),
     ];
+    if collapsed { return lines; }
     lines.push(Line::from(""));
     if perf.held_buckets.iter().all(|b| b.trades == 0) {
         lines.push(Line::from(vec![Span::styled("  No hold-time data yet — close some trades to populate.", Style::default().fg(C_GRAY))]));
@@ -4496,7 +4510,7 @@ fn draw_performance(
     overview_scroll: u16,
     analytics_scroll: u16,
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
-    collapsed: &[bool; 11],
+    collapsed: &[bool; 13],
     perf_section_cursor: usize,
 ) {
     let outer = Block::default()
@@ -4564,11 +4578,11 @@ fn draw_performance(
         lines.extend(perf_monthly_lines(perf, spy_monthly, width, collapsed[6], selected_gi == Some(6)));
         lines.extend(perf_ivr_lines(perf, width, collapsed[7], selected_gi == Some(7)));
         lines.extend(perf_vix_lines(perf, width, collapsed[8], selected_gi == Some(8)));
-        lines.extend(perf_dte_lines(perf, width));
-        lines.extend(perf_ivr_entry_lines(perf, width));
-        lines.extend(perf_held_lines(perf, width));
+        lines.extend(perf_dte_lines(perf, width, collapsed[9], selected_gi == Some(9)));
+        lines.extend(perf_ivr_entry_lines(perf, width, collapsed[10], selected_gi == Some(10)));
+        lines.extend(perf_held_lines(perf, width, collapsed[11], selected_gi == Some(11)));
 
-        lines.extend(perf_commission_lines(perf));
+        lines.extend(perf_commission_lines(perf, collapsed[12], selected_gi == Some(12)));
 
         lines.push(Line::from(""));
 
