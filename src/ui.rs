@@ -14,8 +14,8 @@ use crate::models::{LegType, PlaybookStrategy, PerformanceStats, PortfolioStats,
 use crate::calculations::{
     calculate_breakevens, calculate_calendar_payoff_at_price, calculate_held_duration,
     calculate_max_loss_from_legs, calculate_max_profit, calculate_payoff_at_price,
-    calculate_pct_max_profit, calculate_pnl_per_day, calculate_roc, calculate_remaining_dte, 
-    estimate_pop, format_trade_description, vix_max_heat,
+    calculate_pct_max_profit, calculate_pnl_per_day, calculate_roc, calculate_remaining_dte,
+    compute_spread_width_from_legs, estimate_pop, format_trade_description, vix_max_heat,
 };
 use chrono::Utc;
 use crate::app::{AppMode, EditField, FieldKind, FilterStatus, SortKey, VisualRowKind};
@@ -447,6 +447,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     let heat_color = if stats.alloc_pct >= max_heat_pct { C_RED }
         else if stats.alloc_pct >= max_heat_pct * 0.75 { C_YELLOW }
         else { C_GREEN };
+    let per_trade_str = format!(" ${:.0}–${:.0}/trade", stats.account_size * 0.01, stats.account_size * 0.03);
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -458,6 +459,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 format!(" ${:.0}k / max{:.0}%", stats.total_open_bpr / 1000.0, max_heat_pct),
                 Style::default().fg(C_GRAY),
             )]),
+            Line::from(vec![Span::styled(per_trade_str, Style::default().fg(C_DARK))]),
         ])
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Heat ", Style::default().fg(C_CYAN)))),
@@ -1035,7 +1037,7 @@ fn draw_journal(
 
             if let Some(det) = detail_area {
                 if let Some(trade) = ctx_trade(table_state) {
-                    draw_trade_detail(f, det, trade, detail_scroll, trade_chain, playbooks);
+                    draw_trade_detail(f, det, trade, detail_scroll, trade_chain, playbooks, live_prices, account_size, max_pos_bpr_pct);
                 }
             }
         }
@@ -1214,7 +1216,11 @@ fn draw_trade_table(
             VisualRowKind::Trade(ti) => {
                 let t = &all_trades[*ti];
         let pnl_str = match t.pnl {
-            Some(p) => format!("${:+.2}", p),
+            Some(p) => if p.abs() >= 10_000.0 {
+                format!("{:+.1}k", p / 1000.0)
+            } else {
+                format!("${:+.2}", p)
+            },
             None    => "open".to_string(),
         };
         let pnl_style = match t.pnl {
@@ -1470,7 +1476,10 @@ fn draw_trade_table(
                             let iv_raw = t.implied_volatility.or(t.iv_rank).unwrap_or(0.0);
                             if iv_raw > 0.0 && remaining_dte > 0.0 {
                                 let iv_dec = if iv_raw > 2.0 { iv_raw / 100.0 } else { iv_raw };
-                                let em = t.underlying_price.unwrap_or(0.0) * iv_dec * (remaining_dte / 365.0).sqrt();
+                                let price = t.underlying_price
+                                    .or_else(|| live_prices.get(&t.ticker).copied())
+                                    .unwrap_or(0.0);
+                                let em = price * iv_dec * (remaining_dte / 365.0).sqrt();
                                 if em > 0.0 {
                                     Cell::from(format!("\u{b1}${:.2}", em)).style(Style::default().fg(C_CYAN))
                                 } else {
@@ -1959,7 +1968,7 @@ fn draw_confirm_delete(
 
 // ── Trade detail pane ─────────────────────────────────────────────────────────
 
-fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chain: &[Trade], playbooks: &[crate::models::PlaybookStrategy]) {
+fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chain: &[Trade], playbooks: &[crate::models::PlaybookStrategy], live_prices: &std::collections::HashMap<String, f64>, account_size: f64, max_pos_bpr_pct: f64) {
     let spread_type = trade.spread_type();
     let max_profit  = calculate_max_profit(trade.credit_received, trade.quantity);
     let max_loss    = calculate_max_loss_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type);
@@ -2025,9 +2034,12 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
     // Spot / IVR / VIX / IV
     {
         let mut cs: Vec<Span> = vec![Span::styled("  ", Style::default())];
-        if let Some(up) = trade.underlying_price {
+        let spot = trade.underlying_price
+            .map(|p| (format!("${:.2}  ", p), C_WHITE))
+            .or_else(|| live_prices.get(&trade.ticker).map(|&p| (format!("${:.2}*  ", p), C_GRAY)));
+        if let Some((spot_str, spot_color)) = spot {
             cs.push(Span::styled("Spot: ", Style::default().fg(C_GRAY)));
-            cs.push(Span::styled(format!("${:.2}  ", up), Style::default().fg(C_WHITE)));
+            cs.push(Span::styled(spot_str, Style::default().fg(spot_color)));
         }
         if let Some(ivr) = trade.iv_rank {
             let ic = if ivr >= 50.0 { C_GREEN } else if ivr >= 30.0 { C_YELLOW } else { C_GRAY };
@@ -2043,6 +2055,22 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             cs.push(Span::styled(format!("{:.1}%", iv * 100.0), Style::default().fg(C_GRAY)));
         }
         if cs.len() > 1 { left_lines.push(Line::from(cs)); }
+    }
+
+    // B/A spread + Fill vs Mid (Tastytrade fill quality)
+    {
+        let mut fq: Vec<Span> = vec![Span::styled("  ", Style::default())];
+        if let Some(ba) = trade.bid_ask_spread_at_entry {
+            fq.push(Span::styled("B/A: ", Style::default().fg(C_GRAY)));
+            fq.push(Span::styled(format!("${:.2}  ", ba), Style::default().fg(C_GRAY)));
+        }
+        if let Some(fvm) = trade.fill_vs_mid {
+            let fc = if fvm >= 0.0 { C_GREEN } else { C_RED };
+            let label = if fvm >= 0.0 { "Fill vs Mid: +" } else { "Fill vs Mid: " };
+            fq.push(Span::styled(label, Style::default().fg(C_GRAY)));
+            fq.push(Span::styled(format!("${:.2}", fvm), Style::default().fg(fc)));
+        }
+        if fq.len() > 1 { left_lines.push(Line::from(fq)); }
     }
 
     // Greeks / POP / P50
@@ -2107,14 +2135,18 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         sep_style,
     )]));
     {
-        let cw_ratio = if let Some(sw) = trade.spread_width {
+        let eff_width = trade.spread_width.or_else(|| {
+            let w = compute_spread_width_from_legs(&trade.legs);
+            if w > 0.0 { Some(w) } else { None }
+        });
+        let cw_ratio = if let Some(sw) = eff_width {
             if sw > 0.0 { Some(trade.credit_received / sw * 100.0) } else { None }
         } else { None };
         let mut r1: Vec<Span> = vec![
             Span::styled("  Credit: ", Style::default().fg(C_GRAY)),
             Span::styled(format!("${:.2}", trade.credit_received), Style::default().fg(C_CYAN)),
         ];
-        if let Some(sw) = trade.spread_width {
+        if let Some(sw) = eff_width {
             r1.push(Span::styled("   Width: ", Style::default().fg(C_GRAY)));
             r1.push(Span::styled(format!("${:.0}", sw), Style::default().fg(C_GRAY)));
         }
@@ -2127,8 +2159,13 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
 
         let mut r2: Vec<Span> = Vec::new();
         if let Some(b) = trade.bpr {
+            let pct = if account_size > 0.0 { b / account_size * 100.0 } else { 0.0 };
+            let pct_color = if pct > max_pos_bpr_pct { C_RED }
+                            else if pct > max_pos_bpr_pct * 0.75 { C_YELLOW }
+                            else { C_GREEN };
             r2.push(Span::styled("  BPR: ", Style::default().fg(C_GRAY)));
             r2.push(Span::styled(format!("${:.0}", b), Style::default().fg(C_YELLOW)));
+            r2.push(Span::styled(format!(" ({:.1}%)", pct), Style::default().fg(pct_color)));
         }
         r2.push(Span::styled("   Max Profit: ", Style::default().fg(C_GRAY)));
         r2.push(Span::styled(format!("${:.0}", max_profit), Style::default().fg(C_GREEN)));
@@ -2138,6 +2175,27 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             Style::default().fg(C_RED),
         ));
         if !r2.is_empty() { left_lines.push(Line::from(r2)); }
+
+        if let Some(b) = trade.bpr {
+            let pct = if account_size > 0.0 { b / account_size * 100.0 } else { 0.0 };
+            let lo_dollar = account_size * 0.01;
+            let hi_dollar = account_size * 0.03;
+            let status = if pct > max_pos_bpr_pct { "✗ OVER" }
+                         else if pct > 3.0        { "⚠ NEAR MAX" }
+                         else if pct >= 1.0        { "✓ OK" }
+                         else                      { "↑ SMALL" };
+            let status_color = if pct > max_pos_bpr_pct { C_RED }
+                               else if pct > 3.0        { C_YELLOW }
+                               else if pct >= 1.0        { C_GREEN }
+                               else                      { C_GRAY };
+            let mut sz: Vec<Span> = vec![Span::styled("  Size: ", Style::default().fg(C_GRAY))];
+            sz.push(Span::styled(status, Style::default().fg(status_color)));
+            sz.push(Span::styled(
+                format!("   Target: 1–3%  ${:.0}–${:.0}/trade", lo_dollar, hi_dollar),
+                Style::default().fg(C_DARK),
+            ));
+            left_lines.push(Line::from(sz));
+        }
     }
 
     if trade.is_open() {
@@ -2145,6 +2203,16 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             Span::styled("  Breakeven: ", Style::default().fg(C_GRAY)),
             Span::styled(format!("{}", be_str), Style::default().fg(C_YELLOW)),
         ]));
+    }
+
+    if trade.is_open() && trade.credit_received > 0.0 {
+        let targets = [(85u32, "85%"), (50, "50%"), (25, "25%")];
+        let mut tgt: Vec<Span> = vec![Span::styled("  Targets: ", Style::default().fg(C_GRAY))];
+        for (pct, label) in targets {
+            let close_at = trade.credit_received * (1.0 - pct as f64 / 100.0);
+            tgt.push(Span::styled(format!("{} ${:.2}  ", label, close_at), Style::default().fg(C_DARK)));
+        }
+        left_lines.push(Line::from(tgt));
     }
 
     // ── EXIT block (closed trades only) ──────────────────────────────────────
@@ -2609,9 +2677,16 @@ pub fn count_detail_lines_left(
         if has_otm { n += 1; }
     }
 
+    // B/A + Fill vs Mid line
+    if trade.bid_ask_spread_at_entry.is_some() || trade.fill_vs_mid.is_some() {
+        n += 1;
+    }
+
     // ── RISK / STRUCTURE block: blank + separator + credit line + bpr/profit/loss line
     n += 4;
+    if trade.bpr.is_some() { n += 1; } // BPR sizing line
     if trade.is_open() { n += 1; } // breakeven (open trades only)
+    if trade.is_open() && trade.credit_received > 0.0 { n += 1; } // management targets
 
     // ── EXIT block (closed trades)
     if trade.exit_date.is_some() {

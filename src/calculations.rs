@@ -1390,10 +1390,9 @@ fn calculate_sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     let n = returns.len() as f64;
     let mean = returns.iter().sum::<f64>() / n;
     let risk_free_daily = risk_free_annual / 252.0;
-    let downside_var = returns.iter()
-        .filter(|&&r| r < 0.0)
-        .map(|&r| r.powi(2))
-        .sum::<f64>() / n;
+    let (d_count, d_sum_sq) = returns.iter().filter(|&&r| r < 0.0)
+        .fold((0usize, 0.0_f64), |(cnt, sq), &r| (cnt + 1, sq + r.powi(2)));
+    let downside_var = d_sum_sq / d_count.max(1) as f64;
     let downside_std = downside_var.sqrt();
     if downside_std <= 0.0 { return 0.0; }
     (mean - risk_free_daily) / downside_std * 252.0_f64.sqrt()
@@ -1976,7 +1975,7 @@ pub fn build_payoff_series(
 
     // Expected move: underlying * (iv/100) * sqrt(dte/365)
     let iv = trade.implied_volatility.or_else(|| trade.iv_rank).unwrap_or(0.0);
-    let dte = trade.entry_dte.unwrap_or(0) as f64;
+    let dte = calculate_remaining_dte(&trade.expiration_date).max(0) as f64;
     let expected_move = if iv > 0.0 && dte > 0.0 {
         let iv_dec = if iv > 2.0 { iv / 100.0 } else { iv };
         Some(underlying * iv_dec * (dte / 365.0).sqrt())
