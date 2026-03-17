@@ -4478,8 +4478,8 @@ fn draw_performance(
 
     if perf_subtab == 0 {
         // OVERVIEW: growth chart (fixed) + optional monthly chart + health/returns (scrollable)
-        let chart_h: u16 = if collapsed[3] { 3 } else { 18 };
-        let monthly_chart_h: u16 = if perf.monthly_pnl.len() >= 3 { 10 } else { 0 };
+        let chart_h: u16 = if collapsed[3] { 3 } else { 12 };
+        let monthly_chart_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 7 } else { 0 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(chart_h), Constraint::Length(monthly_chart_h), Constraint::Min(0)])
@@ -4487,8 +4487,8 @@ fn draw_performance(
 
         draw_perf_growth_chart(f, chunks[0], stats, perf, collapsed[3], selected_gi == Some(3));
 
-        // Item 5: Monthly P&L trend chart (only when ≥3 months)
-        if perf.monthly_pnl.len() >= 3 {
+        // Item 5: Monthly P&L trend chart (only when ≥3 months and growth chart expanded)
+        if !collapsed[3] && perf.monthly_pnl.len() >= 3 {
             draw_perf_monthly_chart(f, chunks[1], perf);
         }
 
