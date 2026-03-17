@@ -2764,6 +2764,7 @@ pub fn count_perf_analytics_lines(
     + perf_dte_lines(perf, width).len()
     + perf_ivr_entry_lines(perf, width).len()
     + perf_held_lines(perf, width).len()
+    + perf_commission_lines(perf).len()
     + 1
 }
 
@@ -3900,6 +3901,61 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled("Avg ROC: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:.1}%", stats.avg_roc), Style::default().fg(C_WHITE)),
     ]));
+    // Rolling win rate sparkline (belongs with returns)
+    if !perf.rolling_win_rate.is_empty() {
+        let current_wr = perf.rolling_win_rate.last().copied().unwrap_or(0.0);
+        let wr_color = if current_wr >= 60.0 { C_GREEN } else if current_wr >= 45.0 { C_YELLOW } else { C_RED };
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Rolling Win Rate (30-trade): ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("{:.1}%", current_wr), Style::default().fg(wr_color)),
+        ]));
+        let spark_data: Vec<f64> = if perf.rolling_win_rate.len() > 40 {
+            perf.rolling_win_rate[perf.rolling_win_rate.len() - 40..].to_vec()
+        } else {
+            perf.rolling_win_rate.clone()
+        };
+        let spark_chars = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+        let spark_str: String = spark_data.iter().map(|&v| {
+            let idx = ((v / 100.0) * 7.0).round().clamp(0.0, 7.0) as usize;
+            spark_chars[idx]
+        }).collect();
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(spark_str, Style::default().fg(wr_color)),
+        ]));
+    }
+    lines
+}
+
+fn perf_commission_lines(perf: &PerformanceStats) -> Vec<Line<'static>> {
+    if perf.total_commissions <= 0.0 && perf.avg_commission_per_trade <= 0.0 {
+        return vec![];
+    }
+    let comm_color = if perf.commission_pct_of_gross > 10.0 { C_RED } else if perf.commission_pct_of_gross > 5.0 { C_YELLOW } else { C_GREEN };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled("  \u{1F4B0} COMMISSION ANALYSIS", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![
+            Span::styled("  Total Paid: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("${:.2}", perf.total_commissions), Style::default().fg(C_RED)),
+            Span::raw("   "),
+            Span::styled("Avg/Trade: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("${:.2}", perf.avg_commission_per_trade), Style::default().fg(C_WHITE)),
+            Span::raw("   "),
+            Span::styled("% of Gross: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("{:.1}%", perf.commission_pct_of_gross), Style::default().fg(comm_color)),
+        ]),
+    ];
+    if let Some(fvm) = perf.avg_fill_vs_mid {
+        let fvm_color = if fvm >= 0.0 { C_GREEN } else { C_RED };
+        lines.push(Line::from(vec![
+            Span::styled("  Avg Fill vs Mid: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("{:+.4}", fvm), Style::default().fg(fvm_color)),
+            Span::styled(if fvm >= 0.0 { "  (above mid \u{2014} good)" } else { "  (below mid \u{2014} slippage)" }, Style::default().fg(C_GRAY)),
+        ]));
+    }
     lines
 }
 
@@ -4495,34 +4551,6 @@ fn draw_performance(
         let mut lines: Vec<Line> = Vec::new();
         lines.extend(perf_health_lines(stats, width, collapsed[0], selected_gi == Some(0)));
         lines.extend(perf_returns_lines(stats, perf, width, collapsed[1], selected_gi == Some(1)));
-
-        // Rolling 30-trade win rate sparkline
-        if !perf.rolling_win_rate.is_empty() {
-            lines.push(Line::from(""));
-            let current_wr = perf.rolling_win_rate.last().copied().unwrap_or(0.0);
-            let wr_color = if current_wr >= 60.0 { C_GREEN } else if current_wr >= 45.0 { C_YELLOW } else { C_RED };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("Rolling Win Rate (30-trade): ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("{:.1}%", current_wr), Style::default().fg(wr_color)),
-            ]));
-            // ASCII sparkline: take last 40 data points, map 0-100% to 8 levels
-            let spark_data: Vec<f64> = if perf.rolling_win_rate.len() > 40 {
-                perf.rolling_win_rate[perf.rolling_win_rate.len() - 40..].to_vec()
-            } else {
-                perf.rolling_win_rate.clone()
-            };
-            let spark_chars = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
-            let spark_str: String = spark_data.iter().map(|&v| {
-                let idx = ((v / 100.0) * 7.0).round().clamp(0.0, 7.0) as usize;
-                spark_chars[idx]
-            }).collect();
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(spark_str, Style::default().fg(wr_color)),
-            ]));
-        }
-
         lines.push(Line::from(""));
 
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
@@ -4540,30 +4568,7 @@ fn draw_performance(
         lines.extend(perf_ivr_entry_lines(perf, width));
         lines.extend(perf_held_lines(perf, width));
 
-        // Commission Analysis section
-        if perf.total_commissions > 0.0 || perf.avg_commission_per_trade > 0.0 {
-            let comm_color = if perf.commission_pct_of_gross > 10.0 { C_RED } else if perf.commission_pct_of_gross > 5.0 { C_YELLOW } else { C_GREEN };
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("  \u{1F4B0} COMMISSION ANALYSIS", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]));
-            lines.push(Line::from(vec![
-                Span::styled("  Total Paid: ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("${:.2}", perf.total_commissions), Style::default().fg(C_RED)),
-                Span::raw("   "),
-                Span::styled("Avg/Trade: ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("${:.2}", perf.avg_commission_per_trade), Style::default().fg(C_WHITE)),
-                Span::raw("   "),
-                Span::styled("% of Gross: ", Style::default().fg(C_GRAY)),
-                Span::styled(format!("{:.1}%", perf.commission_pct_of_gross), Style::default().fg(comm_color)),
-            ]));
-            if let Some(fvm) = perf.avg_fill_vs_mid {
-                let fvm_color = if fvm >= 0.0 { C_GREEN } else { C_RED };
-                lines.push(Line::from(vec![
-                    Span::styled("  Avg Fill vs Mid: ", Style::default().fg(C_GRAY)),
-                    Span::styled(format!("{:+.4}", fvm), Style::default().fg(fvm_color)),
-                    Span::styled(if fvm >= 0.0 { "  (above mid \u{2014} good)" } else { "  (below mid \u{2014} slippage)" }, Style::default().fg(C_GRAY)),
-                ]));
-            }
-        }
+        lines.extend(perf_commission_lines(perf));
 
         lines.push(Line::from(""));
 
