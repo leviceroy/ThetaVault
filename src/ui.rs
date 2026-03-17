@@ -813,13 +813,13 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         Cell::from("Opened").style(Style::default().fg(C_CYAN)),
         Cell::from("Str").style(Style::default().fg(C_CYAN)),
         Cell::from("Credit").style(Style::default().fg(C_CYAN)),
+        Cell::from("GTC").style(Style::default().fg(C_GRAY)),
         Cell::from("DTE").style(Style::default().fg(C_CYAN)),
         Cell::from("ER").style(Style::default().fg(C_CYAN)),
         Cell::from("BPR").style(Style::default().fg(C_CYAN)),
+        Cell::from("BPR%").style(Style::default().fg(C_GRAY)),
         Cell::from("OTM%").style(Style::default().fg(C_CYAN)),
         Cell::from("P&L%").style(Style::default().fg(C_CYAN)),
-        Cell::from("GTC").style(Style::default().fg(C_GRAY)),
-        Cell::from("BPR%").style(Style::default().fg(C_GRAY)),
         Cell::from("Action").style(Style::default().fg(C_GRAY)),
     ])
     .style(Style::default().bg(C_DARK));
@@ -948,13 +948,13 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Cell::from(t.trade_date.format("%m/%d/%y").to_string()).style(Style::default().fg(C_GRAY)),
             Cell::from(t.strategy.badge()).style(Style::default().fg(badge_color(t.spread_type()))),
             Cell::from(format!("${:.2}", t.credit_received)).style(Style::default().fg(cr_color)),
+            Cell::from(gtc_str).style(Style::default().fg(gtc_color)),
             Cell::from(format!("{}", dte)).style(Style::default().fg(dte_c)),
             Cell::from(er_str).style(er_style),
             Cell::from(bpr_str).style(Style::default().fg(C_YELLOW)),
+            Cell::from(bpr_pct_str).style(Style::default().fg(bpr_pct_color)),
             dash_otm_cell,
             dash_pnl_pct_cell,
-            Cell::from(gtc_str).style(Style::default().fg(gtc_color)),
-            Cell::from(bpr_pct_str).style(Style::default().fg(bpr_pct_color)),
             Cell::from(action_str).style(Style::default().fg(action_color)),
         ])
     }).collect();
@@ -963,18 +963,18 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     *open_table_state.offset_mut() = open_scroll.min(open_trades.len().saturating_sub(1));
     f.render_stateful_widget(
         Table::new(open_rows, [
-            Constraint::Length(7),
-            Constraint::Length(8),
-            Constraint::Length(5),
-            Constraint::Length(7),
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Length(6),
+            Constraint::Length(7),  // Ticker
+            Constraint::Length(8),  // Opened
+            Constraint::Length(5),  // Str
+            Constraint::Length(7),  // Credit
+            Constraint::Length(6),  // GTC
+            Constraint::Length(4),  // DTE
+            Constraint::Length(5),  // ER
+            Constraint::Length(8),  // BPR
+            Constraint::Length(5),  // BPR%
+            Constraint::Length(5),  // OTM%
+            Constraint::Length(5),  // P&L%
+            Constraint::Length(6),  // Action
         ])
         .header(open_header)
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
