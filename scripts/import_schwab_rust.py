@@ -662,6 +662,32 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                 oc_fp = f"oc|{t_db['id']}|{oc_dates_str}"
                 if conn.execute("SELECT 1 FROM import_log WHERE fingerprint=?", (oc_fp,)).fetchone():
                     # Already processed — skip to avoid double-closing the trade.
+                    # But if a roll was recorded for this IC, consume the rolled-to open
+                    # legs from opens_by_date_ticker so they don't become new standalone trades.
+                    roll_row = conn.execute(
+                        "SELECT fingerprint FROM import_log WHERE fingerprint LIKE ?",
+                        (f'roll|{t_db["id"]}|%',)
+                    ).fetchone()
+                    if roll_row:
+                        roll_date_str = roll_row[0].split('|')[2]
+                        roll_key = (roll_date_str, t_db['ticker'])
+                        roll_pool = opens_by_date_ticker.get(roll_key, [])
+                        if roll_pool:
+                            # Remove any open legs from the pool matching the IC's
+                            # new rolled-to legs (those without closePremium in the DB).
+                            for leg in t_db['legs']:
+                                if leg.get('closePremium') is not None:
+                                    continue
+                                opt = 'call' if 'call' in leg['type'] else 'put'
+                                action = 'Sell to Open' if 'short' in leg['type'] else 'Buy to Open'
+                                to_remove = [
+                                    o for o in roll_pool
+                                    if o['opt_type'] == opt
+                                    and o['action'] == action
+                                    and o['strike'] == leg['strike']
+                                ]
+                                for item in to_remove:
+                                    roll_pool.remove(item)
                     continue
 
                 used_closes.update(temp_used_closes)
@@ -689,6 +715,111 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                     updated_trade['exitReason'] = 'closed'
                 else:
                     print(f"  Matched partial orphan close ({matched_legs}/{len(t_db['legs'])}) for {t_db['ticker']} ID {t_db['id']} ({t_db['strategy']})")
+
+                    # ── ROLL DETECTION ────────────────────────────────────────────────
+                    # If this is an IC and exactly one side (call or put) was closed,
+                    # look for replacement open legs in opens_by_date_ticker that form a
+                    # replacement spread of the same type and absorb them into the IC.
+                    if t_db['strategy'] == 'iron_condor' and matched_legs == 2:
+                        closed_types = {leg['type'] for leg in new_legs if leg.get('closePremium') is not None}
+
+                        if closed_types == {'short_call', 'long_call'}:
+                            roll_opt_type = 'call'
+                        elif closed_types == {'short_put', 'long_put'}:
+                            roll_opt_type = 'put'
+                        else:
+                            roll_opt_type = None
+
+                        if roll_opt_type and close_dates:
+                            roll_date = max(close_dates).strftime('%Y-%m-%d')
+                            roll_key  = (roll_date, t_db['ticker'])
+                            roll_pool = opens_by_date_ticker.get(roll_key, [])
+
+                            cands_short = [
+                                o for o in roll_pool
+                                if o['opt_type'] == roll_opt_type and o['action'] == 'Sell to Open'
+                            ]
+                            cands_long = [
+                                o for o in roll_pool
+                                if o['opt_type'] == roll_opt_type and o['action'] == 'Buy to Open'
+                            ]
+
+                            if cands_short and cands_long:
+                                new_short = cands_short[0]
+                                new_long  = cands_long[0]
+
+                                if roll_opt_type == 'call':
+                                    is_credit = new_short['strike'] < new_long['strike']
+                                    new_leg_short = {'type': 'short_call', 'strike': new_short['strike'],
+                                                     'premium': new_short['price'], 'closePremium': None}
+                                    new_leg_long  = {'type': 'long_call',  'strike': new_long['strike'],
+                                                     'premium': new_long['price'],  'closePremium': None}
+                                else:
+                                    is_credit = new_short['strike'] > new_long['strike']
+                                    new_leg_short = {'type': 'short_put', 'strike': new_short['strike'],
+                                                     'premium': new_short['price'], 'closePremium': None}
+                                    new_leg_long  = {'type': 'long_put',  'strike': new_long['strike'],
+                                                     'premium': new_long['price'],  'closePremium': None}
+
+                                if is_credit:
+                                    # Close the original trade (rolled away) — keep original legs only
+                                    updated_trade['exitTime']   = roll_date + 'T16:00:00Z'
+                                    updated_trade['exitReason'] = 'rolled'
+                                    updated_trade['legs']       = new_legs  # original legs with closePremium on rolled side
+
+                                    # Compute realized P&L on the closed side for the parent trade
+                                    closed_legs = [l for l in new_legs if l.get('closePremium') is not None]
+                                    side_pnl = 0.0
+                                    for l in closed_legs:
+                                        cp = l['closePremium']
+                                        if l['type'].startswith('short_'):
+                                            side_pnl += l['premium'] - cp   # short: kept the difference
+                                        else:
+                                            side_pnl += cp - l['premium']   # long: received minus paid
+                                    updated_trade['forcePnl'] = round(side_pnl * 100.0 * t_db['quantity'], 2)
+
+                                    # Build child trade (new IC: open put legs + new call/put spread)
+                                    exp_str = t_db['expiration_date'][:10]
+                                    new_leg_short['expirationDate'] = exp_str
+                                    new_leg_long['expirationDate']  = exp_str
+                                    put_legs_open = [l for l in new_legs if 'put' in l['type']]
+                                    child_legs    = put_legs_open + [new_leg_short, new_leg_long]
+                                    child_credit  = sum(
+                                        l['premium'] if l['type'].startswith('short_') else -l['premium']
+                                        for l in child_legs
+                                    )
+                                    child_trade = {
+                                        'ticker':          t_db['ticker'],
+                                        'spreadType':      t_db['strategy'],
+                                        'quantity':        t_db['quantity'],
+                                        'creditReceived':  round(child_credit, 2),
+                                        'tradeDate':       roll_date,
+                                        'entryTime':       roll_date + 'T10:00:00Z',
+                                        'expirationDate':  exp_str,
+                                        'legs':            child_legs,
+                                        'commission':      t_db.get('commission'),
+                                        'underlyingPrice': t_db.get('underlying_price'),
+                                        'vixAtEntry':      t_db.get('vix_at_entry'),
+                                    }
+                                    trades.append(child_trade)
+
+                                    # Consume the roll opens so they don't become new standalone trades
+                                    if new_short in roll_pool:
+                                        roll_pool.remove(new_short)
+                                    if new_long in roll_pool:
+                                        roll_pool.remove(new_long)
+
+                                    # Roll fingerprint — prevents re-processing this roll on future imports
+                                    roll_fp = f"roll|{t_db['id']}|{roll_date}"
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+                                        (roll_fp, t_db['id'])
+                                    )
+                                    conn.commit()
+
+                                    print(f"  [ROLL] Chain created: {t_db['ticker']} IC {t_db['id']} → new child IC "
+                                          f"new legs {new_leg_short['strike']}/{new_leg_long['strike']}, "
+                                          f"parent pnl=${updated_trade['forcePnl']:+.2f}, child cr={child_credit:+.2f}")
 
                 # Persist fingerprint so re-running the same file won't re-close this trade.
                 conn.execute(
@@ -1792,6 +1923,9 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
 
     for i, trade in enumerate(trades):
         pnl, debit_paid = compute_pnl_and_debit(trade)
+        # Roll trades: partial-close means not all legs have closePremium → forcePnl overrides
+        if trade.get('forcePnl') is not None:
+            pnl = trade['forcePnl']
         spread_width    = compute_spread_width(trade)
         bpr             = compute_bpr(trade)
         entry_dte       = compute_dte(trade.get('tradeDate', ''), trade['expirationDate'])
@@ -1848,6 +1982,14 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                 )
                 conn.commit()
                 db_id = trade['id']
+                # Part 3: roll fingerprint — prevents re-import of this roll on future runs
+                if trade.get('is_roll_update') and trade.get('rollDate'):
+                    roll_fp = f"roll|{db_id}|{trade['rollDate']}"
+                    conn.execute(
+                        "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+                        (roll_fp, db_id)
+                    )
+                    conn.commit()
             else:
                 # INSERT new trade
                 cur = conn.execute(
@@ -2018,6 +2160,37 @@ def delete_unprotected_trades(conn: sqlite3.Connection) -> None:
     print(f"  Deleted {count} trades (full clean reimport)")
 
 
+# ---------- DB Cleanup ----------
+
+def cleanup_bad_rolls(conn: sqlite3.Connection) -> None:
+    """Remove incorrectly imported roll trades so re-import can fix them.
+
+    Deletes the 3 standalone short_call_vertical trades that were created from
+    rolled IC legs (IDs 1407 AVGO, 1408 GLD, 1409 META) and removes their
+    import_log fingerprints so the legs can be re-matched and absorbed into the
+    correct iron condors (IDs 1372, 1398, 1404).
+    """
+    bad_ids = [1407, 1408, 1409]
+    bad_fps = [
+        '2026-03-17|AVGO|1|1.15',
+        '2026-03-17|GLD|1|1.24',
+        '2026-03-17|META|1|3.02',
+    ]
+    # ICs whose partial-close log entries must be cleared so they can re-match
+    bad_ic_ids = [1372, 1398, 1404]
+
+    placeholders = ','.join('?' * len(bad_ids))
+    conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})", bad_ids)
+    for fp in bad_fps:
+        conn.execute("DELETE FROM import_log WHERE fingerprint = ?", (fp,))
+    for ic_id in bad_ic_ids:
+        conn.execute("DELETE FROM import_log WHERE fingerprint LIKE ?", (f'oc|{ic_id}|%',))
+        conn.execute("DELETE FROM import_log WHERE fingerprint LIKE ?", (f'roll|{ic_id}|%',))
+    conn.commit()
+    print(f"cleanup_bad_rolls: deleted {len(bad_ids)} bad roll trades and their import_log entries.")
+    print(f"  Re-cleared oc| fingerprints for ICs {bad_ic_ids} so they can re-match on next import.")
+
+
 # ---------- Main ----------
 
 def main():
@@ -2029,6 +2202,18 @@ def main():
     json_path       = args[0]
     db_path         = next((a for a in args[1:] if not a.startswith('--')), 'trades.db')
     delete_existing = '--delete-existing' in args
+    fix_rolls       = '--fix-rolls' in args
+
+    # Open DB first (needed for --fix-rolls cleanup before parsing JSON)
+    conn = sqlite3.connect(db_path)
+    init_db(conn)
+    migrate_db(conn)
+    print(f"Connected to {db_path}")
+
+    if fix_rolls:
+        print("\nRunning --fix-rolls cleanup...")
+        cleanup_bad_rolls(conn)
+        print()
 
     # Schwab exports contain ASCII control characters (\x1a prefix plus scattered \x1f etc.).
     # Strip all control bytes (0x00-0x1F) except JSON-valid whitespace (tab, LF, CR).
@@ -2040,12 +2225,6 @@ def main():
 
     transactions = data['BrokerageTransactions']
     print(f"Loaded {len(transactions)} transactions from {json_path}")
-
-    # Open DB
-    conn = sqlite3.connect(db_path)
-    init_db(conn)
-    migrate_db(conn)
-    print(f"Connected to {db_path}")
 
     trades = build_trades(transactions, conn)
     trades.sort(key=lambda x: (x['tradeDate'][:10], x['ticker']))

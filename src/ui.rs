@@ -2524,6 +2524,48 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         }
     }
 
+    // ── Compute active vs rolled legs (used by both Campaign and Legs blocks) ─
+    let trade_is_open = trade.exit_date.is_none();
+    let some_legs_closed = trade.legs.iter().any(|l| l.close_premium.is_some());
+    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if trade_is_open && some_legs_closed {
+        trade.legs.iter().partition(|l| l.close_premium.is_none())
+    } else {
+        (trade.legs.iter().collect(), vec![])
+    };
+
+    // ── RIGHT COLUMN: Per-leg breakdown (first — always visible without scrolling) ──
+    if !trade.legs.is_empty() {
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(vec![
+            Span::styled(
+                format!(" Legs ({}):", active_legs.len()),
+                Style::default().fg(C_GRAY).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for leg in &active_legs {
+            let lbl = match leg.leg_type {
+                LegType::ShortPut  => "Short Put ",
+                LegType::LongPut   => "Long Put  ",
+                LegType::ShortCall => "Short Call",
+                LegType::LongCall  => "Long Call ",
+            };
+            let close_str = leg.close_premium
+                .map(|cp| format!("  BTC: ${:.4}", cp))
+                .unwrap_or_default();
+            let mut leg_line = vec![
+                Span::styled(format!("   {} ", lbl), Style::default().fg(C_GRAY)),
+                Span::styled(format!("${:.2}", leg.strike), Style::default().fg(C_WHITE)),
+                Span::styled(format!("  prem: ${:.4}", leg.premium), Style::default().fg(C_CYAN)),
+            ];
+            if let Some(exp) = &leg.expiration_date {
+                let clean_exp = exp.split('T').next().unwrap_or(exp);
+                leg_line.push(Span::styled(format!("  exp: {}", clean_exp), Style::default().fg(C_GRAY)));
+            }
+            leg_line.push(Span::styled(close_str, Style::default().fg(C_RED)));
+            right_lines.push(Line::from(leg_line));
+        }
+    }
+
     // ── RIGHT COLUMN: Campaign / Roll Chain ──────────────────────────────────
     if chain.len() > 1 {
         use crate::calculations::calculate_campaign_metrics;
@@ -2548,6 +2590,36 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                 Span::styled(format!("{:<15}", t.strategy.badge()), Style::default().fg(status_c)),
                 Span::styled(t.pnl.map_or("OPEN".to_string(), |p| format!("${:+.0}", p)), Style::default().fg(pnl_c)),
             ]));
+        }
+
+        // ── Rolled legs (inside Campaign) ────────────────────────────────────
+        if !rolled_legs.is_empty() {
+            right_lines.push(Line::from(vec![
+                Span::styled("   Rolled legs:", Style::default().fg(C_GRAY).add_modifier(Modifier::DIM)),
+            ]));
+            for leg in &rolled_legs {
+                let lbl = match leg.leg_type {
+                    LegType::ShortPut  => "Short Put ",
+                    LegType::LongPut   => "Long Put  ",
+                    LegType::ShortCall => "Short Call",
+                    LegType::LongCall  => "Long Call ",
+                };
+                let close_str = leg.close_premium
+                    .map(|cp| format!("  BTC: ${:.4}", cp))
+                    .unwrap_or_default();
+                let dim = Style::default().fg(C_GRAY).add_modifier(Modifier::DIM);
+                let mut leg_line = vec![
+                    Span::styled(format!("     {} ", lbl), dim),
+                    Span::styled(format!("${:.2}", leg.strike), dim),
+                    Span::styled(format!("  prem: ${:.4}", leg.premium), dim),
+                ];
+                if let Some(exp) = &leg.expiration_date {
+                    let clean_exp = exp.split('T').next().unwrap_or(exp);
+                    leg_line.push(Span::styled(format!("  exp: {}", clean_exp), dim));
+                }
+                leg_line.push(Span::styled(close_str, dim));
+                right_lines.push(Line::from(leg_line));
+            }
         }
     }
 
@@ -2654,36 +2726,6 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             right_lines.push(Line::from(vec![
                 Span::styled("   No playbook assigned", Style::default().fg(C_GRAY)),
             ]));
-        }
-    }
-
-    // ── RIGHT COLUMN: Per-leg breakdown ──────────────────────────────────────
-    if !trade.legs.is_empty() {
-        right_lines.push(Line::from(""));
-        right_lines.push(Line::from(vec![
-            Span::styled(format!(" Legs ({}):", trade.legs.len()), Style::default().fg(C_GRAY).add_modifier(Modifier::BOLD)),
-        ]));
-        for leg in &trade.legs {
-            let lbl = match leg.leg_type {
-                LegType::ShortPut  => "Short Put ",
-                LegType::LongPut   => "Long Put  ",
-                LegType::ShortCall => "Short Call",
-                LegType::LongCall  => "Long Call ",
-            };
-            let close_str = leg.close_premium
-                .map(|cp| format!("  BTC: ${:.4}", cp))
-                .unwrap_or_default();
-            let mut leg_line = vec![
-                Span::styled(format!("   {} ", lbl), Style::default().fg(C_GRAY)),
-                Span::styled(format!("${:.2}", leg.strike), Style::default().fg(C_WHITE)),
-                Span::styled(format!("  prem: ${:.4}", leg.premium), Style::default().fg(C_CYAN)),
-            ];
-            if let Some(exp) = &leg.expiration_date {
-                let clean_exp = exp.split('T').next().unwrap_or(exp);
-                leg_line.push(Span::styled(format!("  exp: {}", clean_exp), Style::default().fg(C_GRAY)));
-            }
-            leg_line.push(Span::styled(close_str, Style::default().fg(C_RED)));
-            right_lines.push(Line::from(leg_line));
         }
     }
 
@@ -2806,6 +2848,15 @@ pub fn count_detail_lines_right(
     let trade_playbook: Option<&crate::models::PlaybookStrategy> = trade.playbook_id
         .and_then(|pid| playbooks.iter().find(|p| p.id == pid));
 
+    // Compute active vs rolled legs — mirrors renderer partition
+    let trade_is_open = trade.exit_date.is_none();
+    let some_legs_closed = trade.legs.iter().any(|l| l.close_premium.is_some());
+    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if trade_is_open && some_legs_closed {
+        trade.legs.iter().partition(|l| l.close_premium.is_none())
+    } else {
+        (trade.legs.iter().collect(), vec![])
+    };
+
     // ── MANAGEMENT block — mirrors has_mgmt gate in renderer
     let has_mgmt = trade.is_open()
         || trade.management_rule.is_some()
@@ -2850,11 +2901,23 @@ pub fn count_detail_lines_right(
         }
     }
 
+    // ── LEGS block (rendered first in right column)
+    if !trade.legs.is_empty() {
+        n += 1; // blank
+        n += 1; // "Legs (N):" header
+        n += active_legs.len(); // only active (non-rolled) legs
+    }
+
     // ── Campaign / Roll Chain
     if chain.len() > 1 {
         n += 1; // blank
         n += 1; // campaign summary line
         n += chain.len();
+        // Rolled legs sub-section inside Campaign
+        if !rolled_legs.is_empty() {
+            n += 1; // "Rolled legs:" header
+            n += rolled_legs.len();
+        }
     }
 
     // ── PLAYBOOK block — mirrors renderer exactly
@@ -2876,11 +2939,11 @@ pub fn count_detail_lines_right(
                     || ec.vix_max.is_some();
                 if has_ladder {
                     n += 1; // MANAGEMENT RULES separator
-                    if ec.dte_exit.is_some()         { n += 1; }
+                    if ec.dte_exit.is_some()          { n += 1; }
                     if ec.profit_target_pct.is_some() { n += 1; }
-                    if ec.stop_loss_pct.is_some()    { n += 1; }
-                    if ec.management_rule.is_some()  { n += 1; }
-                    if ec.when_to_avoid.is_some()    { n += 1; }
+                    if ec.stop_loss_pct.is_some()     { n += 1; }
+                    if ec.management_rule.is_some()   { n += 1; }
+                    if ec.when_to_avoid.is_some()     { n += 1; }
                     if ec.vix_min.is_some() || ec.vix_max.is_some() { n += 1; }
                 }
             } else {
@@ -2892,13 +2955,6 @@ pub fn count_detail_lines_right(
             n += 1; // PLAYBOOK separator
             n += 1; // "No playbook assigned"
         }
-    }
-
-    // ── LEGS block
-    if !trade.legs.is_empty() {
-        n += 1; // blank
-        n += 1; // "Legs (N):" header
-        n += trade.legs.len();
     }
 
     n
