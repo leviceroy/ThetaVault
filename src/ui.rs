@@ -2179,7 +2179,7 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         ),
         Span::styled(
             if trade.is_open() { format!("   ({} remaining)", dte) } else { String::new() },
-            Style::default().fg(C_DARK),
+            Style::default().fg(C_GRAY),
         ),
     ]));
 
@@ -3199,7 +3199,7 @@ fn draw_playbook(
                     Span::styled(format!("({})", sb.trades), Style::default().fg(C_GRAY)),
                 ])
             } else {
-                Line::from(vec![Span::styled("  no data", Style::default().fg(C_DARK))])
+                Line::from(vec![Span::styled("  no data", Style::default().fg(C_GRAY))])
             }
         } else {
             Line::from(vec![Span::styled("  no data", Style::default().fg(C_DARK))])
@@ -4250,7 +4250,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
             Span::raw("  "),
             Span::styled("Avg Premium Recapture: ", Style::default().fg(C_GRAY)),
             Span::styled(format!("{:.1}%", pr), Style::default().fg(pr_color)),
-            Span::styled("  (target ≥50%)", Style::default().fg(C_DARK)),
+            Span::styled("  (target ≥50%)", Style::default().fg(C_GRAY)),
         ]));
     }
 
@@ -4891,7 +4891,7 @@ fn draw_perf_monthly_chart(f: &mut Frame, area: Rect, perf: &PerformanceStats) {
     ];
     let y_labels = vec![
         Span::styled(format!("${:.0}", y_min), Style::default().fg(C_GRAY)),
-        Span::styled("$0", Style::default().fg(C_DARK)),
+        Span::styled("$0", Style::default().fg(C_GRAY)),
         Span::styled(format!("${:.0}", y_max), Style::default().fg(C_GRAY)),
     ];
 
@@ -5274,7 +5274,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             Span::styled("Max 5% BPR/trade  ·  Heat < 50% total  ·  Undefined ≤ 75%", Style::default().fg(C_GRAY)),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled("  ↑/↓ or j/k scroll  ·  i/Esc close", Style::default().fg(C_DARK))]),
+        Line::from(vec![Span::styled("  ↑/↓ or j/k scroll  ·  i/Esc close", Style::default().fg(C_GRAY))]),
     ];
 
     let content_lines = lines.len() as u16;
@@ -5466,7 +5466,7 @@ fn draw_admin(
             Line::from(vec![Span::styled("  Max Pos BPR %        ", Style::default().fg(C_GRAY)), Span::styled(format!("{:.1}%", max_pos_bpr_pct), Style::default().fg(C_WHITE))]),
             Line::from(vec![Span::styled("  Target Undefined %   ", Style::default().fg(C_GRAY)), Span::styled(format!("{:.1}%  (current: {:.1}%)", stats.target_undefined_pct, stats.undefined_risk_pct), Style::default().fg(C_WHITE))]),
             Line::from(""),
-            Line::from(vec![Span::styled("  ── tastytrade defaults ────────────────────────────────────────", Style::default().fg(C_DARK))]),
+            Line::from(vec![Span::styled("  ── tastytrade defaults ────────────────────────────────────────", Style::default().fg(C_GRAY))]),
             Line::from(vec![Span::styled("  Max Heat            ", Style::default().fg(C_GRAY)), Span::styled("50% of account in BPR", Style::default().fg(C_GRAY))]),
             Line::from(vec![Span::styled("  Undefined Risk      ", Style::default().fg(C_GRAY)), Span::styled("75% of total BPR", Style::default().fg(C_GRAY))]),
             Line::from(vec![Span::styled("  Max Per Position    ", Style::default().fg(C_GRAY)), Span::styled("5% BPR of account", Style::default().fg(C_GRAY))]),
@@ -5577,7 +5577,7 @@ fn draw_daily_actions(
                 Span::styled(if bwd_ok { "  ✓" } else { "  !" }, Style::default().fg(bwd_color).add_modifier(Modifier::BOLD)),
                 Span::styled(" Portfolio Delta:  ", Style::default().fg(C_GRAY)),
                 Span::styled(format!("{:+.1} BWD", bwd), Style::default().fg(bwd_color)),
-                Span::styled(if bwd_ok { "  (neutral)" } else { "  (review)" }, Style::default().fg(C_DARK)),
+                Span::styled(if bwd_ok { "  (neutral)" } else { "  (review)" }, Style::default().fg(C_GRAY)),
             ]),
             Line::from(vec![
                 Span::styled(if vix_ok { "  ✓" } else { "  !" }, Style::default().fg(vix_color).add_modifier(Modifier::BOLD)),
@@ -5593,7 +5593,7 @@ fn draw_daily_actions(
                 ),
             ]),
             Line::from(vec![
-                Span::styled("  ·", Style::default().fg(C_DARK)),
+                Span::styled("  ·", Style::default().fg(C_GRAY)),
                 Span::styled(" Positions open:   ", Style::default().fg(C_GRAY)),
                 Span::styled(format!("{}", stats.open_trades), Style::default().fg(C_WHITE)),
                 Span::styled("   Theta/day: ", Style::default().fg(C_GRAY)),
@@ -5750,7 +5750,7 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
 
     let lines: Vec<Line> = if page == 0 {
         vec![
-            Line::from(vec![Span::styled("  Journal Keyboard Shortcuts  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Field Glossary", Style::default().fg(C_DARK))]),
+            Line::from(vec![Span::styled("  Journal Keyboard Shortcuts  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Field Glossary", Style::default().fg(C_GRAY))]),
             Line::from(""),
             Line::from(vec![Span::styled("  ── Navigation ──────────────────────────────────────────", Style::default().fg(C_GRAY))]),
             Line::from(vec![Span::styled("  ↑/↓        ", Style::default().fg(C_YELLOW)), Span::styled("Move selection up/down", Style::default().fg(C_WHITE))]),
@@ -5784,11 +5784,11 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             Line::from(vec![Span::styled("  SCRATCH    ", Style::default().fg(C_YELLOW)), Span::styled("Closed near breakeven (< $10)", Style::default().fg(C_WHITE))]),
             Line::from(vec![Span::styled("  EXPIRED    ", Style::default().fg(C_GRAY)), Span::styled("Expired worthless (full profit)", Style::default().fg(C_WHITE))]),
             Line::from(""),
-            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Field Glossary →", Style::default().fg(C_DARK))]),
+            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Field Glossary →", Style::default().fg(C_GRAY))]),
         ]
     } else {
         vec![
-            Line::from(vec![Span::styled("  Field Glossary  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Keyboard Shortcuts", Style::default().fg(C_DARK))]),
+            Line::from(vec![Span::styled("  Field Glossary  ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)), Span::styled("Tab → Keyboard Shortcuts", Style::default().fg(C_GRAY))]),
             Line::from(""),
             Line::from(vec![Span::styled("  ── Entry Fields ────────────────────────────────────────", Style::default().fg(C_GRAY))]),
             def("Date",         "Trade entry date"),
@@ -5827,7 +5827,7 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("CAL",          "Calendar Spread — sell near, buy far expiration"),
             def("LDS",          "Long Diagonal Spread"),
             Line::from(""),
-            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Shortcuts ←", Style::default().fg(C_DARK))]),
+            Line::from(vec![Span::styled("  i/Esc:Close  Tab:Shortcuts ←", Style::default().fg(C_GRAY))]),
         ]
     };
 
