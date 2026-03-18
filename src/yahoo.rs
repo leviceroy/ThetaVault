@@ -201,6 +201,89 @@ async fn fetch_price_single(client: reqwest::Client, ticker: String) -> Option<f
         .and_then(|s| s.parse::<f64>().ok())
 }
 
+/// Fetch GICS sector for a list of tickers via Yahoo Finance search API.
+/// Uses /v1/finance/search (less rate-limited than quoteSummary). Fails silently per ticker.
+pub async fn fetch_sectors(tickers: &[String]) -> HashMap<String, String> {
+    if tickers.is_empty() { return HashMap::new(); }
+    let client = match build_client() { Some(c) => c, None => return HashMap::new() };
+
+    let mut handles = Vec::new();
+    for ticker in tickers {
+        let c = client.clone();
+        let t = ticker.clone();
+        handles.push(tokio::spawn(async move { fetch_sector_single(c, t).await }));
+    }
+
+    let mut result = HashMap::new();
+    for (ticker, handle) in tickers.iter().zip(handles) {
+        if let Some(sector) = handle.await.ok().flatten() {
+            result.insert(ticker.clone(), sector);
+        }
+    }
+    result
+}
+
+/// Static sector map for ETFs that Yahoo Finance does not classify under GICS sectors.
+fn etf_sector_fallback(ticker: &str) -> Option<&'static str> {
+    match ticker {
+        // Energy
+        "USO" | "UNG" | "BOIL" | "KOLD" | "UCO" | "SCO" | "XLE" | "OIH" | "XOP" => Some("Energy"),
+        // Materials / Commodities
+        "GLD" | "IAU" | "GLDM" | "SLV" | "SIVR" | "GDX" | "GDXJ" | "COPX" | "SLX"
+        | "PDBC" | "DJP" | "GSG" | "XLB" => Some("Materials"),
+        // Technology
+        "QQQ" | "TQQQ" | "SQQQ" | "SMH" | "SOXX" | "XLK" | "ARKK" | "ARKG" | "ARKW"
+        | "WCLD" | "IGV" => Some("Technology"),
+        // Financials
+        "XLF" | "KRE" | "KBE" | "IAI" | "IAK" => Some("Financials"),
+        // Health Care
+        "XLV" | "XBI" | "IBB" | "LABU" | "LABD" => Some("Health Care"),
+        // Consumer Discretionary
+        "XLY" | "XIRT" => Some("Consumer Discretionary"),
+        // Consumer Staples
+        "XLP" => Some("Consumer Staples"),
+        // Industrials
+        "XLI" | "ITA" | "XAR" => Some("Industrials"),
+        // Utilities
+        "XLU" => Some("Utilities"),
+        // Communication Services
+        "XLC" => Some("Communication Services"),
+        // Real Estate
+        "XLRE" | "VNQ" | "IYR" => Some("Real Estate"),
+        _ => None,
+    }
+}
+
+async fn fetch_sector_single(client: reqwest::Client, ticker: String) -> Option<String> {
+    // Use the search API — less rate-limited than quoteSummary, returns sector directly
+    let url = format!(
+        "https://query1.finance.yahoo.com/v1/finance/search\
+         ?q={}&quotesCount=1&newsCount=0&enableFuzzyQuery=false",
+        ticker
+    );
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    // Find the exact matching quote by symbol to avoid fuzzy-match wrong tickers
+    let api_result = json.pointer("/quotes")
+        .and_then(|v| v.as_array())
+        .and_then(|quotes| {
+            quotes.iter().find(|q| {
+                q.get("symbol")
+                    .and_then(|s| s.as_str())
+                    .map_or(false, |s| s == ticker)
+            })
+        })
+        .and_then(|q| q.get("sector"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // ETFs return no sector from the search API — fall back to static map
+    api_result.or_else(|| etf_sector_fallback(&ticker).map(|s| s.to_string()))
+}
+
 /// Fetch all tickers reporting on a given date from Nasdaq's earnings calendar.
 async fn fetch_nasdaq_earnings_for_date(client: reqwest::Client, date: NaiveDate) -> Vec<String> {
     let url = format!(

@@ -338,6 +338,7 @@ pub struct Trade {
     // Computed fields
     pub spread_width: Option<f64>,
     pub bpr: Option<f64>,               // Buying Power Reduction
+    pub sector: Option<String>,         // GICS sector from Yahoo Finance
     pub entry_dte: Option<i32>,         // DTE at entry
     pub dte_at_close: Option<i32>,      // DTE at close
 

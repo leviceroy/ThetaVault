@@ -89,6 +89,9 @@ pub struct AppState {
     pub detail_total_lines: usize,
     pub dash_open_scroll:     usize,
     pub dash_open_max_scroll: usize,
+    pub dash_risk_scroll:     usize,
+    pub dash_risk_max_scroll: usize,
+    pub dash_panel_focus:     u8,   // 0 = Risk Distribution, 1 = Open Positions
     pub perf_subtab:              usize,   // 0 = OVERVIEW, 1 = ANALYTICS
     pub perf_overview_scroll:     u16,
     pub perf_overview_max_scroll: u16,
@@ -298,6 +301,9 @@ impl AppState {
             detail_total_lines: 0,
             dash_open_scroll:     0,
             dash_open_max_scroll: usize::MAX,
+            dash_risk_scroll:     0,
+            dash_risk_max_scroll: usize::MAX,
+            dash_panel_focus:     1,   // default: Open Positions focused (existing behavior)
             perf_subtab: 0,
             perf_overview_scroll: 0,
             perf_overview_max_scroll: u16::MAX,
@@ -648,7 +654,11 @@ impl AppState {
                 self.actions_list_state.select(Some(if i + 1 >= len { 0 } else { i + 1 }));
             }
             0 => {
-                if self.dash_open_scroll < self.dash_open_max_scroll {
+                if self.dash_panel_focus == 0 {
+                    if self.dash_risk_scroll < self.dash_risk_max_scroll {
+                        self.dash_risk_scroll = self.dash_risk_scroll.saturating_add(1);
+                    }
+                } else if self.dash_open_scroll < self.dash_open_max_scroll {
                     self.dash_open_scroll = self.dash_open_scroll.saturating_add(1);
                 }
             }
@@ -700,8 +710,11 @@ impl AppState {
                 self.actions_list_state.select(Some(if i == 0 { len - 1 } else { i - 1 }));
             }
             0 => {
-                // Scroll dashboard open positions up
-                self.dash_open_scroll = self.dash_open_scroll.saturating_sub(1);
+                if self.dash_panel_focus == 0 {
+                    self.dash_risk_scroll = self.dash_risk_scroll.saturating_sub(1);
+                } else {
+                    self.dash_open_scroll = self.dash_open_scroll.saturating_sub(1);
+                }
             }
             5 => {
                 let count = perf_section_count(self.perf_subtab);
@@ -2072,6 +2085,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         if !open_tickers.is_empty() {
+            let sector_tickers: Vec<String> = {
+                let mut t: Vec<String> = app.trades.iter()
+                    .filter(|t| t.is_open() && t.sector.is_none())
+                    .map(|t| t.ticker.clone())
+                    .collect();
+                t.sort(); t.dedup();
+                t
+            };
             let fetch = tokio::time::timeout(
                 std::time::Duration::from_secs(20),
                 async {
@@ -2081,12 +2102,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         yahoo::fetch_betas(&open_tickers),
                         yahoo::fetch_spy_price(),
                         yahoo::fetch_underlying_prices(&open_tickers),
+                        yahoo::fetch_sectors(&sector_tickers),
                     )
                 },
             )
             .await;
 
-            if let Ok((earnings_map, vix_val, beta_map, spy_val, prices)) = fetch {
+            if let Ok((earnings_map, vix_val, beta_map, spy_val, prices, sector_map)) = fetch {
                 // Collect trades that need updating
                 let updates: Vec<(i32, chrono::NaiveDate)> = app.trades.iter()
                     .filter(|t| t.is_open())
@@ -2096,6 +2118,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 for (id, ed) in updates {
                     if let Some(trade) = app.trades.iter_mut().find(|t| t.id == id) {
                         trade.next_earnings = Some(ed);
+                        let _ = storage.update_trade(id, &*trade);
+                    }
+                }
+                // Persist sector for open trades that were missing it
+                let sector_updates: Vec<(i32, String)> = app.trades.iter()
+                    .filter(|t| t.is_open() && t.sector.is_none())
+                    .filter_map(|t| sector_map.get(&t.ticker).map(|s| (t.id, s.clone())))
+                    .collect();
+                for (id, sec) in sector_updates {
+                    if let Some(trade) = app.trades.iter_mut().find(|t| t.id == id) {
+                        trade.sector = Some(sec);
                         let _ = storage.update_trade(id, &*trade);
                     }
                 }
@@ -2162,15 +2195,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Refresh dashboard open positions scroll limit
+        // Refresh dashboard open positions and risk distribution scroll limits
         if app.selected_tab == 0 {
             if let Ok(size) = term.size() {
-                let content_h  = size.height.saturating_sub(4) as usize; // tabs(3)+footer(1)
-                let lower_h    = content_h.saturating_sub(9);             // top KPI row
-                let open_panel_h = lower_h * 60 / 100;                   // Percentage(60)
-                let visible_rows = open_panel_h.saturating_sub(3);        // borders+header
-                let open_count = app.trades.iter().filter(|t| t.is_open()).count();
+                let content_h    = size.height.saturating_sub(4) as usize; // tabs(3)+footer(1)
+                let lower_h      = content_h.saturating_sub(9);            // top KPI row
+                let open_panel_h = lower_h * 60 / 100;                     // Percentage(60)
+                let visible_rows = open_panel_h.saturating_sub(3);         // borders+header
+                let open_count   = app.trades.iter().filter(|t| t.is_open()).count();
                 app.dash_open_max_scroll = open_count.saturating_sub(visible_rows);
+                // Risk distribution panel: same height as open panel, minus borders
+                let risk_visible_h = lower_h.saturating_sub(2);
+                app.dash_risk_max_scroll = theta_vault_rust::ui::count_risk_lines(&app.trades, &app.stats)
+                    .saturating_sub(risk_visible_h);
             }
         }
 
@@ -2301,6 +2338,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.default_profit_target_pct,
             app.default_mgmt_dte,
             app.export_status.as_deref(),
+            app.dash_risk_scroll,
+            app.dash_panel_focus,
         ))?;
         // Decrement export status tick
         if app.export_status_tick > 0 {
@@ -2716,6 +2755,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.perf_section_cursor = 0;
                     app.perf_scroll_dirty = false;
                     app.cancel_mode();
+                }
+
+                // Dashboard panel focus: ←/→ switches between Risk Distribution and Open Positions
+                KeyCode::Left if app.selected_tab == 0 => {
+                    app.dash_panel_focus = 0;
+                }
+                KeyCode::Right if app.selected_tab == 0 => {
+                    app.dash_panel_focus = 1;
                 }
                 KeyCode::BackTab => {
                     app.selected_tab = if app.selected_tab == 0 { 5 } else { app.selected_tab - 1 };

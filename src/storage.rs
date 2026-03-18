@@ -201,6 +201,7 @@ impl Storage {
             ("assigned_shares",          "ALTER TABLE trades ADD COLUMN assigned_shares INTEGER"),
             ("cost_basis",               "ALTER TABLE trades ADD COLUMN cost_basis REAL"),
             ("close_notes",              "ALTER TABLE trades ADD COLUMN close_notes TEXT"),
+            ("sector",                   "ALTER TABLE trades ADD COLUMN sector TEXT"),
         ];
 
         for (col_name, sql) in migrations {
@@ -253,8 +254,8 @@ impl Storage {
                 theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50,
                 bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
                 was_assigned=?53, assigned_shares=?54, cost_basis=?55,
-                close_notes=?56
-             WHERE id=?57",
+                close_notes=?56, sector=?57
+             WHERE id=?58",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -312,7 +313,8 @@ impl Storage {
                 t.assigned_shares,                      // 54
                 t.cost_basis,                           // 55
                 t.close_notes.as_deref(),               // 56
-                id,                                     // 57
+                t.sector.as_deref(),                    // 57
+                id,                                     // 58
             ],
         )?;
         Ok(())
@@ -352,7 +354,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes
+                close_notes, sector
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -372,7 +374,7 @@ impl Storage {
                 ?48, ?49, ?50,
                 ?51, ?52,
                 ?53, ?54, ?55,
-                ?56
+                ?56, ?57
             )",
             params![
                 trade.ticker,               // 1
@@ -431,6 +433,7 @@ impl Storage {
                 trade.assigned_shares,      // 54
                 trade.cost_basis,           // 55
                 trade.close_notes.as_deref(), // 56
+                trade.sector.as_deref(),      // 57
             ],
         )?;
 
@@ -524,7 +527,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes
+                close_notes, sector
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -623,6 +626,7 @@ impl Storage {
                 assigned_shares:           row.get(54)?,
                 cost_basis:                row.get(55)?,
                 close_notes:               row.get(56)?,
+                sector:                    row.get(57)?,
             })
         })?;
 
@@ -657,7 +661,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes
+                close_notes, sector
             FROM trades WHERE id = ?1"
         )?;
 
@@ -755,6 +759,7 @@ impl Storage {
                 assigned_shares:           row.get(54)?,
                 cost_basis:                row.get(55)?,
                 close_notes:               row.get(56)?,
+                sector:                    row.get(57)?,
             })
         })?;
 

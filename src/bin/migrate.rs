@@ -172,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assigned_shares: None,
             cost_basis: None,
             close_notes: None,
+            sector: None,
         };
         storage.insert_trade(&trade)?;
     }
