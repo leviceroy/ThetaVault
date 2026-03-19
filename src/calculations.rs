@@ -950,6 +950,10 @@ pub fn build_portfolio_stats(
     // Item 13: Portfolio stress test (beta-adjusted, 7 scenarios)
     use crate::models::StressPoint;
     let open_trades_for_stress: Vec<&Trade> = trades.iter().filter(|t| t.is_open()).collect();
+    let stress_open_count = open_trades_for_stress.len();
+    let stress_priced_count = open_trades_for_stress.iter()
+        .filter(|t| t.underlying_price.map(|p| p > 0.0).unwrap_or(false) && !t.legs.is_empty())
+        .count();
     let stress_test: Vec<StressPoint> = [-20.0f64, -15.0, -10.0, -5.0, 0.0, 5.0, 10.0].iter().map(|&move_pct| {
         let mut total = 0.0f64;
         let mut worst_pnl = f64::MAX;
@@ -972,6 +976,7 @@ pub fn build_portfolio_stats(
         StressPoint {
             spy_move_pct: move_pct,
             total_pnl: total,
+            pct_of_account: if account_size > 0.0 { total / account_size * 100.0 } else { 0.0 },
             worst_ticker: if worst_ticker.is_empty() { "—".to_string() } else { worst_ticker },
             worst_pnl: if worst_pnl == f64::MAX { 0.0 } else { worst_pnl },
         }
@@ -1021,6 +1026,8 @@ pub fn build_portfolio_stats(
         monthly_pnl_pace,
         open_strategy_counts,
         stress_test,
+        stress_priced_count,
+        stress_open_count,
     }
 }
 

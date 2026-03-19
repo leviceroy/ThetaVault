@@ -537,6 +537,8 @@ pub struct PortfolioStats {
 
     // Item 13: portfolio stress test scenarios
     pub stress_test: Vec<StressPoint>,
+    pub stress_priced_count: usize,  // open trades with underlying_price > 0 and legs
+    pub stress_open_count: usize,    // total open trades
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -592,6 +594,7 @@ pub struct HeldBucket {
 pub struct StressPoint {
     pub spy_move_pct: f64,     // e.g. -20.0
     pub total_pnl: f64,        // sum across all open positions
+    pub pct_of_account: f64,   // total_pnl / account_size * 100
     pub worst_ticker: String,  // ticker with most negative P&L at this move
     pub worst_pnl: f64,        // that position's P&L
 }

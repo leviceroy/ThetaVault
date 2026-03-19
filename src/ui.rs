@@ -4110,26 +4110,46 @@ fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool, sele
         Span::styled(format!(" {:.0}%", stats.defined_risk_pct), Style::default().fg(C_CYAN)),
     ]));
     // Item 13: Portfolio Stress Test table
+    fn fmt_signed_commas(v: f64) -> String {
+        let sign = if v >= 0.0 { "+" } else { "-" };
+        let abs = v.abs() as i64;
+        let s = abs.to_string();
+        let mut out = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 { out.push(','); }
+            out.push(c);
+        }
+        format!("{}{}", sign, out.chars().rev().collect::<String>())
+    }
     if !stats.stress_test.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled("  ── STRESS TEST (\u{03b2}-adj) ────────────────────────────────────".to_string(), Style::default().fg(C_DARK))]));
-        lines.push(Line::from(vec![Span::styled("  SPY Move   Portfolio P&L    Worst Position".to_string(), Style::default().fg(C_GRAY))]));
-        lines.push(Line::from(vec![Span::styled("  ─────────────────────────────────────────".to_string(), Style::default().fg(C_DARK))]));
+        lines.push(Line::from(vec![Span::styled("  ── STRESS TEST (\u{03b2}-adj · expiry payoff) ──────────────────────".to_string(), Style::default().fg(C_GRAY))]));
+        lines.push(Line::from(vec![Span::styled("  SPY Move   P&L at Exp   % of Acct   Worst Position".to_string(), Style::default().fg(C_WHITE))]));
+        lines.push(Line::from(vec![Span::styled("  ──────────────────────────────────────────────────".to_string(), Style::default().fg(C_GRAY))]));
         for s in &stats.stress_test {
             let pnl_color = if s.total_pnl >= 0.0 { C_GREEN } else { C_RED };
+            let pct_color = if s.pct_of_account >= 0.0 { C_GREEN } else { C_RED };
             let move_str = format!("  {:>5.0}%", s.spy_move_pct);
-            let pnl_str = format!("    {:>+10.0}", s.total_pnl);
-            let worst_str = if s.worst_ticker.is_empty() || s.worst_pnl == f64::MAX {
-                "    —".to_string()
+            let pnl_str = format!("   {:>12}", fmt_signed_commas(s.total_pnl));
+            let pct_str = format!("   {:>+7.1}%", s.pct_of_account);
+            let (worst_str, worst_color) = if s.worst_ticker == "—" {
+                ("    —".to_string(), C_GRAY)
             } else {
-                format!("    {} ({:+.0})", s.worst_ticker, s.worst_pnl)
+                (format!("    {} ({})", s.worst_ticker, fmt_signed_commas(s.worst_pnl)),
+                 if s.worst_pnl < 0.0 { C_RED } else { C_GREEN })
             };
             lines.push(Line::from(vec![
                 Span::styled(move_str, Style::default().fg(C_WHITE)),
                 Span::styled(pnl_str, Style::default().fg(pnl_color)),
-                Span::styled(worst_str, Style::default().fg(C_YELLOW)),
+                Span::styled(pct_str, Style::default().fg(pct_color)),
+                Span::styled(worst_str, Style::default().fg(worst_color)),
             ]));
         }
+        lines.push(Line::from(vec![Span::styled(
+            format!("  Expiry payoff · beta-adjusted · {}/{} positions priced",
+                    stats.stress_priced_count, stats.stress_open_count),
+            Style::default().fg(C_GRAY),
+        )]));
     }
     lines
 }
