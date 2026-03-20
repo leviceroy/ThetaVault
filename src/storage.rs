@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Chris Wenk. All rights reserved.
+
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use crate::models::{Trade, StrategyType, TradeLeg, PlaybookStrategy};
 use chrono::{DateTime, NaiveDate, Utc};

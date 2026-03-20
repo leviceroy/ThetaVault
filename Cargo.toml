@@ -3,6 +3,8 @@ name = "theta-vault-rust"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal-based options trading journal inspired by sandbox-quant"
+authors = ["Chris Wenk"]
+license = "Copyright 2025 Chris Wenk. All rights reserved."
 default-run = "theta-vault-rust"
 
 [dependencies]

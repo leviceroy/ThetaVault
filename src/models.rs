@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Chris Wenk. All rights reserved.
+
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, NaiveDate, Utc};
 

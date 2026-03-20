@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Chris Wenk. All rights reserved.
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},

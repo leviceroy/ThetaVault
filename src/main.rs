@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Chris Wenk. All rights reserved.
+
 use std::{error::Error, io};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},

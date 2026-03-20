@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Chris Wenk. All rights reserved.
+
 /// Calculations — exact port of OptionsTradingJournal/client/src/lib/trade-calculations.ts
 ///
 /// All formulas are matched 100% to the TypeScript original.
