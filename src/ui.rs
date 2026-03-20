@@ -324,6 +324,37 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Style::default().fg(streak_color_d),
         )])
     };
+    // H3: Month-end P&L projection — shown when ≥5 days elapsed in current month
+    let month_end_proj_line = {
+        use chrono::Datelike;
+        let now = Utc::now().date_naive();
+        let cur_year  = now.year();
+        let cur_month = now.month();
+        let days_elapsed = now.day() as f64;
+        let days_in_month = {
+            let next = if cur_month == 12 {
+                chrono::NaiveDate::from_ymd_opt(cur_year + 1, 1, 1)
+            } else {
+                chrono::NaiveDate::from_ymd_opt(cur_year, cur_month + 1, 1)
+            };
+            next.map(|d| (d - chrono::NaiveDate::from_ymd_opt(cur_year, cur_month, 1).unwrap()).num_days() as f64)
+                .unwrap_or(30.0)
+        };
+        if days_elapsed >= 5.0 {
+            if let Some(mp) = perf_stats.monthly_pnl.iter().find(|m| m.year == cur_year && m.month == cur_month) {
+                let projection = (mp.pnl / days_elapsed) * days_in_month;
+                let proj_color = if projection >= 0.0 { C_GREEN } else { C_RED };
+                Line::from(vec![
+                    Span::styled(" Est. month-end: ", Style::default().fg(Color::Rgb(148, 163, 184))),
+                    Span::styled(format!("${:+.0}", projection), Style::default().fg(proj_color)),
+                ])
+            } else {
+                Line::from("")
+            }
+        } else {
+            Line::from("")
+        }
+    };
     // Item 14: R:R + EV lines for P&L card (separate lines so EV isn't truncated)
     let (rr_line, ev_line) = if perf_stats.avg_loss > 0.0 {
         let rr = perf_stats.avg_win / perf_stats.avg_loss;
@@ -354,6 +385,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             ]),
             pace_line,
             progress_line,
+            month_end_proj_line,
             rr_line,
             ev_line,
         ])
