@@ -273,6 +273,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 Span::styled(format!(" ${:.0}", stats.bp_available), Style::default().fg(bp_color)),
             ]),
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Balance ", Style::default().fg(C_CYAN)))),
         kpi[0],
@@ -345,7 +346,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 let projection = (mp.pnl / days_elapsed) * days_in_month;
                 let proj_color = if projection >= 0.0 { C_GREEN } else { C_RED };
                 Line::from(vec![
-                    Span::styled(" Est. month-end: ", Style::default().fg(Color::Rgb(148, 163, 184))),
+                    Span::styled(" Est. M-end: ", Style::default().fg(Color::Rgb(148, 163, 184))),
                     Span::styled(format!("${:+.0}", projection), Style::default().fg(proj_color)),
                 ])
             } else {
@@ -389,6 +390,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             rr_line,
             ev_line,
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" P&L ", Style::default().fg(C_CYAN)))),
         kpi[1],
@@ -405,6 +407,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             Line::from(vec![Span::styled(" est. θ decay", Style::default().fg(C_GRAY))]),
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Unreal ", Style::default().fg(C_CYAN)))),
         kpi[2],
@@ -460,6 +463,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             gamma_line,
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" BWD ", Style::default().fg(C_CYAN)))),
         kpi[3],
@@ -490,6 +494,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                     Span::styled(format!("${:+.0}", per_pct), Style::default().fg(vega_color)),
                 ]),
             ])
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
                 .title(Span::styled(" Vega ", Style::default().fg(C_CYAN)))),
             kpi[4],
@@ -532,6 +537,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Line::from(vec![Span::styled(per_trade_str, Style::default().fg(C_GRAY))]),
             room_line,
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Heat ", Style::default().fg(C_CYAN)))),
         kpi[5],
@@ -559,6 +565,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 Style::default().fg(C_GRAY),
             )]),
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Risk ", Style::default().fg(C_CYAN)))),
         kpi[6],
@@ -582,11 +589,11 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         Line::from(vec![Span::styled(" env fear", Style::default().fg(C_GRAY))])
     };
     let vix_suggestion = stats.vix.map(|v| {
-        if v >= 40.0 { "→ Max size, straddles" }
-        else if v >= 30.0 { "→ Max size, CSPs" }
-        else if v >= 20.0 { "→ Normal/larger, ICs" }
-        else if v >= 15.0 { "→ Standard premium" }
-        else { "→ Reduce size, calendars" }
+        if v >= 40.0 { "→ Max/straddles" }
+        else if v >= 30.0 { "→ Max/CSPs" }
+        else if v >= 20.0 { "→ Normal+ ICs" }
+        else if v >= 15.0 { "→ Std premium" }
+        else { "→ Reduce/cals" }
     }).unwrap_or("");
     f.render_widget(
         Paragraph::new(vec![
@@ -598,6 +605,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             vix_ivr_line,
             Line::from(vec![Span::styled(format!(" {}", vix_suggestion), Style::default().fg(C_GRAY))]),
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" VIX ", Style::default().fg(C_CYAN)))),
         kpi[7],
@@ -650,6 +658,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             p50_line,
             near_be_line,
         ])
+        .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" POP ", Style::default().fg(C_CYAN)))),
         kpi[8],
