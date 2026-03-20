@@ -913,11 +913,14 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                     Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD),
                 ),
             ]));
-            // Line 2: tickers indented below header
-            risk_lines.push(Line::from(vec![
-                Span::styled(format!("    {}", ticker_str), Style::default().fg(Color::Rgb(148, 163, 184))),
-            ]));
-            // Line 3: bar + $ + %
+            // Lines 2+: tickers wrapped to panel width (4-char indent, 2-char border)
+            let ticker_avail = (bot[0].width as usize).saturating_sub(6).max(10);
+            for wrapped_line in word_wrap(&ticker_str, ticker_avail) {
+                risk_lines.push(Line::from(vec![
+                    Span::styled(format!("    {}", wrapped_line), Style::default().fg(Color::Rgb(148, 163, 184))),
+                ]));
+            }
+            // Final line: bar + $ + %
             let conc_color = if pct > 40.0 { C_RED } else if pct > 30.0 { C_YELLOW } else { C_BLUE };
             risk_lines.push(Line::from(vec![
                 Span::styled(format!("  {}", bar), Style::default().fg(conc_color)),
@@ -3294,22 +3297,29 @@ pub fn perf_header_scroll_for_cursor(
 pub fn count_risk_lines(trades: &[crate::models::Trade], stats: &crate::models::PortfolioStats) -> usize {
     // Fixed lines: blank + Undefined(2) + Defined(2) + blank + Target + Drift + WinRate + Theta/day
     // + Theta/NetLiq + BWD + Theta/Delta + MaxDD + AvgROC = ~14 fixed lines
-    // + Sector section: divider(blank+rule+header+blank=4) + per-sector 2 lines + empty fallback
+    // + Sector section: divider(blank+rule+header+blank=4) + per-sector lines + empty fallback
     let mut count: usize = 14;
-    // Sector rows
-    let mut sector_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // Build sector -> ticker count map to estimate wrapped ticker lines
+    let mut sector_tickers: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for t in trades.iter().filter(|t| t.is_open()) {
         if let (Some(_), Some(sec)) = (t.bpr, t.sector.as_deref()) {
-            sector_set.insert(sec);
+            // Each ticker is avg ~7 chars including ", " separator
+            let ticker_ref: &str = t.ticker.as_str();
+            sector_tickers.entry(sec).and_modify(|e| { let _ = ticker_ref; *e += 1; }).or_insert(1);
         }
     }
     count += 4; // divider block
-    if sector_set.is_empty() {
+    if sector_tickers.is_empty() {
         count += 1;
     } else {
-        count += sector_set.len() * 3; // header + tickers line + bar line
+        const ASSUMED_TICKER_WIDTH: usize = 40; // conservative panel inner width estimate
+        const AVG_TICKER_CHARS: usize = 7;      // avg chars per "TICK, " token
+        for ticker_count in sector_tickers.values() {
+            let ticker_lines = (ticker_count * AVG_TICKER_CHARS).div_ceil(ASSUMED_TICKER_WIDTH).max(1);
+            count += 1 + ticker_lines + 1; // header + wrapped ticker lines + bar
+        }
     }
-    let _ = stats; // stats param reserved for future use
+    let _ = stats;
     count
 }
 
