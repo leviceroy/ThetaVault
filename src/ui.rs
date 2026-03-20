@@ -6103,6 +6103,8 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             Line::from(""),
             Line::from(vec![Span::styled("  ── Risk & Targets ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
             def("GTC",          "Good Till Cancel order price — profit target on the books"),
+            def("  $2.45DB",    "Buy-to-close debit at target (short premium position)"),
+            def("  $2.45CR",    "Sell-to-close credit at target (long/debit position)"),
             def("BE",           "Breakeven price(s) at expiration"),
             def("BPR",          "Buying Power Reduction — margin held by broker"),
             def("BPR%",         "BPR as % of account size (position sizing check)"),
