@@ -4285,7 +4285,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     };
 
     // ── P&L ──
-    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} P&L \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} P&L \u{2500}\u{2500}", Style::default().fg(C_CYAN))]));
 
     // Row 1 — Core P&L
     lines.push(Line::from(vec![
@@ -4335,7 +4335,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     lines.push(Line::from(row2));
 
     // ── Risk ──
-    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Risk \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Risk \u{2500}\u{2500}", Style::default().fg(C_CYAN))]));
 
     // Row 3 — Risk ratios
     lines.push(Line::from(vec![
@@ -4357,7 +4357,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     ]));
 
     // ── Activity ──
-    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Activity \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Activity \u{2500}\u{2500}", Style::default().fg(C_CYAN))]));
 
     // Row 4 — Streaks + trade cadence
     lines.push(Line::from(vec![
@@ -4384,7 +4384,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
     ]));
 
     // ── Timing ──
-    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Timing \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Timing \u{2500}\u{2500}", Style::default().fg(C_CYAN))]));
 
     // Row 5 — Timing + capture
     let dte_str = perf.avg_dte_at_close.map_or("\u{2014}".to_string(), |d| format!("{:.1}d", d));
