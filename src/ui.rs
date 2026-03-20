@@ -501,6 +501,23 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         else if stats.alloc_pct >= max_heat_pct * 0.75 { C_YELLOW }
         else { C_GREEN };
     let per_trade_str = format!(" ${:.0}k–${:.0}k/tr", stats.account_size * 0.01 / 1000.0, stats.account_size * 0.03 / 1000.0);
+    // M4: room for more trades = remaining BPR capacity ÷ avg BPR per open trade
+    let room_line = if stats.open_trades > 0 && stats.total_open_bpr > 0.0 {
+        let max_bpr = max_heat_pct / 100.0 * stats.account_size;
+        let remaining = max_bpr - stats.total_open_bpr;
+        let avg_bpr = stats.total_open_bpr / stats.open_trades as f64;
+        let room = (remaining / avg_bpr).floor() as i64;
+        let (room_str, room_color) = if room <= 0 {
+            (format!(" Full ({:+} trades)", room), C_RED)
+        } else if room <= 2 {
+            (format!(" Room: ~{} more", room), C_YELLOW)
+        } else {
+            (format!(" Room: ~{} more", room), C_GREEN)
+        };
+        Line::from(vec![Span::styled(room_str, Style::default().fg(room_color))])
+    } else {
+        Line::from("")
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -513,6 +530,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 Style::default().fg(C_GRAY),
             )]),
             Line::from(vec![Span::styled(per_trade_str, Style::default().fg(C_GRAY))]),
+            room_line,
         ])
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" Heat ", Style::default().fg(C_CYAN)))),
