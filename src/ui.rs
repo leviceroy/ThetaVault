@@ -1393,6 +1393,27 @@ fn draw_filter_bar(
         Style::default().fg(C_GRAY),
     ));
 
+    // M6: win rate of filtered set when ticker filter is active
+    if !filter_ticker.is_empty() {
+        let filter_up = filter_ticker.to_uppercase();
+        let closed: Vec<_> = all_trades.iter()
+            .filter(|t| t.ticker.to_uppercase().contains(&filter_up)
+                     || t.spread_type().to_uppercase().contains(&filter_up))
+            .filter(|t| !t.is_open())
+            .filter(|t| t.pnl.is_some())
+            .collect();
+        if closed.len() >= 2 {
+            let wins = closed.iter().filter(|t| t.pnl.unwrap_or(0.0) > 0.0).count();
+            let wr = wins as f64 / closed.len() as f64 * 100.0;
+            let wr_color = if wr >= 60.0 { C_GREEN } else if wr >= 45.0 { C_YELLOW } else { C_RED };
+            spans.push(Span::styled("   Win: ", Style::default().fg(C_GRAY)));
+            spans.push(Span::styled(
+                format!("{:.0}%", wr),
+                Style::default().fg(wr_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(C_DARK)),
         area,
