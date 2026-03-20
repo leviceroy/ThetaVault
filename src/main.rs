@@ -1212,11 +1212,12 @@ fn strategy_shows_per_leg_expiry(strategy: &models::StrategyType) -> bool {
         models::StrategyType::Custom)
 }
 
-/// True for custom / zebra — per-leg quantity fields.
+/// True for custom / zebra / PBWB — per-leg quantity fields.
 fn strategy_shows_per_leg_qty(strategy: &models::StrategyType) -> bool {
     matches!(strategy,
         models::StrategyType::Zebra |
-        models::StrategyType::Custom)
+        models::StrategyType::Custom |
+        models::StrategyType::PutBrokenWingButterfly)
 }
 
 /// Read the Strategy SELECT field and return the StrategyType.

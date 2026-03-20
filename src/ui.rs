@@ -2636,9 +2636,12 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             let close_str = leg.close_premium
                 .map(|cp| format!("  BTC: ${:.4}", cp))
                 .unwrap_or_default();
+            let qty = leg.quantity.unwrap_or(1);
+            let qty_str = if qty != 1 { format!(" ×{}", qty) } else { String::new() };
             let mut leg_line = vec![
                 Span::styled(format!("   {} ", lbl), Style::default().fg(C_GRAY)),
                 Span::styled(format!("${:.2}", leg.strike), Style::default().fg(C_WHITE)),
+                Span::styled(qty_str, Style::default().fg(C_YELLOW)),
                 Span::styled(format!("  prem: ${:.4}", leg.premium), Style::default().fg(C_CYAN)),
             ];
             if let Some(exp) = &leg.expiration_date {

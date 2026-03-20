@@ -647,7 +647,7 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
                 return format!("{:.0}/{:.0}{} {}", sl.strike, ll.strike, leg_char, badge);
             }
         }
-        "custom" => {
+        "custom" | "put_broken_wing_butterfly" => {
             return legs.iter().map(|l| {
                 let sign    = if l.leg_type.is_short() { "-" } else { "+" };
                 let qty     = l.quantity.unwrap_or(1);
