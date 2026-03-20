@@ -5457,6 +5457,10 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             Span::styled(format!("est. θ×days×100×qty = ${:+.0}  (theta heuristic, not mark-to-market)", stats.unrealized_pnl), Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
+            lbl("            "),
+            Span::styled("Time decay only — excludes directional move", Style::default().fg(C_GRAY)),
+        ]),
+        Line::from(vec![
             lbl("  BWD Card  "),
             Span::styled("beta-weighted delta of full portfolio (see β-WΔ above)", Style::default().fg(C_WHITE)),
         ]),
