@@ -535,6 +535,9 @@ pub struct PortfolioStats {
     // tastytrade KPI: net_theta / account_size × 100  (target 0.1–0.3% daily)
     pub theta_netliq_ratio: Option<f64>,
 
+    // Theta/BPR efficiency: net_theta / total_open_bpr × 100 (% return on capital per day)
+    pub theta_bpr_ratio: Option<f64>,
+
     // L1: monthly P&L pace target + pace
     pub monthly_pnl_target: f64,
     pub monthly_pnl_pace: f64,
@@ -563,6 +566,8 @@ pub struct StrategyBreakdown {
     pub avg_roc: f64,
     pub win_rate: f64,
     pub scratch_rate: f64,
+    pub avg_cw_ratio: Option<f64>,   // avg credit/width ratio (defined-risk only)
+    pub avg_entry_dte: Option<f64>,  // avg DTE at entry
 }
 
 #[derive(Debug, Clone)]

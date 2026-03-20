@@ -77,6 +77,8 @@ pub fn draw_ui(
     dash_kpi_scroll:         u16,
     dash_kpi_max_scroll:     &mut u16,
     perf_kpi_popup:          bool,
+    perf_kpi_scroll:         u16,
+    perf_kpi_max_scroll:     &mut u16,
     journal_help_popup:      bool,
     journal_help_scroll:     u16,
     journal_help_max_scroll: &mut u16,
@@ -208,7 +210,7 @@ pub fn draw_ui(
 
     // ── Performance KPI popup (Perf tab, i key)
     if perf_kpi_popup && selected_tab == 5 {
-        draw_perf_kpi_popup(f, chunks[1]);
+        draw_perf_kpi_popup(f, chunks[1], perf_kpi_scroll, perf_kpi_max_scroll);
     }
 
     // ── Date picker overlay — always on top
@@ -404,6 +406,19 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     } else {
         stress_line.clone()
     };
+    // Gamma risk: open positions with DTE ≤ 7
+    let gamma_risk_tickers: Vec<&str> = stats.next_critical_positions.iter()
+        .filter(|(_, dte)| *dte <= 7 && *dte >= 0)
+        .map(|(t, _)| t.as_str())
+        .collect();
+    let gamma_line = if !gamma_risk_tickers.is_empty() {
+        Line::from(vec![
+            Span::styled(" \u{26a0} ", Style::default().fg(C_RED).add_modifier(Modifier::BOLD)),
+            Span::styled(gamma_risk_tickers.join(","), Style::default().fg(C_RED)),
+        ])
+    } else {
+        theta_delta_line
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -411,7 +426,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 format!(" {}Δ", bwd_str),
                 Style::default().fg(bwd_color).add_modifier(Modifier::BOLD),
             )]),
-            theta_delta_line,
+            gamma_line,
         ])
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" BWD ", Style::default().fg(C_CYAN)))),
@@ -710,6 +725,21 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             }
         },
         {
+            // Θ/BPR efficiency — theta earned per dollar of capital committed per day
+            if let Some(ratio) = stats.theta_bpr_ratio {
+                let bpr_color = if ratio >= 0.05 { C_GREEN } else if ratio >= 0.02 { C_YELLOW } else { C_RED };
+                Line::from(vec![
+                    Span::styled("  Θ/BPR    ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("{:.3}%/d", ratio), Style::default().fg(bpr_color)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("  Θ/BPR    ", Style::default().fg(C_GRAY)),
+                    Span::styled("—", Style::default().fg(C_GRAY)),
+                ])
+            }
+        },
+        {
             let bwd_val = stats.net_beta_weighted_delta;
             // tastytrade goal: delta-neutral (BWD near 0). Near 0 = green, far = red.
             let (bwd_str, bwd_color) = if stats.spy_price.is_none() {
@@ -816,10 +846,11 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 ),
                 Span::styled(ticker_str, Style::default().fg(C_GRAY)),
             ]));
+            let conc_color = if pct > 40.0 { C_RED } else if pct > 30.0 { C_YELLOW } else { C_BLUE };
             risk_lines.push(Line::from(vec![
-                Span::styled(format!("  {}", bar), Style::default().fg(C_BLUE)),
+                Span::styled(format!("  {}", bar), Style::default().fg(conc_color)),
                 Span::styled(format!("  ${:.0}", bpr), Style::default().fg(C_GRAY)),
-                Span::styled(format!("  {:.0}%", pct), Style::default().fg(C_YELLOW)),
+                Span::styled(format!("  {:.0}%", pct), Style::default().fg(conc_color)),
             ]));
         }
     }
@@ -1557,12 +1588,40 @@ fn draw_trade_table(
                             }
                         }
                     },
-                    Cell::from(format!("${:.0}", max_profit)).style(Style::default().fg(C_GRAY)),
+                    {
+                        // PBWB with invalid strike ladder shows warning instead of max profit
+                        let pbwb_invalid = t.spread_type() == "put_broken_wing_butterfly"
+                            && calculate_max_loss_from_legs(&t.legs, t.credit_received, t.quantity, t.spread_type()) <= 0.0;
+                        if pbwb_invalid {
+                            Cell::from("chk str").style(Style::default().fg(C_YELLOW))
+                        } else {
+                            Cell::from(format!("${:.0}", max_profit)).style(Style::default().fg(C_GRAY))
+                        }
+                    },
                     Cell::from(pnl_str).style(pnl_style),
-                    Cell::from(roc.map_or("—".to_string(), |r| format!("{:.1}%", r)))
-                        .style(roc.map_or(Style::default().fg(C_GRAY), |r| {
-                            if r > 0.0 { Style::default().fg(C_GREEN) } else { Style::default().fg(C_RED) }
-                        })),
+                    {
+                        // ★ indicator: open trade estimated theta P&L ≥ 50% of max profit
+                        let at_target = t.is_open() && {
+                            let target = t.target_profit_pct.unwrap_or_else(|| {
+                                if default_profit_target_pct > 0.0 { default_profit_target_pct }
+                                else { t.strategy.default_profit_target_pct() }
+                            });
+                            let days_held = (Utc::now().date_naive() - t.trade_date.date_naive()).num_days().max(0) as f64;
+                            let est_pnl = t.theta.map(|th| th.abs() * 100.0 * t.quantity as f64 * days_held)
+                                .unwrap_or(0.0);
+                            let profit_target = max_profit * (target / 100.0);
+                            max_profit > 0.0 && est_pnl >= profit_target && profit_target > 0.0
+                        };
+                        let roc_str = roc.map_or("—".to_string(), |r| {
+                            if at_target { format!("{:.1}%★", r) } else { format!("{:.1}%", r) }
+                        });
+                        let roc_style = roc.map_or(Style::default().fg(C_GRAY), |r| {
+                            if at_target { Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD) }
+                            else if r > 0.0 { Style::default().fg(C_GREEN) }
+                            else { Style::default().fg(C_RED) }
+                        });
+                        Cell::from(roc_str).style(roc_style)
+                    },
                     {
                         let v_opt = calculate_pnl_per_day(t.pnl, &t.entry_date, t.exit_date.as_ref());
                         let (v_str, v_style) = match v_opt {
@@ -2183,6 +2242,31 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         ),
     ]));
 
+    // Manage by date (open trades with entry_dte)
+    if trade.is_open() {
+        if let Some(entry_dte) = trade.entry_dte {
+            let mgmt_dte = 21i32; // tastytrade standard
+            let days_until_mgmt = entry_dte - mgmt_dte;
+            if days_until_mgmt > 0 {
+                let mgmt_date = trade.entry_date + chrono::Duration::days(days_until_mgmt as i64);
+                let days_to_mgmt = (mgmt_date.date_naive() - Utc::now().date_naive()).num_days();
+                let (mgmt_color, mgmt_note) = if days_to_mgmt < 0 {
+                    (C_RED, format!(" ({}d past)", days_to_mgmt.abs()))
+                } else if days_to_mgmt <= 5 {
+                    (C_YELLOW, format!(" ({}d away)", days_to_mgmt))
+                } else {
+                    (C_GRAY, format!(" ({}d away)", days_to_mgmt))
+                };
+                left_lines.push(Line::from(vec![
+                    Span::styled("  Manage by: ", Style::default().fg(C_GRAY)),
+                    Span::styled(mgmt_date.format("%Y-%m-%d").to_string(), Style::default().fg(mgmt_color)),
+                    Span::styled(mgmt_note, Style::default().fg(mgmt_color)),
+                    Span::styled("  (21 DTE target)", Style::default().fg(C_DARK)),
+                ]));
+            }
+        }
+    }
+
     // Spot / IVR / VIX / IV
     {
         let mut cs: Vec<Span> = vec![Span::styled("  ", Style::default())];
@@ -2327,8 +2411,14 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         r2.push(Span::styled(format!("${:.0}", max_profit), Style::default().fg(C_GREEN)));
         r2.push(Span::styled("   Max Loss: ", Style::default().fg(C_GRAY)));
         r2.push(Span::styled(
-            if max_loss > 0.0 { format!("${:.0}", max_loss) } else { "Undef".to_string() },
-            Style::default().fg(C_RED),
+            if max_loss > 0.0 {
+                format!("${:.0}", max_loss)
+            } else if spread_type == "put_broken_wing_butterfly" {
+                "chk strikes".to_string()
+            } else {
+                "Undef".to_string()
+            },
+            if max_loss <= 0.0 && spread_type == "put_broken_wing_butterfly" { C_YELLOW } else { C_RED },
         ));
         if !r2.is_empty() { left_lines.push(Line::from(r2)); }
 
@@ -3094,9 +3184,11 @@ pub fn perf_header_scroll_for_cursor(
         match cursor {
             0 => 0,
             1 => perf_health_lines(stats, width, collapsed[0], false).len() as u16,
-            // cursor 2 = Growth chart (widget above paragraph); scroll paragraph to top
             _ => 0,
         }
+    } else if subtab == 1 {
+        // Charts sub-tab: only growth chart widget, no text scroll
+        0
     } else {
         let advanced_len = perf_advanced_lines(stats, width, collapsed[2], false).len();
         let strategy_len = perf_strategy_lines(perf, width, collapsed[4], false).len();
@@ -3577,11 +3669,17 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
     let max_loss   = calculate_max_loss_from_legs(
         &trade.legs, trade.credit_received, trade.quantity, spread_type,
     );
-    let breakevens = calculate_breakevens(&trade.legs, spread_type, None);
+    let breakevens = calculate_breakevens(&trade.legs, spread_type, Some(trade.credit_received));
     let pop        = trade.pop.unwrap_or_else(|| estimate_pop(trade));
 
     let profit_str = format!("+${:.0}", max_profit);
-    let loss_str   = if max_loss > 0.0 { format!("-${:.0}", max_loss) } else { "—".to_string() };
+    let loss_str   = if max_loss > 0.0 {
+        format!("-${:.0}", max_loss)
+    } else if spread_type == "put_broken_wing_butterfly" {
+        "chk strikes".to_string()
+    } else {
+        "—".to_string()
+    };
     let be_str     = if breakevens.is_empty() {
         "—".to_string()
     } else {
@@ -3862,7 +3960,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
             } else if row == zero_row && is_spot {
                 ("┼", C_CYAN)
             } else if row == zero_row {
-                ("─", C_DARK)
+                ("─", C_GRAY)
             } else if is_strike {
                 ("│", *strike_cols.get(&col).unwrap_or(&C_GRAY))
             } else if is_sd {
@@ -4170,11 +4268,26 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         return lines;
     }
 
-    let pnl_color = if stats.realized_pnl >= 0.0 { C_GREEN } else { C_RED };
-    let wr_color = if stats.win_rate >= 0.65 { C_GREEN } else if stats.win_rate >= 0.50 { C_YELLOW } else { C_RED };
-    let pf_color = if perf.profit_factor >= 1.5 { C_GREEN } else if perf.profit_factor >= 1.0 { C_YELLOW } else { C_RED };
-    let ev_color = if perf.expected_value >= 0.0 { C_GREEN } else { C_RED };
+    let pnl_color     = if stats.realized_pnl >= 0.0 { C_GREEN } else { C_RED };
+    let wr_color      = if stats.win_rate >= 0.65 { C_GREEN } else if stats.win_rate >= 0.50 { C_YELLOW } else { C_RED };
+    let pf_color      = if perf.profit_factor >= 1.5 { C_GREEN } else if perf.profit_factor >= 1.0 { C_YELLOW } else { C_RED };
+    let ev_color      = if perf.expected_value >= 0.0 { C_GREEN } else { C_RED };
+    let roc_color     = if stats.avg_roc >= 0.0 { C_GREEN } else { C_RED };
+    let sharpe_color  = if perf.sharpe_ratio  >= 1.0 { C_GREEN } else if perf.sharpe_ratio  >= 0.0 { C_YELLOW } else { C_RED };
+    let sortino_color = if perf.sortino_ratio >= 1.5 { C_GREEN } else if perf.sortino_ratio >= 0.75 { C_YELLOW } else { C_RED };
+    let calmar_color  = if perf.calmar_ratio  >= 1.0 { C_GREEN } else if perf.calmar_ratio  >= 0.5  { C_YELLOW } else { C_RED };
+    let dd_color      = if stats.max_drawdown > 0.0 { C_RED } else { C_GREEN };
+    let streak_color  = if stats.current_streak >= 0 { C_GREEN } else { C_RED };
+    let streak_str    = if stats.current_streak >= 0 {
+        format!("+{}W", stats.current_streak)
+    } else {
+        format!("{}L", stats.current_streak.abs())
+    };
 
+    // ── P&L ──
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} P&L \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+
+    // Row 1 — Core P&L
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("Total P&L: ", Style::default().fg(C_GRAY)),
@@ -4185,16 +4298,20 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::raw("   "),
         Span::styled("Profit Factor: ", Style::default().fg(C_GRAY)),
         Span::styled(
-            if perf.profit_factor.is_infinite() { "∞".to_string() } else { format!("{:.2}", perf.profit_factor) },
+            if perf.profit_factor.is_infinite() { "\u{221e}".to_string() } else { format!("{:.2}", perf.profit_factor) },
             Style::default().fg(pf_color),
         ),
         Span::raw("   "),
         Span::styled("EV: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:+.0}/trade", perf.expected_value), Style::default().fg(ev_color)),
+        Span::raw("   "),
+        Span::styled("Avg ROC: ", Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:.1}%", stats.avg_roc), Style::default().fg(roc_color)),
     ]));
 
+    // Row 2 — Trade outcomes + annualized ROC
     let rr = if perf.avg_loss > 0.0 { perf.avg_win / perf.avg_loss } else { 0.0 };
-    lines.push(Line::from(vec![
+    let mut row2 = vec![
         Span::raw("  "),
         Span::styled("Avg Winner: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:+.0}", perf.avg_win), Style::default().fg(C_GREEN)),
@@ -4204,18 +4321,23 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::raw("   "),
         Span::styled("Avg R:R: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("1:{:.2}", rr), Style::default().fg(C_WHITE)),
-    ]));
+    ];
+    if perf.avg_annualized_roc != 0.0 {
+        let ann_color = if perf.avg_annualized_roc >= 0.0 { C_GREEN } else { C_RED };
+        let capped = perf.avg_annualized_roc >= 299.9 || perf.avg_annualized_roc <= -299.9;
+        row2.push(Span::raw("   "));
+        row2.push(Span::styled("Avg Ann. ROC: ", Style::default().fg(C_GRAY)));
+        row2.push(Span::styled(
+            format!("{:+.1}%/yr{}", perf.avg_annualized_roc, if capped { " \u{2605}" } else { "" }),
+            Style::default().fg(ann_color),
+        ));
+    }
+    lines.push(Line::from(row2));
 
-    let sharpe_color  = if perf.sharpe_ratio  >= 1.0 { C_GREEN } else if perf.sharpe_ratio  >= 0.0 { C_YELLOW } else { C_RED };
-    let sortino_color = if perf.sortino_ratio >= 1.0 { C_GREEN } else if perf.sortino_ratio >= 0.0 { C_YELLOW } else { C_RED };
-    let calmar_color  = if perf.calmar_ratio  >= 0.5 { C_GREEN } else if perf.calmar_ratio  >= 0.0 { C_YELLOW } else { C_RED };
-    let dd_color = if stats.max_drawdown > 0.0 { C_RED } else { C_GREEN };
-    let streak_color = if stats.current_streak >= 0 { C_GREEN } else { C_RED };
-    let streak_str = if stats.current_streak >= 0 {
-        format!("+{}W", stats.current_streak)
-    } else {
-        format!("{}L", stats.current_streak.abs())
-    };
+    // ── Risk ──
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Risk \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+
+    // Row 3 — Risk ratios
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("Sharpe: ", Style::default().fg(C_GRAY)),
@@ -4224,15 +4346,20 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::styled("Sortino: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:.2}", perf.sortino_ratio), Style::default().fg(sortino_color)),
         Span::raw("   "),
+        Span::styled("Calmar: ", Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:.2}", perf.calmar_ratio), Style::default().fg(calmar_color)),
+        Span::raw("   "),
         Span::styled("Max Drawdown: ", Style::default().fg(C_GRAY)),
         Span::styled(
             format!("-{:.0} ({:.1}%)", stats.max_drawdown, stats.max_drawdown_pct),
             Style::default().fg(dd_color),
         ),
-        Span::raw("   "),
-        Span::styled("Calmar: ", Style::default().fg(C_GRAY)),
-        Span::styled(format!("{:.2}", perf.calmar_ratio), Style::default().fg(calmar_color)),
     ]));
+
+    // ── Activity ──
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Activity \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+
+    // Row 4 — Streaks + trade cadence
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("Streak: ", Style::default().fg(C_GRAY)),
@@ -4243,43 +4370,7 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::raw("   "),
         Span::styled("MaxLoss: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{}", stats.max_loss_streak), Style::default().fg(C_RED)),
-    ]));
-
-    if perf.avg_annualized_roc != 0.0 {
-        let ann_color = if perf.avg_annualized_roc >= 0.0 { C_GREEN } else { C_RED };
-        let capped = perf.avg_annualized_roc >= 299.9 || perf.avg_annualized_roc <= -299.9;
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Avg Annualized ROC: ", Style::default().fg(C_GRAY)),
-            Span::styled(format!("{:+.1}%/yr{}", perf.avg_annualized_roc, if capped { " ★" } else { "" }), Style::default().fg(ann_color)),
-        ]));
-    }
-
-    let dte_str = perf.avg_dte_at_close.map_or("—".to_string(), |d| format!("{:.1}d", d));
-    let pmc_str = perf.avg_pct_max_captured.map_or("—".to_string(), |p| format!("{:.1}%", p));
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Avg DTE at Close: ", Style::default().fg(C_GRAY)),
-        Span::styled(dte_str, Style::default().fg(C_WHITE)),
         Span::raw("   "),
-        Span::styled("Avg % Max Captured: ", Style::default().fg(C_GRAY)),
-        Span::styled(pmc_str, Style::default().fg(C_WHITE)),
-        Span::raw("   "),
-        Span::styled("Avg Held: ", Style::default().fg(C_GRAY)),
-        Span::styled(format!("{:.0}d", perf.avg_held_days), Style::default().fg(C_WHITE)),
-    ]));
-    if let Some(pr) = perf.avg_premium_recapture {
-        let pr_color = if pr >= 50.0 { C_GREEN } else if pr >= 30.0 { C_YELLOW } else { C_RED };
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Avg Premium Recapture: ", Style::default().fg(C_GRAY)),
-            Span::styled(format!("{:.1}%", pr), Style::default().fg(pr_color)),
-            Span::styled("  (target ≥50%)", Style::default().fg(C_GRAY)),
-        ]));
-    }
-
-    lines.push(Line::from(vec![
-        Span::raw("  "),
         Span::styled("Trades: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{} closed", stats.closed_trades), Style::default().fg(C_WHITE)),
         Span::raw(" / "),
@@ -4290,10 +4381,33 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         Span::raw("   "),
         Span::styled("Per Month: ", Style::default().fg(C_GRAY)),
         Span::styled(format!("{:.1}", perf.trades_per_month), Style::default().fg(C_WHITE)),
-        Span::raw("   "),
-        Span::styled("Avg ROC: ", Style::default().fg(C_GRAY)),
-        Span::styled(format!("{:.1}%", stats.avg_roc), Style::default().fg(C_WHITE)),
     ]));
+
+    // ── Timing ──
+    lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Timing \u{2500}\u{2500}", Style::default().fg(C_DARK))]));
+
+    // Row 5 — Timing + capture
+    let dte_str = perf.avg_dte_at_close.map_or("\u{2014}".to_string(), |d| format!("{:.1}d", d));
+    let pmc_str = perf.avg_pct_max_captured.map_or("\u{2014}".to_string(), |p| format!("{:.1}%", p));
+    let mut row5 = vec![
+        Span::raw("  "),
+        Span::styled("Avg DTE at Close: ", Style::default().fg(C_GRAY)),
+        Span::styled(dte_str, Style::default().fg(C_WHITE)),
+        Span::raw("   "),
+        Span::styled("Avg % Max Captured: ", Style::default().fg(C_GRAY)),
+        Span::styled(pmc_str, Style::default().fg(C_WHITE)),
+        Span::raw("   "),
+        Span::styled("Avg Held: ", Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:.0}d", perf.avg_held_days), Style::default().fg(C_WHITE)),
+    ];
+    if let Some(pr) = perf.avg_premium_recapture {
+        let pr_color = if pr >= 50.0 { C_GREEN } else if pr >= 30.0 { C_YELLOW } else { C_RED };
+        row5.push(Span::raw("   "));
+        row5.push(Span::styled("Avg Premium Recapture: ", Style::default().fg(C_GRAY)));
+        row5.push(Span::styled(format!("{:.1}%", pr), Style::default().fg(pr_color)));
+        row5.push(Span::styled("  (target \u{2265}50%)", Style::default().fg(C_GRAY)));
+    }
+    lines.push(Line::from(row5));
     // Rolling win rate sparkline (belongs with returns)
     if !perf.rolling_win_rate.is_empty() {
         let current_wr = perf.rolling_win_rate.last().copied().unwrap_or(0.0);
@@ -4526,7 +4640,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
     }
 
     lines.push(Line::from(vec![Span::styled(
-        "  Strategy                Trades  Win%    P&L        Avg P&L  Avg ROC",
+        "  Strategy                Trades  Win%    P&L        Avg P&L  Avg ROC   C/W%  eDTE",
         Style::default().fg(C_GRAY),
     )]));
     lines.push(Line::from(vec![Span::styled(
@@ -4547,6 +4661,9 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
         let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
         let roc_color = if sb.avg_roc >= 5.0 { C_GREEN } else if sb.avg_roc >= 0.0 { C_YELLOW } else { C_RED };
         let strat_name = sb.strategy.label().to_string();
+        let cw_str = sb.avg_cw_ratio.map_or("  —  ".to_string(), |r| format!(" {:>4.0}%", r));
+        let dte_str = sb.avg_entry_dte.map_or("  —".to_string(), |d| format!(" {:>3.0}", d));
+        let cw_color = sb.avg_cw_ratio.map_or(C_GRAY, |r| if r >= 33.0 { C_GREEN } else if r >= 20.0 { C_YELLOW } else { C_RED });
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(format!("{:<24}", strat_name), Style::default().fg(C_CYAN)),
@@ -4559,6 +4676,8 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
             Span::styled(format!("{:>+8.0}", sb.avg_pnl), Style::default().fg(pnl_color)),
             Span::raw("  "),
             Span::styled(format!("{:>7.1}%", sb.avg_roc), Style::default().fg(roc_color)),
+            Span::styled(cw_str, Style::default().fg(cw_color)),
+            Span::styled(dte_str, Style::default().fg(C_GRAY)),
         ]));
     }
 
@@ -4580,6 +4699,30 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
         Span::raw("  "),
         Span::styled(format!("{:>+8.0}", avg_pnl_total), Style::default().fg(total_pnl_color).add_modifier(Modifier::BOLD)),
     ]));
+
+    // Strategy P&L bar chart — cumulative P&L per strategy
+    if perf.strategy_breakdown.len() > 1 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled("  P&L by Strategy", Style::default().fg(C_GRAY))]));
+        let max_abs_pnl = perf.strategy_breakdown.iter()
+            .map(|sb| sb.total_pnl.abs())
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        let bar_max = (width.saturating_sub(40)).max(8).min(30);
+        for sb in &perf.strategy_breakdown {
+            let bar_len = ((sb.total_pnl.abs() / max_abs_pnl) * bar_max as f64).round() as usize;
+            let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
+            let bar_char = if sb.total_pnl >= 0.0 { "█" } else { "░" };
+            let bar = bar_char.repeat(bar_len);
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{:<20}", sb.strategy.label()), Style::default().fg(C_CYAN)),
+                Span::styled(format!("{:>+8.0}  ", sb.total_pnl), Style::default().fg(pnl_color)),
+                Span::styled(bar, Style::default().fg(pnl_color)),
+            ]));
+        }
+    }
+
     lines
 }
 
@@ -4658,12 +4801,29 @@ fn perf_monthly_lines(
         } else {
             format!("{}{}", "░".repeat(bar_max.saturating_sub(bar_len)), "█".repeat(bar_len))
         };
-        let spy_span = match spy_monthly.get(&(mp.year, mp.month)) {
-            Some(&r) => Span::styled(
+        let spy_ret = spy_monthly.get(&(mp.year, mp.month)).copied();
+        let spy_span = match spy_ret {
+            Some(r) => Span::styled(
                 format!("  SPY{:+.1}%", r),
                 Style::default().fg(if r >= 0.0 { C_GREEN } else { C_RED }),
             ),
             None => Span::styled("  SPY  —  ".to_string(), Style::default().fg(C_GRAY)),
+        };
+        // Per-row alpha: portfolio return vs SPY this month
+        let alpha_span = if account_size > 0.0 {
+            match spy_ret {
+                Some(spy_r) => {
+                    let port_r = mp.pnl / account_size * 100.0;
+                    let alpha = port_r - spy_r;
+                    Span::styled(
+                        format!("  α{:+.1}%", alpha),
+                        Style::default().fg(if alpha >= 0.0 { C_GREEN } else { C_RED }),
+                    )
+                },
+                None => Span::raw(""),
+            }
+        } else {
+            Span::raw("")
         };
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -4672,6 +4832,7 @@ fn perf_monthly_lines(
             Span::styled(format!("{:>+8.0}   ", mp.pnl), Style::default().fg(pnl_color)),
             Span::styled(bar_str, Style::default().fg(pnl_color)),
             spy_span,
+            alpha_span,
         ]));
     }
 
@@ -5032,7 +5193,7 @@ fn draw_performance(
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
-    let subtabs = Tabs::new(vec![" Overview ", " Analytics "])
+    let subtabs = Tabs::new(vec![" Overview ", " Charts ", " Analytics "])
         .select(perf_subtab)
         .style(Style::default().fg(C_GRAY))
         .highlight_style(Style::default().fg(C_YELLOW).add_modifier(Modifier::BOLD))
@@ -5042,36 +5203,76 @@ fn draw_performance(
     let content_area = tab_chunks[1];
 
     // Determine which collapsed[] index the cursor points to
-    const OVERVIEW_MAP:  [usize; 3] = [0, 1, 3];
+    const OVERVIEW_MAP:  [usize; 2] = [0, 1];
+    const CHARTS_MAP:    [usize; 1] = [3];
     const ANALYTICS_MAP: [usize; 11] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
-    let selected_gi: Option<usize> = if perf_subtab == 0 {
-        OVERVIEW_MAP.get(perf_section_cursor).copied()
-    } else {
-        ANALYTICS_MAP.get(perf_section_cursor).copied()
+    let selected_gi: Option<usize> = match perf_subtab {
+        0 => OVERVIEW_MAP.get(perf_section_cursor).copied(),
+        1 => CHARTS_MAP.get(perf_section_cursor).copied(),
+        _ => ANALYTICS_MAP.get(perf_section_cursor).copied(),
     };
 
     if perf_subtab == 0 {
-        // OVERVIEW: health/returns (scrollable) + growth chart + optional monthly chart (bottom)
-        let chart_h: u16 = if collapsed[3] { 3 } else { 12 };
-        let monthly_chart_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 7 } else { 0 };
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(chart_h), Constraint::Length(monthly_chart_h)])
-            .split(content_area);
-
+        // OVERVIEW: health/returns text only (charts moved to Charts sub-tab)
         let mut lines: Vec<Line> = Vec::new();
         lines.extend(perf_health_lines(stats, width, collapsed[0], selected_gi == Some(0)));
         lines.extend(perf_returns_lines(stats, perf, width, collapsed[1], selected_gi == Some(1)));
         lines.push(Line::from(""));
 
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
-        f.render_widget(para, chunks[0]);
+        f.render_widget(para, content_area);
+    } else if perf_subtab == 1 {
+        // CHARTS: Account Growth + Monthly P&L Trend + Drawdown sparkline
+        let chart_h: u16 = if collapsed[3] { 3 } else { 12 };
+        let monthly_chart_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 7 } else { 0 };
+        let dd_section_h: u16 = if !collapsed[3] && perf.balance_history.len() > 2 { 5 } else { 0 };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chart_h),
+                Constraint::Length(monthly_chart_h),
+                Constraint::Length(dd_section_h),
+                Constraint::Min(0),
+            ])
+            .split(content_area);
 
-        draw_perf_growth_chart(f, chunks[1], stats, perf, collapsed[3], selected_gi == Some(3));
+        draw_perf_growth_chart(f, chunks[0], stats, perf, collapsed[3], selected_gi == Some(3));
 
-        // Item 5: Monthly P&L trend chart (only when ≥3 months and growth chart expanded)
         if !collapsed[3] && perf.monthly_pnl.len() >= 3 {
-            draw_perf_monthly_chart(f, chunks[2], perf);
+            draw_perf_monthly_chart(f, chunks[1], perf);
+        }
+
+        // Drawdown over time sparkline
+        if !collapsed[3] && perf.balance_history.len() > 2 && stats.account_size > 0.0 {
+            let dd_series: Vec<f64> = perf.peak_history.iter().zip(perf.balance_history.iter())
+                .map(|(&pk, &bal)| ((bal - pk) / stats.account_size * 100.0).min(0.0))
+                .collect();
+            let spark_chars = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+            let min_dd = dd_series.iter().cloned().fold(0.0_f64, f64::min).min(-0.01);
+            let spark: String = dd_series.iter().map(|&v| {
+                // 0.0 = no drawdown → full bar; min_dd = worst → empty bar
+                let norm = (v - min_dd) / min_dd.abs();
+                let idx = (7.0 - (norm * 7.0).round()).clamp(0.0, 7.0) as usize;
+                spark_chars[idx]
+            }).collect();
+            let current_dd = dd_series.last().copied().unwrap_or(0.0);
+            let dd_color = if current_dd < -5.0 { C_RED } else if current_dd < -2.0 { C_YELLOW } else { C_GREEN };
+            let dd_lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Drawdown History ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("(current: {:.1}% of acct)", current_dd), Style::default().fg(dd_color)),
+                ]),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(spark, Style::default().fg(C_RED)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("  Worst: {:.1}%", min_dd), Style::default().fg(C_RED)),
+                    Span::styled(format!("   Current: {:.1}%", current_dd), Style::default().fg(dd_color)),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(dd_lines), chunks[2]);
         }
     } else {
         // ANALYTICS: all sections scrollable
@@ -5320,106 +5521,70 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
 
 // ── Performance KPI Info Popup ────────────────────────────────────────────────
 
-fn draw_perf_kpi_popup(f: &mut Frame, area: Rect) {
-    let w: u16 = 76.min(area.width.saturating_sub(4));
-    let h: u16 = 32.min(area.height.saturating_sub(4));
+fn draw_perf_kpi_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &mut u16) {
+    let w: u16 = 84.min(area.width.saturating_sub(4));
+    let h: u16 = area.height.saturating_sub(4).max(10);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let dialog = Rect::new(x, y, w, h);
     f.render_widget(Clear, dialog);
 
-    let c = |s: &str| -> String { s.to_string() };
-    let lines = vec![
+    let lbl = |s: &'static str| Span::styled(s, Style::default().fg(C_YELLOW));
+    let sub = |s: &'static str| Span::styled(s, Style::default().fg(C_GRAY));
+    let sp  = "               ";  // 15-char indent for continuation lines
+
+    let lines: Vec<Line> = vec![
         Line::from(vec![Span::styled("  Performance KPI Guide  (tastytrade premium-selling lens)", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
         Line::from(""),
-        Line::from(vec![Span::styled("  ── RETURNS ─────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![
-            Span::styled("  Win Rate     ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("60–70% ideal for premium sellers. Sell at 50% POP → ~60%."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Over large sample. Higher = discipline.  Lower = sizing issue."), Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Profit Fctr  ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("> 1.5 good  ·  > 2.0 excellent  ·  < 1.0 = losing edge"), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Gross wins / gross losses. Drives long-run account growth."), Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Exp. Value   ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Must be > $0/trade. Avg P&L across all closed trades."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Avg ROC      ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("5–15% per trade on BPR. Target: 10% per occurrence."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ann. ROC     ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("25–40% annualized target. ROC × (365 / days held)."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  % Max Cap.   ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("≥ 50% target (the 50% profit rule). < 30% = holding too long."), Style::default().fg(C_WHITE)),
-        ]),
+        Line::from(vec![Span::styled("  \u{2500}\u{2500} RETURNS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", Style::default().fg(C_GRAY))]),
+        Line::from(vec![lbl("  Total P&L    "), Span::styled("Realized P&L from all closed trades. Positive = profitable.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Win Rate     "), Span::styled("60\u{2013}70% ideal for premium sellers. Sell at 50% POP \u{2192} ~60%.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Over large sample. Higher = discipline.  Lower = sizing issue.")]),
+        Line::from(vec![lbl("  Profit Fctr  "), Span::styled("> 1.5 good  \u{b7}  > 2.0 excellent  \u{b7}  < 1.0 = losing edge", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Gross wins / gross losses. Drives long-run account growth.")]),
+        Line::from(vec![lbl("  Exp. Value   "), Span::styled("Must be > $0/trade. Avg P&L across all closed trades.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Avg Winner   "), Span::styled("Avg profit on winning trades. Larger vs avg loser = better.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Avg Loser    "), Span::styled("Avg loss on losing trades. Smaller absolute value = better.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Avg R:R      "), Span::styled("avg_winner / avg_loser. Premium sellers often < 1.0 \u{2014}", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("offset by high win rate. EV = win_rate\u{00d7}winner \u{2212} loss_rate\u{00d7}loser.")]),
+        Line::from(vec![lbl("  Avg ROC      "), Span::styled("5\u{2013}15% per trade on BPR. Target: 10% per occurrence.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Avg Ann. ROC "), Span::styled("25\u{2013}40% annualized target. ROC \u{00d7} (365 / days held).", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Streak       "), Span::styled("Current win/loss streak. MaxWin/MaxLoss = historical best/worst.", Style::default().fg(C_WHITE))]),
         Line::from(""),
-        Line::from(vec![Span::styled("  ── RISK-ADJUSTED ───────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![
-            Span::styled("  Sharpe       ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("> 1.0 good  ·  > 2.0 excellent.  Return / total vol."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Annualized: (avg − rf) / σ × √252.  Penalizes upside swings."), Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Sortino      ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("> 1.5 good  ·  > 3.0 excellent.  Like Sharpe but only"), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("downside volatility. Better for asymmetric premium sellers."), Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Max Drawdown ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("< 5% ideal  ·  < 10% acceptable. Peak-to-trough decline."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Triggers drawdown alert at 5%. Circuit breaker: cut size."), Style::default().fg(C_GRAY)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Calmar       ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("> 1.0 good  ·  > 3.0 excellent. Annual return / max DD."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("               ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("Rewards high return with low drawdown — prem. seller ideal."), Style::default().fg(C_GRAY)),
-        ]),
+        Line::from(vec![Span::styled("  \u{2500}\u{2500} RISK-ADJUSTED \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", Style::default().fg(C_GRAY))]),
+        Line::from(vec![lbl("  Sharpe       "), Span::styled("> 1.0 good  \u{b7}  > 2.0 excellent.  Return / total vol.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Annualized: (avg \u{2212} rf) / \u{03c3} \u{00d7} \u{221a}252.  Penalizes upside swings.")]),
+        Line::from(vec![lbl("  Sortino      "), Span::styled("> 1.5 good  \u{b7}  > 3.0 excellent.  Like Sharpe but only", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("downside volatility. Better for asymmetric premium sellers.")]),
+        Line::from(vec![lbl("  Calmar       "), Span::styled("> 1.0 good  \u{b7}  > 3.0 excellent. Annual return / max DD.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Rewards high return with low drawdown \u{2014} prem. seller ideal.")]),
+        Line::from(vec![lbl("  Max Drawdown "), Span::styled("< 5% ideal  \u{b7}  < 10% acceptable. Peak-to-trough decline.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Triggers drawdown alert at 5%. Circuit breaker: cut size.")]),
         Line::from(""),
-        Line::from(vec![Span::styled("  ── MANAGEMENT ──────────────────────────────────────────", Style::default().fg(C_GRAY))]),
-        Line::from(vec![
-            Span::styled("  DTE at Close ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("14–21d target. Closing at 21 DTE avoids gamma risk."), Style::default().fg(C_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Avg Held     ", Style::default().fg(C_YELLOW)),
-            Span::styled(c("15–30d typical for 45-DTE entries closed at 50% profit."), Style::default().fg(C_WHITE)),
-        ]),
+        Line::from(vec![Span::styled("  \u{2500}\u{2500} MANAGEMENT \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", Style::default().fg(C_GRAY))]),
+        Line::from(vec![lbl("  DTE at Close "), Span::styled("14\u{2013}21d target. Closing at 21 DTE avoids gamma risk.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Avg Held     "), Span::styled("15\u{2013}30d typical for 45-DTE entries closed at 50% profit.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  % Max Cap.   "), Span::styled("\u{2265} 50% target (the 50% profit rule). < 30% = holding too long.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![lbl("  Prem. Recap. "), Span::styled("\u{2265} 50% target. Theta captured vs max potential at close.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("Low recapture = leaving money on table or closing winners late.")]),
+        Line::from(vec![lbl("  Trade Cadence"), Span::styled("Per Week / Per Month \u{2014} frequency of trade entries.", Style::default().fg(C_WHITE))]),
+        Line::from(vec![Span::raw(sp), sub("tastytrade: mechanical entries; size + frequency manage risk.")]),
         Line::from(""),
-        Line::from(vec![Span::styled("  Press i to close", Style::default().fg(Color::Rgb(51, 65, 85)))]),
+        Line::from(vec![Span::styled("  \u{2191}/\u{2193} or j/k scroll  \u{b7}  i/Esc close", Style::default().fg(Color::Rgb(51, 65, 85)))]),
     ];
+
+    let content_lines = lines.len() as u16;
+    let inner_h = h.saturating_sub(2);
+    *max_scroll = content_lines.saturating_sub(inner_h);
 
     f.render_widget(
         Paragraph::new(lines)
+            .scroll((scroll, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(C_CYAN))
-                    .title(Span::styled(" ★ Performance KPI Reference  (i to close) ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))),
+                    .title(Span::styled(" \u{2605} Performance KPI Reference  (i to close) ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))),
             ),
         dialog,
     );

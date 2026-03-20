@@ -52,6 +52,8 @@ pub struct AppState {
     pub dash_kpi_scroll:         u16,
     pub dash_kpi_max_scroll:     u16,
     pub perf_kpi_popup:          bool,
+    pub perf_kpi_scroll:         u16,
+    pub perf_kpi_max_scroll:     u16,
     pub journal_help_popup: bool,
     pub journal_help_scroll: u16,
     pub journal_help_max_scroll: u16,
@@ -92,7 +94,7 @@ pub struct AppState {
     pub dash_risk_scroll:     usize,
     pub dash_risk_max_scroll: usize,
     pub dash_panel_focus:     u8,   // 0 = Risk Distribution, 1 = Open Positions
-    pub perf_subtab:              usize,   // 0 = OVERVIEW, 1 = ANALYTICS
+    pub perf_subtab:              usize,   // 0 = OVERVIEW, 1 = CHARTS, 2 = ANALYTICS
     pub perf_overview_scroll:     u16,
     pub perf_overview_max_scroll: u16,
     pub perf_analytics_scroll:    u16,
@@ -280,6 +282,8 @@ impl AppState {
             dash_kpi_scroll:         0,
             dash_kpi_max_scroll:     0,
             perf_kpi_popup:          false,
+            perf_kpi_scroll:         0,
+            perf_kpi_max_scroll:     0,
             journal_help_popup: false,
             journal_help_scroll: 0,
             journal_help_max_scroll: 0,
@@ -310,7 +314,7 @@ impl AppState {
             perf_analytics_scroll: 0,
             perf_analytics_max_scroll: u16::MAX,
             // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
-            perf_collapsed:   [false, false, true, false, true, true, true, true, true, true, true, true, true, true],
+            perf_collapsed:   [false, false, false, false, false, true, true, true, true, true, true, true, true, true],
             perf_section_cursor: 0,
             perf_scroll_dirty:   false,
             cal_year:      0,
@@ -2047,18 +2051,25 @@ fn col_visibility_to_string(vis: &[bool; 21]) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn perf_section_count(subtab: usize) -> usize {
-    if subtab == 0 { 3 } else { 11 }
+    match subtab {
+        0 => 2,  // health, returns
+        1 => 1,  // growth chart
+        _ => 11, // analytics
+    }
 }
 
 /// Maps (subtab, cursor) → `perf_collapsed` global index.
-/// Overview map: [0=Health, 1=Returns, 3=Growth]
+/// Overview map: [0=Health, 1=Returns]
+/// Charts map:   [3=Growth]
 /// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission]
 fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
-    const OVERVIEW_MAP:  [usize; 3]  = [0, 1, 3];
+    const OVERVIEW_MAP:  [usize; 2]  = [0, 1];
+    const CHARTS_MAP:    [usize; 1]  = [3];
     const ANALYTICS_MAP: [usize; 11] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
     match subtab {
         0 => OVERVIEW_MAP.get(cursor).copied(),
-        1 => ANALYTICS_MAP.get(cursor).copied(),
+        1 => CHARTS_MAP.get(cursor).copied(),
+        2 => ANALYTICS_MAP.get(cursor).copied(),
         _ => None,
     }
 }
@@ -2223,12 +2234,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Ok(size) = term.size() {
                 let content_w = size.width.saturating_sub(2) as usize;
                 let visible_h = size.height.saturating_sub(8) as usize;
-                let chart_h: usize = if app.perf_collapsed[3] { 3 } else { 18 };
-                let overview_text_h = visible_h.saturating_sub(chart_h);
 
                 app.perf_overview_max_scroll = theta_vault_rust::ui::count_perf_overview_lines(
                     &app.stats, &app.perf_stats, content_w, &app.perf_collapsed
-                ).saturating_sub(overview_text_h) as u16;
+                ).saturating_sub(visible_h) as u16;
 
                 app.perf_analytics_max_scroll = theta_vault_rust::ui::count_perf_analytics_lines(
                     &app.stats, &app.perf_stats, content_w, &app.perf_collapsed, &app.spy_monthly
@@ -2248,9 +2257,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     if app.perf_subtab == 0 {
                         app.perf_overview_scroll = target.min(app.perf_overview_max_scroll);
-                    } else {
+                    } else if app.perf_subtab == 2 {
                         app.perf_analytics_scroll = target.min(app.perf_analytics_max_scroll);
                     }
+                    // subtab 1 (Charts) has no text scroll — no-op
                 }
             }
         }
@@ -2321,6 +2331,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.dash_kpi_scroll,
             &mut app.dash_kpi_max_scroll,
             app.perf_kpi_popup,
+            app.perf_kpi_scroll,
+            &mut app.perf_kpi_max_scroll,
             app.journal_help_popup,
             app.journal_help_scroll,
             &mut app.journal_help_max_scroll,
@@ -2412,6 +2424,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         app.dash_kpi_scroll = std::cmp::min(
                             app.dash_kpi_scroll + 10,
                             app.dash_kpi_max_scroll,
+                        );
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            if app.perf_kpi_popup && app.selected_tab == 5 {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
+                        app.perf_kpi_popup = false;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.perf_kpi_scroll = app.perf_kpi_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.perf_kpi_scroll < app.perf_kpi_max_scroll {
+                            app.perf_kpi_scroll += 1;
+                        }
+                    }
+                    KeyCode::PageUp => {
+                        app.perf_kpi_scroll = app.perf_kpi_scroll.saturating_sub(10);
+                    }
+                    KeyCode::PageDown => {
+                        app.perf_kpi_scroll = std::cmp::min(
+                            app.perf_kpi_scroll + 10,
+                            app.perf_kpi_max_scroll,
                         );
                     }
                     _ => {}
@@ -2805,6 +2844,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Performance KPI popup toggle
                 KeyCode::Char('i') | KeyCode::Char('I') if app.selected_tab == 5 => {
                     app.perf_kpi_popup = !app.perf_kpi_popup;
+                    if app.perf_kpi_popup { app.perf_kpi_scroll = 0; }
                 }
 
                 // Performance sub-tab navigation
@@ -2818,7 +2858,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 KeyCode::Char(']') | KeyCode::Char('/') if app.selected_tab == 5 => {
-                    app.perf_subtab = if app.perf_subtab == 0 { 1 } else { 0 };
+                    app.perf_subtab = (app.perf_subtab + 1) % 3;
                     app.perf_overview_scroll = 0;
                     app.perf_analytics_scroll = 0;
                     app.perf_section_cursor = 0;
@@ -2828,10 +2868,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Performance section collapse/expand (keys 1-9 + 0 for section 10, context-sensitive)
                 KeyCode::Char(c) if app.selected_tab == 5 && (('1'..='9').contains(&c) || c == '0') => {
                     let ki = if c == '0' { 9 } else { (c as usize) - ('1' as usize) };
-                    let gi: Option<usize> = if app.perf_subtab == 0 {
-                        match ki { 0 => Some(0), 1 => Some(1), 2 => Some(3), _ => None }
-                    } else {
-                        match ki { 0 => Some(2), 1 => Some(4), 2 => Some(5), 3 => Some(6), 4 => Some(7), 5 => Some(8), 6 => Some(9), 7 => Some(10), 8 => Some(11), 9 => Some(12), _ => None }
+                    let gi: Option<usize> = match app.perf_subtab {
+                        0 => match ki { 0 => Some(0), 1 => Some(1), _ => None },
+                        1 => match ki { 0 => Some(3), _ => None },
+                        _ => match ki { 0 => Some(2), 1 => Some(4), 2 => Some(5), 3 => Some(6), 4 => Some(7), 5 => Some(8), 6 => Some(9), 7 => Some(10), 8 => Some(11), 9 => Some(12), _ => None },
                     };
                     if let Some(gi) = gi {
                         app.perf_collapsed[gi] = !app.perf_collapsed[gi];
@@ -3105,17 +3145,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Down | KeyCode::Char('j') => app.nav_down(),
                         KeyCode::Up   | KeyCode::Char('k') => app.nav_up(),
                         KeyCode::PageDown => {
-                            // Scroll content without moving cursor
+                            // Scroll content without moving cursor (Charts tab has no text scroll)
                             if app.perf_subtab == 0 {
                                 app.perf_overview_scroll = app.perf_overview_scroll.saturating_add(5).min(app.perf_overview_max_scroll);
-                            } else {
+                            } else if app.perf_subtab == 2 {
                                 app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_add(5).min(app.perf_analytics_max_scroll);
                             }
                         }
                         KeyCode::PageUp => {
                             if app.perf_subtab == 0 {
                                 app.perf_overview_scroll = app.perf_overview_scroll.saturating_sub(5);
-                            } else {
+                            } else if app.perf_subtab == 2 {
                                 app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_sub(5);
                             }
                         }

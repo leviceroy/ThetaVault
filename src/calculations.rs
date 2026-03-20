@@ -465,12 +465,14 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
 /// Note: calendar/diagonal spreads are IV-dependent and not supported here.
 pub fn calculate_payoff_at_price(legs: &[TradeLeg], credit_received: f64, price: f64) -> f64 {
     let intrinsic: f64 = legs.iter().map(|leg| {
-        match leg.leg_type {
+        let qty = leg.quantity.unwrap_or(1) as f64;
+        let base = match leg.leg_type {
             LegType::ShortPut  => -(leg.strike - price).max(0.0),
             LegType::LongPut   =>  (leg.strike - price).max(0.0),
             LegType::ShortCall => -(price - leg.strike).max(0.0),
             LegType::LongCall  =>  (price - leg.strike).max(0.0),
-        }
+        };
+        qty * base
     }).sum();
     (credit_received + intrinsic) * 100.0
 }
@@ -998,6 +1000,13 @@ pub fn build_portfolio_stats(
         None
     };
 
+    // Θ/BPR efficiency: net_theta / total_open_bpr × 100 (% return on capital per day)
+    let theta_bpr_ratio = if total_open_bpr > 0.0 && open_count > 0 {
+        Some((net_theta / total_open_bpr) * 100.0)
+    } else {
+        None
+    };
+
     // L3: open strategy counts sorted by count desc
     let mut open_strategy_counts: Vec<(String, usize)> = open_strategy_map.into_iter().collect();
     open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1));
@@ -1077,6 +1086,7 @@ pub fn build_portfolio_stats(
         avg_p50_open:             if p50_open_count > 0 { Some(p50_open_sum / p50_open_count as f64) } else { None },
         theta_delta_ratio,
         theta_netliq_ratio,
+        theta_bpr_ratio,
         monthly_pnl_target,
         monthly_pnl_pace,
         open_strategy_counts,
@@ -1509,6 +1519,10 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 
     // strategy_map: StrategyType -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
     let mut strategy_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
+    // per-strategy credit/width ratio accumulator (defined-risk only)
+    let mut strategy_cw_map: HashMap<String, (f64, u32)> = HashMap::new();
+    // per-strategy entry DTE accumulator
+    let mut strategy_dte_map: HashMap<String, (f64, u32)> = HashMap::new();
 
     // ticker_map: ticker -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
     let mut ticker_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
@@ -1604,7 +1618,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 
         // Strategy breakdown
         let strat_key = format!("{:?}", t.strategy);
-        let se = strategy_map.entry(strat_key).or_insert((0, 0, 0, 0.0, 0.0, 0));
+        let se = strategy_map.entry(strat_key.clone()).or_insert((0, 0, 0, 0.0, 0.0, 0));
         se.0 += 1;
         if pnl.abs() < scratch_threshold { se.2 += 1; }
         else if pnl > 0.0 { se.1 += 1; }
@@ -1612,6 +1626,21 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         if let Some(roc) = roc_opt {
             se.4 += roc;
             se.5 += 1;
+        }
+        // per-strategy credit/width ratio
+        let cw_strat = calculate_credit_width_ratio(t.credit_received, &t.legs, t.spread_type());
+        if cw_strat > 0.0 {
+            let cwe = strategy_cw_map.entry(strat_key.clone()).or_insert((0.0, 0));
+            cwe.0 += cw_strat;
+            cwe.1 += 1;
+        }
+        // per-strategy entry DTE
+        if let Some(dte_e) = t.entry_dte {
+            if dte_e > 0 {
+                let de = strategy_dte_map.entry(strat_key).or_insert((0.0, 0));
+                de.0 += dte_e as f64;
+                de.1 += 1;
+            }
         }
 
         // Ticker breakdown
@@ -1682,9 +1711,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
                 theta_capture_per_trade.push(0.0);
             }
             let _ = debit; // suppress unused warning
-        } else {
-            theta_capture_per_trade.push(0.0);
         }
+        // trades with None theta or None debit_paid are excluded from the rolling window
+        // to avoid distorting the average with meaningless zeros
 
         // Commission tracking
         if let Some(comm) = t.commission {
@@ -1746,6 +1775,12 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             .map(|t| t.strategy.clone())
             .unwrap_or(StrategyType::ShortPutVertical);
         let tc = trades as f64;
+        let avg_cw_ratio = strategy_cw_map.get(&key).and_then(|&(sum, count)| {
+            if count > 0 { Some(sum / count as f64) } else { None }
+        });
+        let avg_entry_dte = strategy_dte_map.get(&key).and_then(|&(sum, count)| {
+            if count > 0 { Some(sum / count as f64) } else { None }
+        });
         StrategyBreakdown {
             strategy,
             trades,
@@ -1756,6 +1791,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             avg_roc: if roc_count > 0 { roc_sum / roc_count as f64 } else { 0.0 },
             win_rate: if tc > 0.0 { wins as f64 / tc * 100.0 } else { 0.0 },
             scratch_rate: if tc > 0.0 { scratches as f64 / tc * 100.0 } else { 0.0 },
+            avg_cw_ratio,
+            avg_entry_dte,
         }
     }).collect();
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
