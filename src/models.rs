@@ -24,6 +24,7 @@ pub enum StrategyType {
     LongPutVertical,
     Zebra,
     Custom,
+    PutBrokenWingButterfly,
 }
 
 impl StrategyType {
@@ -46,6 +47,7 @@ impl StrategyType {
             StrategyType::LongPutVertical     => "Long Put Vertical",
             StrategyType::Zebra               => "Zebra Spread",
             StrategyType::Custom              => "Custom / Ratio Spread",
+            StrategyType::PutBrokenWingButterfly => "Put Broken Wing Butterfly",
         }
     }
 
@@ -68,6 +70,7 @@ impl StrategyType {
             StrategyType::LongPutVertical     => "LPV",
             StrategyType::Zebra               => "ZBR",
             StrategyType::Custom              => "CUST",
+            StrategyType::PutBrokenWingButterfly => "PBWB",
         }
     }
 
@@ -88,8 +91,9 @@ impl StrategyType {
             "short_diagonal_spread" => StrategyType::ShortDiagonalSpread,
             "long_call_vertical"    => StrategyType::LongCallVertical,
             "long_put_vertical"     => StrategyType::LongPutVertical,
-            "zebra"                 => StrategyType::Zebra,
-            _                       => StrategyType::Custom,
+            "zebra"                          => StrategyType::Zebra,
+            "put_broken_wing_butterfly"      => StrategyType::PutBrokenWingButterfly,
+            _                                => StrategyType::Custom,
         }
     }
 
@@ -112,6 +116,7 @@ impl StrategyType {
             StrategyType::LongPutVertical     => "long_put_vertical",
             StrategyType::Zebra               => "zebra",
             StrategyType::Custom              => "custom",
+            StrategyType::PutBrokenWingButterfly => "put_broken_wing_butterfly",
         }
     }
 
@@ -215,6 +220,8 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::LongPutVertical     => vec![LegType::LongPut,   LegType::ShortPut],
         StrategyType::Zebra               => vec![],  // user builds legs freely
         StrategyType::Custom              => vec![],
+        // ShortPut = ATM anchor short; two LongPuts = ATM long (higher) + wing (lower)
+        StrategyType::PutBrokenWingButterfly => vec![LegType::ShortPut, LegType::LongPut, LegType::LongPut],
     }
 }
 

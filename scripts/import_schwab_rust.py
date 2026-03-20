@@ -53,22 +53,25 @@ def fetch_historical_prices(ticker: str, start_date: str, end_date: str) -> Dict
     url_ticker = ticker.replace('^', '%5E')
     start_ts = int(datetime.strptime(start_date, '%Y-%m-%d').timestamp())
     end_ts = int((datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)).timestamp())
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{url_ticker}?period1={start_ts}&period2={end_ts}&interval=1d"
 
     prices: Dict[str, float] = {}
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-            result = data['chart']['result'][0]
-            timestamps = result['timestamp']
-            closes = result['indicators']['quote'][0]['close']
-            for ts, close in zip(timestamps, closes):
-                if close is not None:
-                    dt = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
-                    prices[dt] = round(close, 2)
-    except Exception as e:
-        print(f"  WARNING: Failed to fetch {ticker} prices: {e}")
+    for host in ('query1.finance.yahoo.com', 'query2.finance.yahoo.com'):
+        url = f"https://{host}/v8/finance/chart/{url_ticker}?period1={start_ts}&period2={end_ts}&interval=1d"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                result = data['chart']['result'][0]
+                timestamps = result['timestamp']
+                closes = result['indicators']['quote'][0]['close']
+                for ts, close in zip(timestamps, closes):
+                    if close is not None:
+                        dt = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+                        prices[dt] = round(close, 2)
+            break  # success — stop trying hosts
+        except Exception as e:
+            if host == 'query2.finance.yahoo.com':
+                print(f"  WARNING: Failed to fetch {ticker} prices: {e}")
 
     _price_cache[cache_key] = prices
     return prices
@@ -284,11 +287,14 @@ def find_close(closes: List[Dict], expirations: List[Dict], leg: Dict,
         if i in used_closes:
             continue
         # STRICT MATCH: Ticker, Strike, Qty, AND Expiration
+        # For orphan matches, accept qty=1 closes against any-qty DB position
+        # (Schwab exports each contract as qty=1 even for multi-contract positions)
+        qty_match = (c['qty'] == leg['qty']) or (is_orphan_match and c['qty'] == 1)
         if (c['ticker'] == leg['ticker'] and
             c['exp_str'] == leg['exp_str'] and
             c['strike'] == leg['strike'] and
             c['opt_type'] == leg['opt_type'] and
-            c['qty'] == leg['qty']):
+            qty_match):
             if leg['action'] == 'Sell to Open' and c['action'] == 'Buy to Close':
                 used_closes.add(i)
                 return c['price'], c['date'], 'closed', c.get('fees', 0)
@@ -406,7 +412,9 @@ def enrich_trades_with_greeks(trades: List[Dict]) -> int:
         end = max(ticker_dates)
 
         # Fetch prices for this ticker only for its required range
-        prices = fetch_historical_prices(ticker, start, end)
+        _YAHOO_TICKER_MAP = {'SPXW': '^SPX', 'NDXP': '^NDX'}
+        yahoo_ticker = _YAHOO_TICKER_MAP.get(ticker, ticker)
+        prices = fetch_historical_prices(yahoo_ticker, start, end)
 
         for trade in ticker_trades:
             greeks = estimate_trade_greeks(trade, prices, vix_prices)
@@ -577,6 +585,222 @@ def process_same_exp_legs(legs: List[Dict], trade_date: str, ticker: str,
     leftovers = short_puts + long_puts + short_calls + long_calls
     return trades, leftovers
 
+
+def build_0dte_roll_chain(txns: List[Dict], ticker: str, trade_date: str) -> List[Dict]:
+    """Build an IC roll chain from 0DTE same-expiry transactions.
+
+    Called when the same (date, ticker, expiry) has >4 open legs — an intraday roll
+    campaign where multiple ICs are opened sequentially, each linked to the next.
+
+    Schwab interleaves open and close transactions within a roll event (e.g. new STO
+    may appear before the BTC of the old short). Sequential slot-tracking therefore
+    fails. Instead this function uses VERTICAL-FAMILY IDENTIFICATION:
+
+    Pass 1: Group STO+BTO pairs into put/call vertical families by positional sort
+            (descending for puts, ascending for calls). Each family gets its open
+            premiums and close premiums (from matching BTC/STC transactions).
+
+    Pass 2: Sort verticals by the earliest txn index where each family was first
+            opened (= temporal order). Build the IC chain by walking put and call
+            verticals in parallel: whichever side's NEXT vertical starts earlier
+            determines the roll direction for the current IC.
+
+    Commission is only charged for NEW legs in each IC (not inherited sides).
+    forcePnl is set for rolled ICs (partial close); fully-closed ICs use
+    compute_pnl_and_debit in insert_trades.
+
+    Each trade gets _is_0dte_chain, _chain_position, _chain_ticker, _chain_date so
+    main() can set rolled_from_id by position after insert (bypassing link_roll_chains
+    which is confused by same-day trades).
+    """
+    exp_dt: Optional[datetime] = txns[0]['expiration'] if txns else datetime.strptime(trade_date, '%Y-%m-%d')
+
+    # ── Pass 1: identify vertical families ──────────────────────────────────────
+
+    def _pair_verticals(legs_with_pos: List[Tuple[int, Dict]]) -> List[Dict]:
+        """Group STO+BTO into vertical pairs by positional strike sort.
+
+        For puts:  sort descending → highest short pairs with highest long
+        For calls: sort ascending  → lowest short pairs with lowest long
+
+        Each vertical dict records open premiums, close premiums (if any), and
+        start_pos (earliest txn index) for temporal ordering.
+        """
+        if not legs_with_pos:
+            return []
+        opt_type = legs_with_pos[0][1]['opt_type']
+        is_put   = (opt_type == 'put')
+
+        shorts    = [(i, t) for i, t in legs_with_pos if t['action'] == 'Sell to Open']
+        longs     = [(i, t) for i, t in legs_with_pos if t['action'] == 'Buy to Open']
+        cls_btc   = [(i, t) for i, t in legs_with_pos if t['action'] == 'Buy to Close']   # closes short
+        cls_stc   = [(i, t) for i, t in legs_with_pos if t['action'] == 'Sell to Close']  # closes long
+
+        rev = True if is_put else False
+        shorts.sort( key=lambda x:  x[1]['strike'], reverse=rev)
+        longs.sort(  key=lambda x:  x[1]['strike'], reverse=rev)
+        cls_btc.sort(key=lambda x:  x[1]['strike'], reverse=rev)
+        cls_stc.sort(key=lambda x:  x[1]['strike'], reverse=rev)
+
+        verticals = []
+        used_btc = set()
+        used_stc = set()
+        for k in range(min(len(shorts), len(longs))):
+            si, s = shorts[k]
+            li, l = longs[k]
+
+            # Find matching close for the short leg (BTC, same strike)
+            sc_entry = next(
+                ((ci, c) for ci, (ci2, c) in enumerate(cls_btc)
+                 if ci2 not in used_btc and abs(c['strike'] - s['strike']) < 0.01),
+                None
+            )
+            # Redo without the enumerate bug:
+            sc_txn, sc_pos = None, None
+            for bi, (bpos, bt) in enumerate(cls_btc):
+                if bi not in used_btc and abs(bt['strike'] - s['strike']) < 0.01:
+                    sc_txn, sc_pos = bt, bi
+                    used_btc.add(bi)
+                    break
+
+            lc_txn, lc_pos = None, None
+            for si2, (spos, st) in enumerate(cls_stc):
+                if si2 not in used_stc and abs(st['strike'] - l['strike']) < 0.01:
+                    lc_txn, lc_pos = st, si2
+                    used_stc.add(si2)
+                    break
+
+            verticals.append({
+                'start_pos':   min(si, li),   # temporal order: earliest open txn index
+                'short':       s,             # STO transaction
+                'long':        l,             # BTO transaction
+                'close_short': sc_txn,        # BTC transaction (or None)
+                'close_long':  lc_txn,        # STC transaction (or None)
+            })
+
+        verticals.sort(key=lambda v: v['start_pos'])
+        return verticals
+
+    puts_with_pos  = [(i, t) for i, t in enumerate(txns) if t['opt_type'] == 'put']
+    calls_with_pos = [(i, t) for i, t in enumerate(txns) if t['opt_type'] == 'call']
+
+    put_verticals  = _pair_verticals(puts_with_pos)
+    call_verticals = _pair_verticals(calls_with_pos)
+
+    if not put_verticals or not call_verticals:
+        print(f"  [0DTE] Insufficient verticals ({len(put_verticals)} puts, "
+              f"{len(call_verticals)} calls) — falling back to normal processing")
+        return []
+
+    # ── Pass 2: build IC chain ───────────────────────────────────────────────────
+
+    trades_out: List[Dict] = []
+    pi, ci       = 1, 1                    # pointers to NEXT (unused) vertical
+    cur_put      = put_verticals[0]
+    cur_call     = call_verticals[0]
+    is_new_put   = True
+    is_new_call  = True
+
+    while True:
+        next_put  = put_verticals[pi]   if pi  < len(put_verticals)  else None
+        next_call = call_verticals[ci]  if ci  < len(call_verticals) else None
+        is_last   = (next_put is None and next_call is None)
+
+        # Which side closes in this IC?
+        if is_last:
+            close_side = 'both'
+        elif next_call and (next_put is None or next_call['start_pos'] <= next_put['start_pos']):
+            close_side = 'call'   # call vertical rolls next
+        else:
+            close_side = 'put'    # put vertical rolls next
+
+        # Build leg dicts with close premiums for the appropriate side
+        def _leg(ltype, v_entry, close_txn):
+            return {
+                'type':         ltype,
+                'strike':       v_entry['strike'],
+                'premium':      v_entry['price'],
+                'closePremium': close_txn['price'] if close_txn else None,
+            }
+
+        sp_leg = _leg('short_put',  cur_put['short'],  cur_put['close_short']  if close_side in ('put',  'both') else None)
+        lp_leg = _leg('long_put',   cur_put['long'],   cur_put['close_long']   if close_side in ('put',  'both') else None)
+        sc_leg = _leg('short_call', cur_call['short'], cur_call['close_short'] if close_side in ('call', 'both') else None)
+        lc_leg = _leg('long_call',  cur_call['long'],  cur_call['close_long']  if close_side in ('call', 'both') else None)
+
+        all_closed = all(l['closePremium'] is not None for l in [sp_leg, lp_leg, sc_leg, lc_leg])
+
+        # Commission: open fees for NEW verticals + close fees for closed legs
+        commission = 0.0
+        if is_new_put:
+            commission += cur_put['short'].get('fees', 0) + cur_put['long'].get('fees', 0)
+        if is_new_call:
+            commission += cur_call['short'].get('fees', 0) + cur_call['long'].get('fees', 0)
+        if close_side in ('call', 'both'):
+            if cur_call['close_short']: commission += cur_call['close_short'].get('fees', 0)
+            if cur_call['close_long']:  commission += cur_call['close_long'].get('fees', 0)
+        if close_side in ('put', 'both'):
+            if cur_put['close_short']:  commission += cur_put['close_short'].get('fees', 0)
+            if cur_put['close_long']:   commission += cur_put['close_long'].get('fees', 0)
+        commission = round(commission, 2)
+
+        put_credit  = sp_leg['premium'] - lp_leg['premium']
+        call_credit = sc_leg['premium'] - lc_leg['premium']
+        credit      = round(put_credit + call_credit, 4)
+        api_legs    = [sp_leg, lp_leg, sc_leg, lc_leg]
+
+        trade = build_trade_dict(
+            ticker, 'iron_condor', 1,
+            sp_leg['strike'], lp_leg['strike'],
+            sp_leg['premium'], lp_leg['premium'],
+            credit, trade_date, exp_dt,
+            commission, api_legs,
+        )
+
+        # build_trade_dict only sets exitTime/exitReason when ALL legs have closePremium.
+        # For rolled ICs (partial close), set them manually.
+        if close_side:
+            trade['exitTime']   = f"{trade_date}T16:00:00Z"
+            trade['exitReason'] = 'closed' if all_closed else 'rolled'
+            # forcePnl for rolled ICs: realized P&L on closed side, net of commission.
+            # Fully-closed ICs use compute_pnl_and_debit (which also deducts commission).
+            if not all_closed:
+                closed_legs = [l for l in api_legs if l['closePremium'] is not None]
+                side_gross  = sum(
+                    (l['premium'] - l['closePremium']) if l['type'].startswith('short_')
+                    else (l['closePremium'] - l['premium'])
+                    for l in closed_legs
+                )
+                trade['forcePnl'] = round(side_gross * 100.0 - commission, 2)
+
+        trade['_is_0dte_chain']  = True
+        trade['_chain_position'] = len(trades_out)
+        trade['_chain_ticker']   = ticker
+        trade['_chain_date']     = trade_date
+
+        print(f"  [0DTE IC {len(trades_out) + 1}] {ticker} "
+              f"P:{sp_leg['strike']:.0f}/{lp_leg['strike']:.0f} "
+              f"C:{sc_leg['strike']:.0f}/{lc_leg['strike']:.0f} "
+              f"cr={credit:+.2f} comm={commission:.2f} "
+              f"exit={trade.get('exitReason', 'OPEN')}")
+        trades_out.append(trade)
+
+        if is_last:
+            break
+        elif close_side == 'call':
+            cur_call    = next_call
+            is_new_put  = False
+            is_new_call = True
+            ci += 1
+        else:  # put rolled
+            cur_put     = next_put
+            is_new_put  = True
+            is_new_call = False
+            pi += 1
+
+    return trades_out
+
+
 def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = None) -> List[Dict]:
     """Build trades from Schwab transactions. 
     If conn is provided, matches orphan closes against open trades in the DB."""
@@ -600,14 +824,42 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
     closes = []
     expirations = []
 
+    # --- 0DTE Roll Campaign Detection ---
+    # Count open legs per (date, ticker, expiry) for same-day, same-expiry groups.
+    # A group with >4 opens is a roll campaign (a single IC has exactly 4 open legs).
+    _0dte_open_counts: Dict[Tuple, int] = defaultdict(int)
     for txn in parsed_txns:
         if txn['action'] in ['Sell to Open', 'Buy to Open']:
-            key = (txn['date'].strftime('%Y-%m-%d'), txn['ticker'])
-            opens_by_date_ticker[key].append(txn)
-        elif txn['action'] in ['Sell to Close', 'Buy to Close']:
-            closes.append(txn)
-        elif txn['action'] == 'Expired':
-            expirations.append(txn)
+            d = txn['date'].strftime('%Y-%m-%d')
+            e = txn['expiration'].strftime('%Y-%m-%d')
+            if d == e:  # 0DTE: trade date == expiry date
+                _0dte_open_counts[(d, txn['ticker'], e)] += 1
+
+    # Keys with >4 opens → route ALL their transactions to build_0dte_roll_chain
+    _0dte_roll_keys: set = {
+        (d, tk)
+        for (d, tk, _e), cnt in _0dte_open_counts.items()
+        if cnt > 4
+    }
+
+    zero_dte_txns: Dict[Tuple, List] = defaultdict(list)  # (date_str, ticker) → ordered txns
+
+    for txn in parsed_txns:
+        d   = txn['date'].strftime('%Y-%m-%d')
+        e   = txn['expiration'].strftime('%Y-%m-%d')
+        key = (d, txn['ticker'])
+
+        if key in _0dte_roll_keys and d == e:
+            # 0DTE roll campaign: collect opens AND closes in chronological order
+            if txn['action'] in ['Sell to Open', 'Buy to Open', 'Sell to Close', 'Buy to Close']:
+                zero_dte_txns[key].append(txn)
+        else:
+            if txn['action'] in ['Sell to Open', 'Buy to Open']:
+                opens_by_date_ticker[key].append(txn)
+            elif txn['action'] in ['Sell to Close', 'Buy to Close']:
+                closes.append(txn)
+            elif txn['action'] == 'Expired':
+                expirations.append(txn)
 
     trades = []
     used_closes = set()
@@ -698,7 +950,7 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                     'spreadType': t_db['strategy'],
                     'quantity': t_db['quantity'],
                     'creditReceived': t_db['credit_received'],
-                    'tradeDate': t_db['trade_date'],
+                    'tradeDate': t_db['trade_date'] or t_db['entry_date'],
                     'expirationDate': t_db['expiration_date'],
                     'entryTime': t_db['entry_date'],
                     'commission': t_db['commission'] or 0.0,
@@ -821,12 +1073,9 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                                           f"new legs {new_leg_short['strike']}/{new_leg_long['strike']}, "
                                           f"parent pnl=${updated_trade['forcePnl']:+.2f}, child cr={child_credit:+.2f}")
 
-                # Persist fingerprint so re-running the same file won't re-close this trade.
-                conn.execute(
-                    "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
-                    (oc_fp, t_db['id'])
-                )
-                conn.commit()
+                # Pass the oc fingerprint through to insert_trades so it's only persisted
+                # AFTER the UPDATE commit succeeds — avoids blocking future retries on failure.
+                updated_trade['_oc_fp'] = oc_fp
 
                 trades.append(updated_trade)
 
@@ -993,6 +1242,14 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                 trades.append(trade)
             else:
                 print(f"  WARNING: Unmatched single leg: {ticker} {leg['expiration'].strftime('%m/%d')} {leg['strike']} {leg['opt_type']} {leg['action']}")
+
+    # Process 0DTE roll campaigns (intraday IC rolls, all same expiry)
+    # These are routed here instead of through process_same_exp_legs because greedy
+    # leg-pooling cannot reconstruct the correct roll chain from the transaction soup.
+    for (date_str, ticker), txns in zero_dte_txns.items():
+        print(f"  [0DTE Roll Campaign] {ticker} {date_str}: {len(txns)} transactions")
+        roll_chain = build_0dte_roll_chain(txns, ticker, date_str)
+        trades.extend(roll_chain)
 
     # Merge SPV + SCV pairs into Iron Condors (cross-date detection)
     # Handles ICs where the put side and call side were opened on different dates
@@ -1528,7 +1785,9 @@ def detect_rolls(trades: List[Dict]) -> None:
     Modifies trades in place to set exitReason='rolled'.
     """
     # Get closed trades with 'closed' exit reason (not expired)
-    closed_trades = [t for t in trades if t.get('exitReason') == 'closed']
+    # Skip 0DTE chain trades — their exitReason is set directly by build_0dte_roll_chain
+    closed_trades = [t for t in trades if t.get('exitReason') == 'closed'
+                     and not t.get('_is_0dte_chain')]
 
     for closed in closed_trades:
         close_date = closed.get('exitTime', '')[:10]  # YYYY-MM-DD
@@ -1567,18 +1826,17 @@ def filter_new_trades(trades: List[Dict], existing_fingerprints: set) -> List[Di
     print(f"Filtering against {len(existing_fingerprints)} existing trades...")
     new_trades = []
     for t in trades:
+        # Updates must always pass through — their regular fingerprint already exists
+        # in import_log from the original open import, but the oc| guard in build_trades
+        # already ensures we don't double-close.
+        if t.get('is_update') or t.get('id'):
+            new_trades.append(t)
+            continue
+
         fp = get_trade_fingerprint(t)
         if fp in existing_fingerprints:
             continue
-            
-        if t.get('is_update'):
-            # The specific 'oc|' fingerprint for this update was already checked 
-            # in match_orphan_closes and wasn't found (otherwise it wouldn't be in 'trades').
-            # We don't filter it here because 'get_trade_fingerprint' returns 
-            # a different string than 'oc|...'.
-            new_trades.append(t)
-            continue
-            
+
         new_trades.append(t)
 
     skipped = len(trades) - len(new_trades)
@@ -1982,6 +2240,14 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                 )
                 conn.commit()
                 db_id = trade['id']
+                # Persist oc fingerprint only after successful UPDATE commit so a failed
+                # update doesn't permanently block future retries.
+                if trade.get('_oc_fp'):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+                        (trade['_oc_fp'], db_id)
+                    )
+                    conn.commit()
                 # Part 3: roll fingerprint — prevents re-import of this roll on future runs
                 if trade.get('is_roll_update') and trade.get('rollDate'):
                     roll_fp = f"roll|{db_id}|{trade['rollDate']}"
@@ -2108,6 +2374,9 @@ def link_roll_chains(conn: sqlite3.Connection, trades: List[Dict],
             continue
         if i not in id_map:
             continue
+        # 0DTE chains are linked by position in main() — skip here to avoid wrong matches
+        if closed_trade.get('_is_0dte_chain'):
+            continue
 
         closed_db_id = id_map[i]
         close_date = closed_trade.get('exitTime', '')[:10]  # YYYY-MM-DD
@@ -2224,6 +2493,10 @@ def main():
     data = json.loads(raw)
 
     transactions = data['BrokerageTransactions']
+    # Process in chronological order: Schwab JSON is newest-first (top=most recent,
+    # bottom=oldest). Reversing ensures opens are seen before their subsequent closes,
+    # which is required for correct 0DTE roll campaign detection (build_0dte_roll_chain).
+    transactions = list(reversed(transactions))
     print(f"Loaded {len(transactions)} transactions from {json_path}")
 
     trades = build_trades(transactions, conn)
@@ -2278,11 +2551,37 @@ def main():
             print(f"  ID {trade_idx:5d}: {t['ticker']:6s} {t['spreadType']:22s} {t['tradeDate'][:10]} cr={t['creditReceived']:+.2f} [{status}]")
 
     # Link roll chains (set rolled_from_id on new trades)
-    rolled_count = sum(1 for t in final_trades if t.get('exitReason') == 'rolled')
+    rolled_count = sum(1 for t in final_trades if t.get('exitReason') == 'rolled'
+                       and not t.get('_is_0dte_chain'))
     if rolled_count > 0:
         print(f"\nLinking {rolled_count} roll chains...")
         linked = link_roll_chains(conn, final_trades, id_map)
         print(f"Linked {linked} roll chains")
+
+    # Link 0DTE roll chains by insertion order (rolled_from_id = previous IC in chain)
+    chain_items = [
+        (i, t) for i, t in enumerate(final_trades)
+        if t.get('_chain_position') is not None and i in id_map
+    ]
+    if chain_items:
+        from collections import defaultdict as _ChainDD
+        chain_groups: Dict = _ChainDD(list)
+        for i, t in chain_items:
+            chain_groups[(t['_chain_ticker'], t['_chain_date'])].append(
+                (t['_chain_position'], id_map[i])
+            )
+        print(f"\nLinking {len(chain_items)} 0DTE chain IC(s)...")
+        for (cticker, cdate), items in chain_groups.items():
+            items.sort()  # sort by _chain_position
+            for k in range(1, len(items)):
+                parent_id = items[k - 1][1]
+                child_id  = items[k][1]
+                conn.execute(
+                    "UPDATE trades SET rolled_from_id = ? WHERE id = ?",
+                    (parent_id, child_id)
+                )
+            conn.commit()
+            print(f"  0DTE chain: {cticker} {cdate} — {len(items)} IC(s) linked")
 
     conn.close()
 

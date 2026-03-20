@@ -890,9 +890,10 @@ impl AppState {
         }
     }
 
-    /// Ctrl+A: add a blank leg (Custom strategy only).
+    /// Ctrl+A: add a blank leg (Custom and PBWB strategies).
     pub fn add_leg_to_edit_fields(&mut self) {
-        if get_strategy_from_fields(&self.edit_fields) != models::StrategyType::Custom { return; }
+        let strat = get_strategy_from_fields(&self.edit_fields);
+        if strat != models::StrategyType::Custom && strat != models::StrategyType::PutBrokenWingButterfly { return; }
 
         let new_n = count_legs_in_fields(&self.edit_fields) + 1;
 
@@ -920,9 +921,10 @@ impl AppState {
         self.sync_edit_scroll();
     }
 
-    /// Ctrl+D: delete the leg whose field is currently focused (Custom only).
+    /// Ctrl+D: delete the leg whose field is currently focused (Custom and PBWB).
     pub fn delete_focused_leg_from_edit_fields(&mut self) {
-        if get_strategy_from_fields(&self.edit_fields) != models::StrategyType::Custom { return; }
+        let strat = get_strategy_from_fields(&self.edit_fields);
+        if strat != models::StrategyType::Custom && strat != models::StrategyType::PutBrokenWingButterfly { return; }
 
         let focused_label = self.edit_fields.get(self.edit_field_idx)
             .map(|f| f.label.clone())
@@ -1195,6 +1197,7 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::LongPutVertical,
         models::StrategyType::Zebra,
         models::StrategyType::Custom,
+        models::StrategyType::PutBrokenWingButterfly,
     ]
 }
 
@@ -1310,7 +1313,9 @@ fn build_leg_fields_for_strategy(legs: &[models::TradeLeg], strategy: &models::S
         }
     }
 
-    if *strategy == models::StrategyType::Custom {
+    if *strategy == models::StrategyType::Custom
+        || *strategy == models::StrategyType::PutBrokenWingButterfly
+    {
         let mut btn = EditField {
             label:          "+ Add Leg".to_string(),
             value:          String::new(),
@@ -2069,6 +2074,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // One-time migrations / seed data
     let _ = storage.migrate_zebra_type();
     let _ = storage.ensure_ratio_spread_playbook();
+    let _ = storage.ensure_put_bwb_playbook();
     let _ = storage.backfill_ivr_all_trades();
     let mut app = AppState::new(&storage);
 

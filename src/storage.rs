@@ -1015,6 +1015,55 @@ impl Storage {
         }
         Ok(count)
     }
+
+    /// Seed the Put Broken Wing Butterfly playbook if it does not already exist.
+    pub fn ensure_put_bwb_playbook(&self) -> Result<()> {
+        let count: i64 = self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM playbook_strategies WHERE name = 'Put Broken Wing Butterfly'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if count > 0 {
+            // Upgrade spread_type from 'custom' to 'put_broken_wing_butterfly' if needed
+            let _ = self.conn.execute(
+                "UPDATE playbook_strategies SET spread_type = 'put_broken_wing_butterfly' WHERE name = 'Put Broken Wing Butterfly' AND (spread_type IS NULL OR spread_type = 'custom')",
+                [],
+            );
+            return Ok(());
+        }
+        use crate::models::{EntryCriteria, PlaybookStrategy};
+        let ec = EntryCriteria {
+            min_ivr:            Some(30.0),
+            max_ivr:            Some(100.0),
+            min_delta:          None,
+            max_delta:          None,
+            min_dte:            Some(15),
+            max_dte:            Some(45),
+            max_allocation_pct: Some(5.0),
+            target_profit_pct:  Some(50.0),
+            management_rule:    Some("profit_target_50".to_string()),
+            min_pop:            Some(60.0),
+            vix_min:            None,
+            vix_max:            None,
+            max_bpr_pct:        None,
+            stop_loss_pct:      None,
+            profit_target_pct:  Some(50.0),
+            dte_exit:           Some(21),
+            when_to_avoid:      Some("Low IV environments; stocks without put skew".to_string()),
+            notes:              Some("Enter for a net credit. Wider short spread than long spread is required. Check put skew before entry.".to_string()),
+        };
+        let pb = PlaybookStrategy {
+            id:             0,
+            name:           "Put Broken Wing Butterfly".to_string(),
+            description:    Some(build_put_bwb_thesis().to_string()),
+            spread_type:    Some("put_broken_wing_butterfly".to_string()),
+            entry_criteria: Some(ec),
+        };
+        self.insert_playbook(&pb)?;
+        Ok(())
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1061,6 +1110,52 @@ Expiration:
 Takeaways:
 • We need extrinsic value close to zero before realizing intrinsic value on the long spread. Moving ITM too early can produce extrinsic losses even when inside the max-profit zone. Hold ratio spreads closer to expiration to avoid passing through the profit zone before hitting the loss zone.
 • For earnings plays, use the weekly cycle — we need the stock to move toward our spread AND extrinsic value to be near zero to capture the long spread's intrinsic value."
+}
+
+fn build_put_bwb_thesis() -> &'static str {
+    "\
+Omnidirectional, defined risk trade: long put spread with a wider OTM short put spread to finance the trade for a net credit. No risk to the upside; max profit at the short strikes.
+
+I. CORE MECHANICS:
+• Directional Assumption: Omnidirectional
+• IV Environment: High (benefits from elevated premiums)
+• Days to Expiration: 15 to 45
+• Probability of Profit: 60% to 80%
+
+II. SETUP:
+• 1. Buy 1 ATM/OTM put (long anchor)
+• 2. Sell 2 further OTM puts (short spread — the financing leg)
+• 3. Buy 1 much further OTM put (long wing — defines the risk)
+• Net Credit: The OTM short put spread is wider than the long put spread, generating a net credit.
+• Example: With XYZ at $100 — Buy 100 put, Sell two 97 puts, Buy 91 put for a small credit.
+
+III. FINANCIAL PROFILE:
+• Max Profit: Width of Long Spread + Credit Received (achieved when stock pins at short strikes)
+• Max Loss: Short Spread Width – Long Spread Width – Credit Received (defined, to the downside only)
+• Profit Target: 50% of Credit Received or 25% of Long Spread Width
+• Breakeven: Short Put Strike – (Long Spread Width + Credit Received)
+• No risk to the upside if entered for a credit.
+
+IV. THE GREEKS:
+• Delta: Long / Dynamic (benefits from downward move toward short strikes)
+• Vega: Short (benefits from IV contraction)
+• Theta: Long (benefits from time decay)
+• Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS:
+• Ideal: Stock moves toward the short strikes near expiration. The long put spread realizes max value, the short put spread expires worthless, and we keep the full credit. The spread can also profit on an upside move since it was entered for a credit.
+• Not Ideal: Spread moves fully ITM — max loss. If stock moves too quickly toward the spread, extrinsic value loss can erode profits since the bulk of the potential P&L requires extrinsic value to be low.
+• Remove Risk Early: If the spread moves further OTM, roll into a symmetrical butterfly for a debit less than the original credit — locks in a small guaranteed profit and removes initial risk.
+• If Long Spread Is ITM Near Max Value: Sell it out to retain that value, then either hold the credit spread or adjust the trade into an iron condor.
+• If Volatility Expands: Limited vega exposure due to defined risk, but could result in an extrinsic value marked loss.
+• If Volatility Contracts: Easier to \"fly off\" risk by rolling to a symmetrical butterfly for a debit less than the credit received.
+• If Partially ITM at Expiration: Sell for a profit if in the profit zone — long spread increases in value, short spread decreases.
+• If ITM at Expiration: At max loss. Close to avoid assignment.
+• If OTM at Expiration: All strikes expire worthless — keep the full credit as profit.
+
+Takeaways:
+• Put BWBs are ideal in products with put skew — skew lets us make them wider or collect a larger credit upfront.
+• BWBs don't appreciate in value much until close to expiration when extrinsic value approaches zero. Primary goal: remove risk early by rolling to a symmetrical butterfly if the spread moves further OTM for a debit less than the original credit — lock in a small profit and eliminate initial risk."
 }
 
 fn parse_dt(s: String) -> Option<DateTime<Utc>> {

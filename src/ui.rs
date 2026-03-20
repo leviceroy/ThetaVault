@@ -1474,7 +1474,7 @@ fn draw_trade_table(
 
         // ── Breakeven column ─────────────────────────────────────────────
         let be_str = if t.is_open() {
-            let bes = calculate_breakevens(&t.legs, t.spread_type());
+            let bes = calculate_breakevens(&t.legs, t.spread_type(), None);
             match bes.len() {
                 2 => format!("{:.0}/{:.0}", bes[0], bes[1]),
                 1 => format!("{:.0}", bes[0]),
@@ -2122,9 +2122,9 @@ fn draw_confirm_delete(
 
 fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chain: &[Trade], playbooks: &[crate::models::PlaybookStrategy], live_prices: &std::collections::HashMap<String, f64>, account_size: f64, max_pos_bpr_pct: f64) {
     let spread_type = trade.spread_type();
-    let max_profit  = calculate_max_profit(trade.credit_received, trade.quantity);
+    let max_profit  = crate::calculations::calculate_max_profit_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type);
     let max_loss    = calculate_max_loss_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type);
-    let breakevens  = calculate_breakevens(&trade.legs, spread_type);
+    let breakevens  = calculate_breakevens(&trade.legs, spread_type, Some(trade.credit_received));
     let leg_desc    = format_trade_description(&trade.legs, spread_type);
     let dte         = calculate_remaining_dte(&trade.expiration_date);
     let roc         = trade.pnl.and_then(|p| calculate_roc(p, &trade.legs, trade.credit_received, trade.quantity, spread_type, trade.bpr, trade.underlying_price));
@@ -3569,12 +3569,12 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
             &trade.legs, trade.credit_received, strike, rem_dte, iv,
         ) * trade.quantity as f64
     } else {
-        calculate_max_profit(trade.credit_received, trade.quantity)
+        crate::calculations::calculate_max_profit_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type)
     };
     let max_loss   = calculate_max_loss_from_legs(
         &trade.legs, trade.credit_received, trade.quantity, spread_type,
     );
-    let breakevens = calculate_breakevens(&trade.legs, spread_type);
+    let breakevens = calculate_breakevens(&trade.legs, spread_type, None);
     let pop        = trade.pop.unwrap_or_else(|| estimate_pop(trade));
 
     let profit_str = format!("+${:.0}", max_profit);
@@ -3918,6 +3918,7 @@ fn badge_color(spread_type: &str) -> Color {
         "long_diagonal_spread" | "short_diagonal_spread" => Color::Rgb(249, 115, 22),
         "long_call_vertical" | "long_put_vertical"    => C_CYAN,
         "zebra"                                        => Color::Rgb(168, 85, 247),  // purple
+        "put_broken_wing_butterfly"                    => Color::Rgb(251, 146, 60),  // warm orange
         _                                              => C_GRAY,
     }
 }

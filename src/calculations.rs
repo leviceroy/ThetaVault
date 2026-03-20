@@ -67,6 +67,29 @@ pub fn calculate_max_profit(credit_received: f64, quantity: i32) -> f64 {
     credit_received * 100.0 * quantity as f64
 }
 
+/// Max profit accounting for PBWB structure.
+/// For "put_broken_wing_butterfly": (long_width + credit) × 100 × qty
+/// For all other strategies: falls through to credit × 100 × qty.
+pub fn calculate_max_profit_from_legs(
+    legs: &[TradeLeg],
+    credit: f64,
+    quantity: i32,
+    spread_type: &str,
+) -> f64 {
+    if spread_type == "put_broken_wing_butterfly" {
+        let short_put = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
+        let mut long_puts: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongPut)
+            .collect();
+        long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sp), Some(atm)) = (short_put, long_puts.first()) {
+            let long_width = atm.strike - sp.strike;
+            return (long_width + credit) * 100.0 * quantity as f64;
+        }
+    }
+    calculate_max_profit(credit, quantity)
+}
+
 /// Max loss from legs — exact port of calculateMaxLossFromLegs()
 pub fn calculate_max_loss_from_legs(
     legs: &[TradeLeg],
@@ -119,6 +142,23 @@ pub fn calculate_max_loss_from_legs(
         let call_width = (short_call.unwrap().strike - long_call.unwrap().strike).abs();
         let max_width  = put_width.max(call_width);
         return (max_width - credit) * 100.0 * qty;
+    }
+
+    // Put Broken Wing Butterfly: (short_width - long_width - credit) * 100 * qty
+    // long_puts sorted descending by strike: [0]=ATM anchor, [1]=wing
+    if spread_type == "put_broken_wing_butterfly" {
+        let short_put = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
+        let mut long_puts: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongPut)
+            .collect();
+        long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sp), [atm, wing, ..]) = (short_put, long_puts.as_slice()) {
+            let long_width  = atm.strike - sp.strike;   // ATM long − short
+            let short_width = sp.strike - wing.strike;  // short − wing long
+            let ml = (short_width - long_width - credit) * 100.0 * qty;
+            if ml > 0.0 { return ml; }
+        }
+        return 0.0;
     }
 
     // Strangle / Straddle: undefined risk → 0 (signal undefined)
@@ -366,15 +406,18 @@ pub fn calculate_pnl_from_legs(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Calculate breakeven(s) for a trade — matches calculateBreakevens()
-pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str) -> Vec<f64> {
+/// `credit_override`: when Some, uses this value instead of computing from leg premiums.
+/// Pass `Some(trade.credit_received)` for PBWB; pass `None` for all other strategies.
+pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_override: Option<f64>) -> Vec<f64> {
     if legs.is_empty() {
         return vec![];
     }
 
-    // Net credit from legs
-    let credit: f64 = legs.iter().map(|l| {
+    // Net credit from legs (or caller-supplied override)
+    let computed: f64 = legs.iter().map(|l| {
         if l.leg_type.is_short() { l.premium } else { -l.premium }
     }).sum();
+    let credit = credit_override.unwrap_or(computed);
 
     let short_put  = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
     let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
@@ -398,6 +441,18 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str) -> Vec<f64> {
         // Calendar/diagonal: IV-dependent, cannot compute statically
         "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" => {
             return vec![];
+        }
+        "put_broken_wing_butterfly" => {
+            if let Some(sp) = short_put {
+                let mut long_puts: Vec<&TradeLeg> = legs.iter()
+                    .filter(|l| l.leg_type == LegType::LongPut)
+                    .collect();
+                long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+                if let Some(atm) = long_puts.first() {
+                    let long_width = atm.strike - sp.strike;
+                    return vec![sp.strike - (long_width + credit)];
+                }
+            }
         }
         _ => {}
     }
