@@ -2628,6 +2628,38 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         left_lines.push(Line::from(tgt));
     }
 
+    // Time to 50% profit estimate (open trades with theta)
+    if trade.is_open() {
+        if let Some(th) = trade.theta {
+            let th_abs = th.abs();
+            if th_abs > 0.0 && max_profit > 0.0 {
+                let qty = trade.quantity as f64;
+                let daily_theta = th_abs * 100.0 * qty;
+                let days_held = (Utc::now().date_naive() - trade.trade_date.date_naive()).num_days().max(0) as f64;
+                let est_pnl = daily_theta * days_held;
+                let profit_target = max_profit * 0.5;
+                if est_pnl >= profit_target {
+                    left_lines.push(Line::from(vec![
+                        Span::styled("  50% target: ", Style::default().fg(C_GRAY)),
+                        Span::styled("\u{2605} Already reached (est.)", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+                    ]));
+                } else {
+                    let days_rem = ((profit_target - est_pnl) / daily_theta).ceil() as i64;
+                    let target_date = Utc::now() + chrono::Duration::days(days_rem);
+                    let color = if days_rem <= dte as i64 { C_GREEN }
+                                else if days_rem <= dte as i64 * 2 { C_YELLOW }
+                                else { C_RED };
+                    left_lines.push(Line::from(vec![
+                        Span::styled("  50% in ~", Style::default().fg(C_GRAY)),
+                        Span::styled(format!("{}d", days_rem), Style::default().fg(color)),
+                        Span::styled(format!("  (est. by {})", target_date.format("%m/%d")), Style::default().fg(C_GRAY)),
+                        Span::styled("  \u{03b8} heuristic", Style::default().fg(Color::Rgb(100, 116, 139))),
+                    ]));
+                }
+            }
+        }
+    }
+
     // ── EXIT block (closed trades only) ──────────────────────────────────────
     if let Some(exit) = trade.exit_date {
         let held = (exit.date_naive() - trade.trade_date.date_naive()).num_days();

@@ -1233,7 +1233,17 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
 /// Evaluated at the 50%-profit threshold strike using Black-Scholes d2.
 pub fn calculate_p50(trade: &Trade) -> Option<f64> {
     let iv_raw = trade.implied_volatility.unwrap_or(0.0);
-    let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else { return None; };
+    let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else {
+        // For Strangle/Straddle without IV: fall back to POP-based estimate
+        // P50 ≈ POP × 0.85 (50%-profit target is harder to reach than POP)
+        match trade.strategy {
+            StrategyType::Strangle | StrategyType::Straddle => {
+                let pop = estimate_pop(trade);
+                return Some((pop * 0.85).clamp(5.0, 95.0));
+            }
+            _ => return None,
+        }
+    };
 
     let s = trade.underlying_price?;
     if s <= 0.0 { return None; }
