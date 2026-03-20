@@ -598,6 +598,30 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     } else {
         Line::from(vec![Span::styled(format!(" {} open", stats.open_trades), Style::default().fg(C_GRAY))])
     };
+    // M3: count open trades where short strike is within 3% of current price
+    let near_be_count = trades.iter()
+        .filter(|t| t.is_open())
+        .filter(|t| {
+            if let Some(u) = t.underlying_price {
+                let sp = t.legs.iter().find(|l| l.leg_type == LegType::ShortPut).map(|l| l.strike);
+                let sc = t.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike);
+                let otm = match (sp, sc) {
+                    (Some(p), Some(c)) => Some(((u - p) / u * 100.0).min((c - u) / u * 100.0)),
+                    (Some(p), None)    => Some((u - p) / u * 100.0),
+                    (None,    Some(c)) => Some((c - u) / u * 100.0),
+                    _                  => None,
+                };
+                otm.map_or(false, |o| o < 3.0)
+            } else {
+                false
+            }
+        })
+        .count();
+    let near_be_line = if near_be_count > 0 {
+        Line::from(vec![Span::styled(format!(" {} near BE", near_be_count), Style::default().fg(C_RED))])
+    } else {
+        Line::from("")
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -606,6 +630,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 Style::default().fg(pop_color).add_modifier(Modifier::BOLD),
             )]),
             p50_line,
+            near_be_line,
         ])
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
             .title(Span::styled(" POP ", Style::default().fg(C_CYAN)))),
