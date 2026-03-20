@@ -881,13 +881,18 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             let bar = "▓".repeat(filled) + &"░".repeat(sec_bar_max.saturating_sub(filled));
             let ticker_str = tickers.join(", ");
 
+            // Line 1: sector name + count
             risk_lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ({}) ", sector, tickers.len()),
+                    format!("  {} ({})", sector, tickers.len()),
                     Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(ticker_str, Style::default().fg(C_GRAY)),
             ]));
+            // Line 2: tickers indented below header
+            risk_lines.push(Line::from(vec![
+                Span::styled(format!("    {}", ticker_str), Style::default().fg(Color::Rgb(148, 163, 184))),
+            ]));
+            // Line 3: bar + $ + %
             let conc_color = if pct > 40.0 { C_RED } else if pct > 30.0 { C_YELLOW } else { C_BLUE };
             risk_lines.push(Line::from(vec![
                 Span::styled(format!("  {}", bar), Style::default().fg(conc_color)),
@@ -3277,7 +3282,7 @@ pub fn count_risk_lines(trades: &[crate::models::Trade], stats: &crate::models::
     if sector_set.is_empty() {
         count += 1;
     } else {
-        count += sector_set.len() * 2;
+        count += sector_set.len() * 3; // header + tickers line + bar line
     }
     let _ = stats; // stats param reserved for future use
     count
