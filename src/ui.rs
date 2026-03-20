@@ -2771,6 +2771,9 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                     as_line.push(Span::styled(format!("  @ ${:.2}/sh", cb), Style::default().fg(C_YELLOW)));
                 }
                 right_lines.push(Line::from(as_line));
+                right_lines.push(Line::from(vec![
+                    Span::styled(" Assigned — stock P&L not included", Style::default().fg(C_YELLOW)),
+                ]));
             }
 
             // Entry reason
