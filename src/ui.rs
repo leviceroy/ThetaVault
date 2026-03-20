@@ -627,6 +627,16 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 ));
             }
         }
+        // M2: Days since last trade entry
+        if let Some(last_date) = trades.iter().map(|t| t.trade_date.date_naive()).max() {
+            let days_ago = (Utc::now().date_naive() - last_date).num_days().max(0);
+            let entry_color = if days_ago > 14 { C_RED } else { Color::Rgb(148, 163, 184) };
+            footer_spans.push(Span::styled("    ", Style::default()));
+            footer_spans.push(Span::styled(
+                format!("Last entry: {}d ago", days_ago),
+                Style::default().fg(entry_color),
+            ));
+        }
         f.render_widget(Paragraph::new(vec![Line::from(footer_spans)]), rows[1]);
     }
 
