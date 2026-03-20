@@ -583,6 +583,8 @@ pub struct TickerBreakdown {
     pub avg_roc: f64,
     pub win_rate: f64,
     pub scratch_rate: f64,
+    pub avg_ivr: Option<f64>,
+    pub avg_entry_dte: Option<f64>,
 }
 
 #[derive(Debug, Clone)]

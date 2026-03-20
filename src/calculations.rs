@@ -1542,8 +1542,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     // per-strategy entry DTE accumulator
     let mut strategy_dte_map: HashMap<String, (f64, u32)> = HashMap::new();
 
-    // ticker_map: ticker -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
-    let mut ticker_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
+    // ticker_map: ticker -> (trades, wins, scratches, total_pnl, roc_sum, roc_count, ivr_sum, ivr_count, dte_sum, dte_count)
+    let mut ticker_map: HashMap<String, (usize, usize, usize, f64, f64, u32, f64, u32, f64, u32)> = HashMap::new();
 
     // credit/width ratio accumulator
     let mut cw_ratio_sum   = 0.0_f64;
@@ -1663,7 +1663,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         }
 
         // Ticker breakdown
-        let te = ticker_map.entry(t.ticker.clone()).or_insert((0, 0, 0, 0.0, 0.0, 0));
+        let te = ticker_map.entry(t.ticker.clone()).or_insert((0, 0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0, 0));
         te.0 += 1;
         if pnl.abs() < scratch_threshold { te.2 += 1; }
         else if pnl > 0.0 { te.1 += 1; }
@@ -1672,6 +1672,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             te.4 += roc;
             te.5 += 1;
         }
+        if let Some(ivr) = t.iv_rank { te.6 += ivr; te.7 += 1; }
+        if let Some(dte) = t.entry_dte { te.8 += dte as f64; te.9 += 1; }
 
         // Credit/width ratio (defined-risk strategies only)
         let cw = calculate_credit_width_ratio(t.credit_received, &t.legs, t.spread_type());
@@ -1817,7 +1819,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
 
     // Step 7a: ticker breakdown
-    let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, scratches, total_pnl, roc_sum, roc_count))| {
+    let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, scratches, total_pnl, roc_sum, roc_count, ivr_sum, ivr_count, dte_sum, dte_count))| {
         let tc = trades as f64;
         TickerBreakdown {
             ticker,
@@ -1829,6 +1831,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             avg_roc: if roc_count > 0 { roc_sum / roc_count as f64 } else { 0.0 },
             win_rate: if tc > 0.0 { wins as f64 / tc * 100.0 } else { 0.0 },
             scratch_rate: if tc > 0.0 { scratches as f64 / tc * 100.0 } else { 0.0 },
+            avg_ivr: if ivr_count > 0 { Some(ivr_sum / ivr_count as f64) } else { None },
+            avg_entry_dte: if dte_count > 0 { Some(dte_sum / dte_count as f64) } else { None },
         }
     }).collect();
     ticker_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));

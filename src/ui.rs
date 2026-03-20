@@ -4954,11 +4954,11 @@ fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool, sel
     }
 
     lines.push(Line::from(vec![Span::styled(
-        "  Ticker                   Trades  Win%    P&L        Avg P&L  Avg ROC",
+        "  Ticker                   Trades  Win%    P&L        Avg P&L  Avg ROC  AvgIVR  AvgDTE",
         Style::default().fg(C_GRAY),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        "  ─────────────────────────────────────────────────────────────────────",
+        "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
         Style::default().fg(C_DARK),
     )]));
 
@@ -4966,6 +4966,10 @@ fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool, sel
         let wr_color  = if tb.win_rate  >= 65.0 { C_GREEN } else if tb.win_rate  >= 50.0 { C_YELLOW } else { C_RED };
         let pnl_color = if tb.total_pnl >= 0.0  { C_GREEN } else { C_RED };
         let roc_color = if tb.avg_roc   >= 5.0  { C_GREEN } else if tb.avg_roc   >= 0.0  { C_YELLOW } else { C_RED };
+        let ivr_str   = tb.avg_ivr.map_or("   —  ".to_string(), |v| format!("{:>5.0}  ", v));
+        let ivr_color = tb.avg_ivr.map_or(C_GRAY, |v| if v >= 50.0 { C_GREEN } else if v >= 30.0 { C_YELLOW } else { C_GRAY });
+        let dte_str   = tb.avg_entry_dte.map_or("  —".to_string(), |v| format!("{:>4.0}d", v));
+        let dte_color = tb.avg_entry_dte.map_or(C_GRAY, |v| if v >= 30.0 && v <= 60.0 { C_GREEN } else { C_YELLOW });
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(format!("{:<24}", tb.ticker), Style::default().fg(C_CYAN)),
@@ -4978,6 +4982,9 @@ fn perf_ticker_lines(perf: &PerformanceStats, width: usize, collapsed: bool, sel
             Span::styled(format!("{:>+8.0}", tb.avg_pnl), Style::default().fg(pnl_color)),
             Span::raw("  "),
             Span::styled(format!("{:>7.1}%", tb.avg_roc), Style::default().fg(roc_color)),
+            Span::raw("  "),
+            Span::styled(ivr_str, Style::default().fg(ivr_color)),
+            Span::styled(dte_str, Style::default().fg(dte_color)),
         ]));
     }
     lines
