@@ -886,6 +886,41 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         ]),
     ];
 
+    // ── H7: Open Risk Summary ──────────────────────────────────────────────
+    {
+        let mut def_max_loss = 0.0_f64;
+        let mut undef_bpr    = 0.0_f64;
+        let mut undef_count  = 0usize;
+        for t in trades.iter().filter(|t| t.is_open()) {
+            let ml = calculate_max_loss_from_legs(&t.legs, t.credit_received, t.quantity, t.spread_type());
+            if ml > 0.0 {
+                def_max_loss += ml;
+            } else if let Some(b) = t.bpr {
+                undef_bpr += b;
+                undef_count += 1;
+            }
+        }
+        if def_max_loss > 0.0 || undef_count > 0 {
+            risk_lines.push(Line::from(""));
+            if def_max_loss > 0.0 {
+                let pct = if stats.account_size > 0.0 { def_max_loss / stats.account_size * 100.0 } else { 0.0 };
+                let ml_color = if pct > 20.0 { C_RED } else if pct > 10.0 { C_YELLOW } else { C_GREEN };
+                risk_lines.push(Line::from(vec![
+                    Span::styled("  Def max loss  ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("${:.0}", def_max_loss), Style::default().fg(ml_color)),
+                    Span::styled(format!(" ({:.1}%)", pct), Style::default().fg(ml_color)),
+                ]));
+            }
+            if undef_count > 0 {
+                risk_lines.push(Line::from(vec![
+                    Span::styled("  Undef BPR     ", Style::default().fg(C_GRAY)),
+                    Span::styled(format!("${:.0}", undef_bpr), Style::default().fg(C_YELLOW)),
+                    Span::styled(format!(" ({} pos)", undef_count), Style::default().fg(C_GRAY)),
+                ]));
+            }
+        }
+    }
+
     // ── Sector Concentration (open trades only) ───────────────────────────
     let total_open_bpr: f64 = trades.iter()
         .filter(|t| t.is_open())
@@ -3356,8 +3391,9 @@ pub fn perf_header_scroll_for_cursor(
 pub fn count_risk_lines(trades: &[crate::models::Trade], stats: &crate::models::PortfolioStats) -> usize {
     // Fixed lines: blank + Undefined(2) + Defined(2) + blank + Target + Drift + WinRate + Theta/day
     // + Theta/NetLiq + BWD + Theta/Delta + MaxDD + AvgROC = ~14 fixed lines
+    // + Open Risk Summary: blank + up to 2 lines (def max loss + undef BPR) = ~3 extra
     // + Sector section: divider(blank+rule+header+blank=4) + per-sector lines + empty fallback
-    let mut count: usize = 14;
+    let mut count: usize = 17; // 14 base + 3 for Open Risk Summary block
     // Build sector -> ticker count map to estimate wrapped ticker lines
     let mut sector_tickers: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for t in trades.iter().filter(|t| t.is_open()) {
