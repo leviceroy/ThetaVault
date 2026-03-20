@@ -539,6 +539,7 @@ impl AppState {
                     roll_count: metrics.roll_count as i32,
                     net_credit: metrics.net_credit,
                     chain_pnl,
+                    chain_commissions: metrics.total_commissions,
                     is_open,
                     entry_date: root_trade.trade_date,
                 });

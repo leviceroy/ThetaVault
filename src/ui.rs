@@ -1501,13 +1501,19 @@ fn draw_trade_table(
                 .style(Style::default().bg(Color::Rgb(10, 30, 45)))
                 .height(1)
             }
-            VisualRowKind::ChainHeader { strategy, roll_count, net_credit, chain_pnl, is_open, entry_date, .. } => {
+            VisualRowKind::ChainHeader { strategy, roll_count, net_credit, chain_pnl, chain_commissions, is_open, entry_date, .. } => {
                 let status_dot = if *is_open { "●" } else if *chain_pnl > 0.0 { "✓" } else { "✗" };
                 let status_color = if *is_open { C_YELLOW } else if *chain_pnl > 0.0 { C_GREEN } else { C_RED };
-                let pnl_str = if *is_open {
-                    format!("P&L: —    {} OPEN", status_dot)
+                let net_adj = net_credit - chain_commissions;
+                let comm_str = if *chain_commissions > 0.0 {
+                    format!("  (comm: -${:.0})", chain_commissions)
                 } else {
-                    format!("P&L: {:+.0}    {} CLSD", chain_pnl, status_dot)
+                    String::new()
+                };
+                let pnl_str = if *is_open {
+                    format!("Net P&L: —{}    {} OPEN", comm_str, status_dot)
+                } else {
+                    format!("Net P&L: {:+.0}{}    {} CLSD", net_adj, comm_str, status_dot)
                 };
                 let entry = entry_date.format("%b %d").to_string();
                 let label = format!(

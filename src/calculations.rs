@@ -14,13 +14,15 @@ pub struct CampaignMetrics {
     pub total_debit: f64,
     pub roll_count: usize,
     pub net_credit: f64,
+    pub total_commissions: f64,
 }
 
 pub fn calculate_campaign_metrics(chain: &[Trade]) -> CampaignMetrics {
     let mut total_pnl = 0.0;
     let mut total_credit = 0.0;
     let mut total_debit = 0.0;
-    
+    let mut total_commissions = 0.0;
+
     for t in chain {
         if let Some(pnl) = t.pnl {
             total_pnl += pnl;
@@ -29,14 +31,18 @@ pub fn calculate_campaign_metrics(chain: &[Trade]) -> CampaignMetrics {
         if let Some(dp) = t.debit_paid {
             total_debit += dp;
         }
+        if let Some(comm) = t.commission {
+            total_commissions += comm;
+        }
     }
-    
+
     CampaignMetrics {
         total_pnl,
         total_credit,
         total_debit,
         roll_count: chain.len().saturating_sub(1),
-        net_credit: total_credit - total_debit, // net_credit = credits collected minus debits paid on rolls
+        net_credit: total_credit - total_debit,
+        total_commissions,
     }
 }
 
