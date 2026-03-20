@@ -4345,18 +4345,24 @@ fn perf_health_lines(stats: &PortfolioStats, width: usize, collapsed: bool, sele
             let move_str = format!("  {:>5.0}%", s.spy_move_pct);
             let pnl_str = format!("   {:>12}", fmt_signed_commas(s.total_pnl));
             let pct_str = format!("   {:>+7.1}%", s.pct_of_account);
-            let (worst_str, worst_color) = if s.worst_ticker == "—" {
-                ("    —".to_string(), C_GRAY)
+            let worst_color = if s.worst_pnl < 0.0 { C_RED } else { C_GREEN };
+            let worst_spans: Vec<Span> = if s.worst_ticker == "—" {
+                vec![Span::styled("    —", Style::default().fg(C_GRAY))]
             } else {
-                (format!("    {} ({})", s.worst_ticker, fmt_signed_commas(s.worst_pnl)),
-                 if s.worst_pnl < 0.0 { C_RED } else { C_GREEN })
+                vec![
+                    Span::styled(format!("    {}", s.worst_ticker),
+                        Style::default().fg(worst_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" ({})", fmt_signed_commas(s.worst_pnl)),
+                        Style::default().fg(worst_color)),
+                ]
             };
-            lines.push(Line::from(vec![
+            let mut row_spans = vec![
                 Span::styled(move_str, Style::default().fg(C_WHITE)),
                 Span::styled(pnl_str, Style::default().fg(pnl_color)),
                 Span::styled(pct_str, Style::default().fg(pct_color)),
-                Span::styled(worst_str, Style::default().fg(worst_color)),
-            ]));
+            ];
+            row_spans.extend(worst_spans);
+            lines.push(Line::from(row_spans));
         }
         lines.push(Line::from(vec![Span::styled(
             format!("  Expiry payoff · beta-adjusted · {}/{} positions priced",
