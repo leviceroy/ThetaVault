@@ -234,10 +234,11 @@ def estimate_trade_greeks(trade: Dict, ticker_prices: Dict[str, float],
         ot = 'call' if is_call else 'put'
         g = option_greeks(S, leg['strike'], T, r, sigma, ot)
         sign = -1 if is_short else 1
-        pos_delta += sign * g['delta']
-        pos_theta += sign * g['theta']
-        pos_gamma += sign * g['gamma']
-        pos_vega += sign * g['vega']
+        leg_qty = leg.get('quantity') or 1
+        pos_delta += sign * leg_qty * g['delta']
+        pos_theta += sign * leg_qty * g['theta']
+        pos_gamma += sign * leg_qty * g['gamma']
+        pos_vega  += sign * leg_qty * g['vega']
 
     result: Dict[str, Any] = {
         'delta': round(pos_delta, 4),
@@ -2460,14 +2461,133 @@ def cleanup_bad_rolls(conn: sqlite3.Connection) -> None:
     print(f"  Re-cleared oc| fingerprints for ICs {bad_ic_ids} so they can re-match on next import.")
 
 
+# ---------- Greeks Backfill ----------
+
+def backfill_greeks(conn, force: bool = False) -> int:
+    """
+    Backfill Greeks + entry conditions for DB trades missing delta (or all when --force).
+    Reads legs_json + trade metadata, calls estimate_trade_greeks, updates the row.
+    Returns number of trades updated.
+    """
+    if force:
+        rows = conn.execute(
+            "SELECT id, ticker, strategy, legs_json, trade_date, expiration_date, exit_date "
+            "FROM trades ORDER BY trade_date"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, ticker, strategy, legs_json, trade_date, expiration_date, exit_date "
+            "FROM trades WHERE delta IS NULL OR underlying_price IS NULL ORDER BY trade_date"
+        ).fetchall()
+
+    if not rows:
+        print("  No trades need backfilling.")
+        return 0
+
+    print(f"  Backfilling {len(rows)} trade(s)...")
+
+    # Group by ticker to batch Yahoo Finance fetches
+    by_ticker: Dict[str, list] = defaultdict(list)
+    for row in rows:
+        tid, ticker, strategy, legs_json_str, trade_date, exp_date, exit_date = row
+        legs = json.loads(legs_json_str) if legs_json_str else []
+        trade_dict = {
+            'id': tid,
+            'ticker': ticker,
+            'spreadType': strategy,
+            'legs': legs,
+            'tradeDate': trade_date,
+            'expirationDate': exp_date,
+        }
+        if exit_date:
+            trade_dict['exitTime'] = exit_date
+        by_ticker[ticker].append(trade_dict)
+
+    # Fetch VIX for full date range
+    all_dates = [r[4][:10] for r in rows]
+    vix_start, vix_end = min(all_dates), max(all_dates)
+    vix_prices = fetch_historical_prices('^VIX', vix_start, vix_end)
+    if vix_prices:
+        print(f"  Fetched ^VIX: {vix_start} to {vix_end}")
+
+    _YAHOO_TICKER_MAP = {'SPXW': '^SPX', 'NDXP': '^NDX', 'SPX': '^SPX'}
+    updated = 0
+
+    for ticker, trade_dicts in by_ticker.items():
+        dates = [t['tradeDate'][:10] for t in trade_dicts]
+        if any(t.get('exitTime') for t in trade_dicts):
+            dates += [t['exitTime'][:10] for t in trade_dicts if t.get('exitTime')]
+        start, end = min(dates), max(dates)
+        yahoo_ticker = _YAHOO_TICKER_MAP.get(ticker, ticker)
+        prices = fetch_historical_prices(yahoo_ticker, start, end)
+
+        for trade in trade_dicts:
+            greeks = estimate_trade_greeks(trade, prices, vix_prices)
+            if not greeks:
+                print(f"    SKIP id={trade['id']} {ticker} — could not estimate Greeks")
+                continue
+
+            # POP estimate from delta
+            pop_val = greeks.get('pop')
+            if pop_val is None and greeks.get('delta') is not None:
+                pop_val = (1.0 - 2.0 * abs(greeks['delta'])) * 100.0
+                pop_val = max(min(pop_val, 95.0), 10.0)
+
+            # Underlying at close
+            underlying_at_close = None
+            if trade.get('exitTime'):
+                underlying_at_close = get_price_on_date(prices, trade['exitTime'][:10])
+
+            conn.execute(
+                """UPDATE trades SET
+                    delta = ?, theta = ?, gamma = ?, vega = ?, pop = ?,
+                    underlying_price = ?, implied_volatility = ?,
+                    vix_at_entry = ?, underlying_price_at_close = ?
+                   WHERE id = ?""",
+                (
+                    greeks.get('delta'),
+                    greeks.get('theta'),
+                    greeks.get('gamma'),
+                    greeks.get('vega'),
+                    pop_val,
+                    greeks.get('underlyingPrice'),
+                    greeks.get('impliedVolatility'),
+                    greeks.get('vixAtEntry'),
+                    underlying_at_close,
+                    trade['id'],
+                )
+            )
+            conn.commit()
+            print(f"    Updated id={trade['id']} {ticker}: δ={greeks.get('delta'):.4f}  θ={greeks.get('theta'):.4f}  S={greeks.get('underlyingPrice')}  VIX={greeks.get('vixAtEntry')}")
+            updated += 1
+
+    return updated
+
+
 # ---------- Main ----------
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 scripts/import_schwab_rust.py /path/to/schwab.json [trades.db] [--delete-existing]")
+        print("       python3 scripts/import_schwab_rust.py --backfill [trades.db] [--force]")
         sys.exit(1)
 
     args = sys.argv[1:]
+
+    # --backfill mode: no JSON file needed
+    if args[0] == '--backfill':
+        db_path = next((a for a in args[1:] if not a.startswith('--')), 'trades.db')
+        force   = '--force' in args
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        migrate_db(conn)
+        print(f"Connected to {db_path}")
+        print(f"\nBackfilling Greeks{'  (--force: all trades)' if force else '  (missing only)'}...")
+        n = backfill_greeks(conn, force=force)
+        print(f"\nDone. Updated {n} trade(s).")
+        conn.close()
+        return
+
     json_path       = args[0]
     db_path         = next((a for a in args[1:] if not a.startswith('--')), 'trades.db')
     delete_existing = '--delete-existing' in args
