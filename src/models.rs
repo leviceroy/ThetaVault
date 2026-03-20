@@ -591,6 +591,7 @@ pub struct MonthlyPnl {
     pub month: u32,
     pub pnl: f64,
     pub trade_count: usize,
+    pub win_count: usize,
 }
 
 /// Item 4: Time-in-Trade histogram bucket

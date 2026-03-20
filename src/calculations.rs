@@ -1522,8 +1522,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     // daily_pnl_map: NaiveDate -> total pnl on that date
     let mut daily_pnl_map: HashMap<chrono::NaiveDate, f64> = HashMap::new();
 
-    // monthly_map: (year, month) -> (pnl, trade_count)
-    let mut monthly_map: HashMap<(i32, u32), (f64, usize)> = HashMap::new();
+    // monthly_map: (year, month) -> (pnl, trade_count, win_count)
+    let mut monthly_map: HashMap<(i32, u32), (f64, usize, usize)> = HashMap::new();
 
     // strategy_map: StrategyType -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
     let mut strategy_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
@@ -1620,9 +1620,10 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 
         // Monthly P&L
         let month_key = (exit_date_naive.year(), exit_date_naive.month());
-        let entry = monthly_map.entry(month_key).or_insert((0.0, 0));
+        let entry = monthly_map.entry(month_key).or_insert((0.0, 0, 0));
         entry.0 += pnl;
         entry.1 += 1;
+        if pnl > 0.0 { entry.2 += 1; }
 
         // Strategy breakdown
         let strat_key = format!("{:?}", t.strategy);
@@ -1823,8 +1824,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     ticker_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
 
     // Step 7: monthly P&L
-    let mut monthly_pnl: Vec<MonthlyPnl> = monthly_map.into_iter().map(|((year, month), (pnl, trade_count))| {
-        MonthlyPnl { year, month, pnl, trade_count }
+    let mut monthly_pnl: Vec<MonthlyPnl> = monthly_map.into_iter().map(|((year, month), (pnl, trade_count, win_count))| {
+        MonthlyPnl { year, month, pnl, trade_count, win_count }
     }).collect();
     monthly_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
 

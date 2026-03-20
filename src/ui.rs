@@ -5369,16 +5369,18 @@ fn draw_performance(
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
         f.render_widget(para, content_area);
     } else if perf_subtab == 1 {
-        // CHARTS: Account Growth + Monthly P&L Trend + Drawdown sparkline
+        // CHARTS: Account Growth + Monthly P&L Trend + Drawdown sparkline + Win Rate Trend
         let chart_h: u16 = if collapsed[3] { 3 } else { 12 };
         let monthly_chart_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 7 } else { 0 };
         let dd_section_h: u16 = if !collapsed[3] && perf.balance_history.len() > 2 { 5 } else { 0 };
+        let wr_trend_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 5 } else { 0 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(chart_h),
                 Constraint::Length(monthly_chart_h),
                 Constraint::Length(dd_section_h),
+                Constraint::Length(wr_trend_h),
                 Constraint::Min(0),
             ])
             .split(content_area);
@@ -5420,6 +5422,46 @@ fn draw_performance(
                 ]),
             ];
             f.render_widget(Paragraph::new(dd_lines), chunks[2]);
+        }
+
+        // H5: Monthly win rate trend sparkline
+        if !collapsed[3] && perf.monthly_pnl.len() >= 3 {
+            let spark_chars = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+            let wr_series: Vec<f64> = perf.monthly_pnl.iter()
+                .filter(|m| m.trade_count >= 2)
+                .map(|m| m.win_count as f64 / m.trade_count as f64 * 100.0)
+                .collect();
+            if wr_series.len() >= 2 {
+                let latest = *wr_series.last().unwrap_or(&0.0);
+                let wr_color = if latest >= 60.0 { C_GREEN } else if latest >= 45.0 { C_YELLOW } else { C_RED };
+                let trend_color = if wr_series.len() >= 3 {
+                    let recent_avg = wr_series[wr_series.len().saturating_sub(3)..].iter().sum::<f64>() / 3.0_f64.min(wr_series.len() as f64);
+                    let older_avg  = wr_series[..wr_series.len().saturating_sub(3)].iter().cloned().sum::<f64>()
+                        / (wr_series.len().saturating_sub(3)).max(1) as f64;
+                    if wr_series.len() < 4 { wr_color } else if recent_avg >= older_avg { C_GREEN } else { C_RED }
+                } else { wr_color };
+                let spark: String = wr_series.iter().map(|&v| {
+                    let norm = (v / 100.0).clamp(0.0, 1.0);
+                    spark_chars[(norm * 7.0).round() as usize]
+                }).collect();
+                let wr_lines = vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("  Win Rate Trend ", Style::default().fg(C_GRAY)),
+                        Span::styled(format!("(latest: {:.0}%)", latest), Style::default().fg(wr_color)),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(spark, Style::default().fg(trend_color)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("  {:.0}%", wr_series.first().copied().unwrap_or(0.0)), Style::default().fg(C_GRAY)),
+                        Span::styled(" ←older   newer→ ", Style::default().fg(Color::Rgb(148, 163, 184))),
+                        Span::styled(format!("{:.0}%", latest), Style::default().fg(wr_color)),
+                    ]),
+                ];
+                f.render_widget(Paragraph::new(wr_lines), chunks[3]);
+            }
         }
     } else {
         // ANALYTICS: all sections scrollable
