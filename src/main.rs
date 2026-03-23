@@ -80,7 +80,7 @@ pub struct AppState {
     pub journal_chain_view: bool,
 
     // Column visibility for trade table (21 columns — last is EM)
-    pub col_visibility:  [bool; 21],
+    pub col_visibility:  [bool; 22],
     pub show_col_picker: bool,
 
     // Playbook auto-match candidates (when multiple match on save)
@@ -374,6 +374,10 @@ impl AppState {
         );
         if !self.alerts.is_empty() && self.actions_list_state.selected().is_none() {
             self.actions_list_state.select(Some(0));
+        }
+        // If Charts subtab is currently visible in Tauri, refresh the payload
+        if self.selected_tab == 5 && self.perf_subtab == 1 {
+            self.start_perf_charts();
         }
 
         let selected = self.table_state.selected().unwrap_or(0);
@@ -840,6 +844,40 @@ impl AppState {
             let _ = std::io::stdout().lock().write_all(seq.as_bytes());
             let _ = std::io::stdout().lock().flush();
         }
+    }
+
+    /// Emit OSC 9998 payload so Tauri right panel renders performance charts as SVG.
+    /// No-op when running standalone (xterm ignores unknown OSC sequences).
+    pub fn start_perf_charts(&self) {
+        if !self.under_tauri { return; }
+        let payload = models::PerfChartPayload {
+            account_size:       self.account_size,
+            balance_history:    self.perf_stats.balance_history.clone(),
+            unrealized_history: self.perf_stats.unrealized_history.clone(),
+            peak_history:       self.perf_stats.peak_history.clone(),
+            monthly_pnl:        self.perf_stats.monthly_pnl.clone(),
+            rolling_win_rate:   self.perf_stats.rolling_win_rate.clone(),
+            dte_roc_scatter:    self.perf_stats.dte_roc_scatter.iter()
+                .map(|(d, r, s)| (*d, *r, s.label().to_string()))
+                .collect(),
+            bpr_history:        self.perf_stats.bpr_history.clone(),
+            sector_trends:      self.perf_stats.sector_trends.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&payload) {
+            use std::io::Write;
+            let seq = format!("\x1b]9998;THETAVAULT_PERF:{}\x07", json);
+            let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+            let _ = std::io::stdout().lock().flush();
+        }
+    }
+
+    /// Send OSC 9998 close signal so Tauri hides the performance chart panel.
+    pub fn stop_perf_charts(&self) {
+        if !self.under_tauri { return; }
+        use std::io::Write;
+        let seq = "\x1b]9998;THETAVAULT_PERF_CLOSE\x07";
+        let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+        let _ = std::io::stdout().lock().flush();
     }
 
     pub fn edit_key_char(&mut self, c: char) {
@@ -1518,6 +1556,11 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     if let Some(d) = parse_date_field(fields, "Trade Date")    { t.trade_date = d; }
     if let Some(d) = parse_date_field(fields, "Expiration")    { t.expiration_date = d; }
     t.back_month_expiration = parse_date_field(fields, "Back Month Exp");
+    // Auto-calculate entry_dte from trade_date→expiration (only if blank; preserves manual overrides)
+    if t.entry_dte.is_none() && t.trade_date < t.expiration_date {
+        let days = (t.expiration_date.date_naive() - t.trade_date.date_naive()).num_days().max(0) as i32;
+        t.entry_dte = Some(days);
+    }
 
     // Read underlying price early — needed for BPR calculation
     let underlying_for_bpr = fields.iter().find(|f| f.label == "Underlying $")
@@ -1570,7 +1613,9 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     // ── Live Greek Estimation (if blank)
     if t.delta.is_none() && t.underlying_price.is_some() && t.implied_volatility.is_some() {
         let up = t.underlying_price.unwrap();
-        let iv = t.implied_volatility.unwrap() / 100.0; // Assume user entered whole number (e.g. 25.0)
+        // Normalize IV: user may enter as whole-number % (25.0) or decimal (0.25)
+        let iv_raw = t.implied_volatility.unwrap();
+        let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else { iv_raw };
         let dte = (t.expiration_date.date_naive() - t.trade_date.date_naive()).num_days().max(1) as i32;
         
         let mut d_total = 0.0;
@@ -1731,6 +1776,15 @@ fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     if let Some(exit) = t.exit_date {
         let dte = (t.expiration_date.date_naive() - exit.date_naive()).num_days().max(0) as i32;
         t.dte_at_close = Some(dte);
+    }
+
+    // Auto-set closed_at_target: true when P&L ≥ target_profit_pct% of max profit
+    if let Some(pnl) = t.pnl {
+        let max_profit = t.credit_received * 100.0 * t.quantity as f64;
+        let target_pct = t.target_profit_pct.unwrap_or(50.0);
+        if max_profit > 0.0 {
+            t.closed_at_target = pnl >= max_profit * (target_pct / 100.0);
+        }
     }
 
     // Auto-grade if no grade set
@@ -2029,8 +2083,8 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 21] {
-    let mut vis = [true; 21];
+fn parse_col_visibility(s: &str) -> [bool; 22] {
+    let mut vis = [true; 22];
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -2046,18 +2100,18 @@ fn parse_col_visibility(s: &str) -> [bool; 21] {
     } else {
         chars
     };
-    // Pad to 21 with col 19 (OTM%) and col 20 (EM) defaulting to ON
+    // Pad to 22 with col 21 (Mgmt) defaulting to ON
     let mut padded = padded;
-    while padded.len() < 21 {
+    while padded.len() < 22 {
         padded.push('1');
     }
-    for (i, ch) in padded.iter().take(21).enumerate() {
+    for (i, ch) in padded.iter().take(22).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 21]) -> String {
+fn col_visibility_to_string(vis: &[bool; 22]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
@@ -2849,6 +2903,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 // Tab navigation
                 KeyCode::Tab => {
+                    if app.selected_tab == 5 && app.perf_subtab == 1 { app.stop_perf_charts(); }
                     app.selected_tab = (app.selected_tab + 1) % 6;
                     app.show_detail  = false;
                     app.detail_scroll = 0;
@@ -2867,6 +2922,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.dash_panel_focus = 1;
                 }
                 KeyCode::BackTab => {
+                    if app.selected_tab == 5 && app.perf_subtab == 1 { app.stop_perf_charts(); }
                     app.selected_tab = if app.selected_tab == 0 { 5 } else { app.selected_tab - 1 };
                     app.show_detail  = false;
                     app.detail_scroll = 0;
@@ -2906,19 +2962,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Performance sub-tab navigation
                 KeyCode::Char('[') if app.selected_tab == 5 => {
                     if app.perf_subtab > 0 {
+                        let prev = app.perf_subtab;
                         app.perf_subtab -= 1;
                         app.perf_overview_scroll = 0;
                         app.perf_analytics_scroll = 0;
                         app.perf_section_cursor = 0;
                         app.perf_scroll_dirty = false;
+                        if prev == 1 { app.stop_perf_charts(); }
+                        if app.perf_subtab == 1 { app.start_perf_charts(); }
                     }
                 }
                 KeyCode::Char(']') | KeyCode::Char('/') if app.selected_tab == 5 => {
+                    let prev = app.perf_subtab;
                     app.perf_subtab = (app.perf_subtab + 1) % 3;
                     app.perf_overview_scroll = 0;
                     app.perf_analytics_scroll = 0;
                     app.perf_section_cursor = 0;
                     app.perf_scroll_dirty = false;
+                    if prev == 1 { app.stop_perf_charts(); }
+                    if app.perf_subtab == 1 { app.start_perf_charts(); }
                 }
 
                 // Performance section collapse/expand (keys 1-9 + 0 for section 10, context-sensitive)

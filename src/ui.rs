@@ -99,7 +99,7 @@ pub fn draw_ui(
     live_prices:             &std::collections::HashMap<String, f64>,
     perf_collapsed:          &[bool; 14],
     perf_section_cursor:     usize,
-    col_visibility:          &[bool; 21],
+    col_visibility:          &[bool; 22],
     show_col_picker:         bool,
     journal_chain_view:      bool,
     default_profit_target_pct: f64,
@@ -174,7 +174,7 @@ pub fn draw_ui(
         ),
         3 => draw_daily_actions(f, chunks[1], alerts, actions_list_state, collapsed_action_kinds, pulse_on, stats),
         4 => draw_admin(f, chunks[1], app_mode, admin_fields, admin_field_idx, admin_scroll, stats, max_heat_pct, stored_heat_ceiling, max_pos_bpr_pct, default_mgmt_dte, export_status),
-        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 14], perf_section_cursor),
+        5 => draw_performance(f, chunks[1], stats, perf_stats, perf_subtab, perf_overview_scroll, perf_analytics_scroll, spy_monthly, perf_collapsed as &[bool; 14], perf_section_cursor, under_tauri),
         _ => {}
     }
 
@@ -613,6 +613,20 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     } else {
         Line::from("")
     };
+    let kelly_heat_line = if let Some(kelly) = perf_stats.kelly_fraction {
+        if kelly > 0.0 {
+            let half_k = kelly / 2.0;
+            let kc = if kelly <= max_heat_pct { C_GREEN } else if kelly <= max_heat_pct * 2.0 { C_YELLOW } else { C_RED };
+            Line::from(vec![Span::styled(
+                format!(" K:{:.1}% \u{00bd}K:{:.1}%", kelly, half_k),
+                Style::default().fg(kc),
+            )])
+        } else {
+            Line::from(vec![Span::styled(" K: neg edge", Style::default().fg(C_RED))])
+        }
+    } else {
+        Line::from("")
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -626,6 +640,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             Line::from(vec![Span::styled(per_trade_str, Style::default().fg(C_GRAY))]),
             room_line,
+            kelly_heat_line,
         ])
         .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
@@ -1365,7 +1380,7 @@ fn draw_journal(
     live_prices:      &std::collections::HashMap<String, f64>,
     under_tauri:      bool,
     playbooks:        &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 21],
+    col_visibility:     &[bool; 22],
     show_col_picker:    bool,
     journal_chain_view: bool,
     account_size:       f64,
@@ -1554,13 +1569,13 @@ fn draw_trade_table(
     state:              &mut TableState,
     live_prices:        &std::collections::HashMap<String, f64>,
     playbooks:          &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 21],
+    col_visibility:     &[bool; 22],
     journal_chain_view: bool,
     account_size:       f64,
     max_pos_bpr_pct:    f64,
     default_profit_target_pct: f64,
 ) {
-    const COL_NAMES: [&str; 21] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM"];
+    const COL_NAMES: [&str; 22] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt"];
 
     let header = Row::new(
         COL_NAMES.iter().enumerate()
@@ -1847,7 +1862,7 @@ fn draw_trade_table(
                         let pbwb_invalid = t.spread_type() == "put_broken_wing_butterfly"
                             && calculate_max_loss_from_legs(&t.legs, t.credit_received, t.quantity, t.spread_type()) <= 0.0;
                         if pbwb_invalid {
-                            Cell::from("chk str").style(Style::default().fg(C_YELLOW))
+                            Cell::from("chk strikes").style(Style::default().fg(C_YELLOW))
                         } else {
                             Cell::from(format!("${:.0}", max_profit)).style(Style::default().fg(C_GRAY))
                         }
@@ -1957,6 +1972,24 @@ fn draw_trade_table(
                             Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
                         }
                     },
+                    // Col 21: Mgmt — management trigger date (open trades, 21 DTE target)
+                    {
+                        if t.is_open() {
+                            if let Some(entry_dte) = t.entry_dte {
+                                let days_to_mgmt_date = (entry_dte - 21).max(0);
+                                let mgmt_date = t.trade_date.date_naive() + chrono::Duration::days(days_to_mgmt_date as i64);
+                                let days_remaining = (mgmt_date - today).num_days();
+                                let mgmt_color = if days_remaining <= 0 { C_RED }
+                                    else if days_remaining <= 5 { C_YELLOW }
+                                    else { C_GRAY };
+                                Cell::from(mgmt_date.format("%m/%d").to_string()).style(Style::default().fg(mgmt_color))
+                            } else {
+                                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+                            }
+                        } else {
+                            Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
+                        }
+                    },
                 ];
                 let visible_cells: Vec<Cell> = all_cells.into_iter().enumerate()
                     .filter(|(i, _)| col_visibility[*i])
@@ -1967,7 +2000,7 @@ fn draw_trade_table(
         }
     }).collect();
 
-    const COL_WIDTHS: [u16; 21] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7];
+    const COL_WIDTHS: [u16; 22] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7, 6];
     let visible_widths: Vec<Constraint> = COL_WIDTHS.iter().enumerate()
         .filter(|(i, _)| col_visibility[*i])
         .map(|(_, &w)| Constraint::Length(w))
@@ -3944,7 +3977,7 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 
 // ── Column visibility picker popup (L9) ──────────────────────────────────────
 
-fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 21]) {
+fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 22]) {
     const COL_NAMES: [&str; 21] = [
         "Date","Ticker","Spot","ER","Str","Qty","Credit","GTC","BE",
         "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM",
@@ -4753,6 +4786,37 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
         ));
     }
     lines.push(Line::from(row2));
+
+    // Kelly Criterion row (only shown when ≥10 closed trades)
+    if let Some(kelly) = perf.kelly_fraction {
+        let kc = if kelly > 2.0 { C_GREEN } else if kelly > 0.0 { C_YELLOW } else { C_RED };
+        let value_span = if kelly <= 0.0 {
+            Span::styled(format!("{:.1}%  (neg edge — reduce size)", kelly), Style::default().fg(C_RED))
+        } else {
+            let half_k = kelly / 2.0;
+            let kelly_dollar = kelly / 100.0 * stats.account_size;
+            Span::styled(
+                format!("{:.1}%/trade  \u{2192}  ${:.0}  (\u{00bd}K: {:.1}%)", kelly, kelly_dollar, half_k),
+                Style::default().fg(kc),
+            )
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Kelly Opt: ", Style::default().fg(C_GRAY)),
+            value_span,
+        ]));
+    }
+
+    // Avg Credit per DTE (tastytrade $/DTE cadence metric)
+    if let Some(cpd) = perf.avg_credit_per_dte {
+        let cpd_color = if cpd >= 5.0 { C_GREEN } else if cpd >= 2.0 { C_YELLOW } else { C_GRAY };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Avg Credit/DTE: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("${:.2}/d", cpd), Style::default().fg(cpd_color)),
+            Span::styled("   (net credit ÷ entry DTE, per trade)", Style::default().fg(C_GRAY)),
+        ]));
+    }
 
     // ── Risk ──
     lines.push(Line::from(vec![Span::styled("  \u{2500}\u{2500} Risk \u{2500}\u{2500}", Style::default().fg(Color::Rgb(148, 163, 184)))]));
@@ -5668,6 +5732,7 @@ fn draw_performance(
     spy_monthly: &std::collections::HashMap<(i32, u32), f64>,
     collapsed: &[bool; 14],
     perf_section_cursor: usize,
+    under_tauri: bool,
 ) {
     let outer = Block::default()
         .borders(Borders::ALL)
@@ -5713,7 +5778,22 @@ fn draw_performance(
         let para = Paragraph::new(lines).scroll((overview_scroll, 0));
         f.render_widget(para, content_area);
     } else if perf_subtab == 1 {
-        // CHARTS: Account Growth + Monthly P&L Trend + Drawdown sparkline + Win Rate Trend + DTE/ROC scatter + BPR sizing
+        // CHARTS: rendered as SVG in Tauri right panel (or ratatui ASCII when standalone)
+        if under_tauri {
+            let lines = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "  Charts displayed in Tauri panel \u{2192}",
+                    Style::default().fg(C_CYAN),
+                )]),
+                Line::from(vec![Span::styled(
+                    "  (navigate away and back to refresh)",
+                    Style::default().fg(C_GRAY),
+                )]),
+            ];
+            f.render_widget(Paragraph::new(lines), content_area);
+        } else {
+        // ratatui ASCII fallback (standalone / no Tauri)
         let chart_h: u16 = if collapsed[3] { 3 } else { 12 };
         let monthly_chart_h: u16 = if !collapsed[3] && perf.monthly_pnl.len() >= 3 { 7 } else { 0 };
         let dd_section_h: u16 = if !collapsed[3] && perf.balance_history.len() > 2 { 5 } else { 0 };
@@ -6052,6 +6132,7 @@ fn draw_performance(
             f.render_widget(block, chunks[6]);
             f.render_widget(Paragraph::new(lines), inner);
         }
+        } // end else (standalone ratatui charts)
     } else {
         // ANALYTICS: all sections scrollable
         let mut lines: Vec<Line> = Vec::new();

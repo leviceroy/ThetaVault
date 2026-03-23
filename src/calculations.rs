@@ -1770,6 +1770,28 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     let profit_factor = if gross_losses > 0.0 { gross_wins / gross_losses } else { 999.9 };
     let expected_value = win_rate * avg_win - (1.0 - win_rate) * avg_loss;
 
+    // Kelly Criterion: f* = win_rate - (1 - win_rate) / avg_rr  where avg_rr = avg_win / avg_loss
+    // Requires ≥10 closed trades and valid avg_win/avg_loss; negative = no edge (shown as warning)
+    let kelly_fraction: Option<f64> = if closed_count >= 10.0 && avg_win > 0.0 && avg_loss > 0.0 {
+        let avg_rr = avg_win / avg_loss;
+        let k = win_rate - (1.0 - win_rate) / avg_rr;
+        Some((k * 100.0).min(25.0))  // cap at 25%; allow negative so user sees "no edge" warning
+    } else {
+        None
+    };
+
+    // Avg net credit per DTE at entry ($/day of open risk committed)
+    // Formula: sum(credit × 100 × qty / entry_dte) for closed trades with entry_dte > 0
+    let avg_credit_per_dte: Option<f64> = {
+        let vals: Vec<f64> = sorted_closed.iter()
+            .filter_map(|t| {
+                let dte = t.entry_dte.filter(|&d| d > 0)? as f64;
+                Some(t.credit_received * 100.0 * t.quantity as f64 / dte)
+            })
+            .collect();
+        if vals.is_empty() { None } else { Some(vals.iter().sum::<f64>() / vals.len() as f64) }
+    };
+
     // Step 4: Sharpe
     let daily_returns: Vec<f64> = daily_pnl_map.values()
         .map(|p| p / account_size)
@@ -2114,6 +2136,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         avg_loss,
         profit_factor,
         expected_value,
+        kelly_fraction,
+        avg_credit_per_dte,
         sharpe_ratio,
         sortino_ratio,
         calmar_ratio,

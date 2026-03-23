@@ -610,7 +610,7 @@ pub struct TickerBreakdown {
     pub avg_entry_dte: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MonthlyPnl {
     pub year: i32,
     pub month: u32,
@@ -648,11 +648,25 @@ pub struct IvrEntryBucket {
 }
 
 /// L6: Per-sector trade count per month (parallel to perf.monthly_pnl)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SectorTrend {
     pub sector: String,
     pub monthly_counts: Vec<usize>,  // one entry per MonthlyPnl entry (same ordering)
     pub total_trades: usize,
+}
+
+/// Performance chart data payload — serialised via OSC 9998 to Tauri right panel
+#[derive(Debug, Clone, Serialize)]
+pub struct PerfChartPayload {
+    pub account_size:       f64,
+    pub balance_history:    Vec<f64>,
+    pub unrealized_history: Vec<f64>,
+    pub peak_history:       Vec<f64>,
+    pub monthly_pnl:        Vec<MonthlyPnl>,
+    pub rolling_win_rate:   Vec<f64>,
+    pub dte_roc_scatter:    Vec<(i32, f64, String)>,  // (dte, roc%, strategy label)
+    pub bpr_history:        Vec<f64>,
+    pub sector_trends:      Vec<SectorTrend>,
 }
 
 /// Item 4: P&L distribution histogram bucket
@@ -707,6 +721,8 @@ pub struct PerformanceStats {
     pub avg_loss: f64,
     pub profit_factor: f64,
     pub expected_value: f64,
+    pub kelly_fraction: Option<f64>,  // Kelly Criterion optimal position size (% of account)
+    pub avg_credit_per_dte: Option<f64>,  // avg (credit × 100 × qty / entry_dte) per closed trade
 
     // Risk-adjusted return
     pub sharpe_ratio: f64,
@@ -800,7 +816,8 @@ impl Default for PerformanceStats {
     fn default() -> Self {
         Self {
             win_rate: 0.0, scratch_rate: 0.0, scratches: 0,
-            avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0,
+            avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0, kelly_fraction: None,
+            avg_credit_per_dte: None,
             sharpe_ratio: 0.0, sortino_ratio: 0.0, calmar_ratio: 0.0, avg_annualized_roc: 0.0,
             avg_dte_at_close: None, avg_pct_max_captured: None,
             avg_credit_width_ratio: None, avg_iv_crush: None,
