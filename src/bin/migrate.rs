@@ -139,6 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             underlying_price: et.underlying_price,
             underlying_price_at_close: et.underlying_price_at_close,
             iv_rank: et.iv_rank,
+            iv_percentile: None,
             vix_at_entry: et.vix_at_entry,
             implied_volatility: et.implied_volatility,
             commission: et.commission,
@@ -173,6 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cost_basis: None,
             close_notes: None,
             sector: None,
+            closed_at_target: false,
         };
         storage.insert_trade(&trade)?;
     }

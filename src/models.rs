@@ -334,6 +334,7 @@ pub struct Trade {
     pub underlying_price: Option<f64>,          // at entry
     pub underlying_price_at_close: Option<f64>, // at exit
     pub iv_rank: Option<f64>,
+    pub iv_percentile: Option<f64>,  // IV Percentile (0-100) — different from IV Rank; TOS shows both
     pub vix_at_entry: Option<f64>,
     pub implied_volatility: Option<f64>,
 
@@ -394,6 +395,9 @@ pub struct Trade {
     pub assigned_shares: Option<i32>,          // number of shares assigned (100 per contract)
     pub cost_basis: Option<f64>,               // cost basis per share on assigned stock
     pub close_notes: Option<String>,           // exit thesis / close notes
+
+    // M5: profit target tracking
+    pub closed_at_target: bool,               // true if closed at or beyond profit target
 }
 
 impl Trade {
@@ -467,6 +471,25 @@ pub struct PlaybookStrategy {
     pub description: Option<String>,
     pub spread_type: Option<String>,
     pub entry_criteria: Option<EntryCriteria>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Playbook Analytics (L10 + L11)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Per-playbook analytics: matched vs unmatched win rate (L10) + violation frequency (L11)
+#[derive(Debug, Clone)]
+pub struct PlaybookAnalytics {
+    pub playbook_id: i32,
+    // L10: win rate for trades linked to this playbook vs all others
+    pub matched_trades:    usize,
+    pub matched_wins:      usize,
+    pub matched_win_rate:  f64,
+    pub unmatched_trades:  usize,
+    pub unmatched_wins:    usize,
+    pub unmatched_win_rate: f64,
+    // L11: top violation fields by frequency (field+rule, count)
+    pub top_violations: Vec<(String, usize)>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -624,12 +647,21 @@ pub struct IvrEntryBucket {
     pub win_rate: f64,    // 0.0–100.0
 }
 
+/// L6: Per-sector trade count per month (parallel to perf.monthly_pnl)
+#[derive(Debug, Clone)]
+pub struct SectorTrend {
+    pub sector: String,
+    pub monthly_counts: Vec<usize>,  // one entry per MonthlyPnl entry (same ordering)
+    pub total_trades: usize,
+}
+
 /// Item 4: P&L distribution histogram bucket
 #[derive(Debug, Clone)]
 pub struct PnlBucket {
     pub label: &'static str,
     pub count: usize,
-    pub pct: f64,   // % of closed trades in this bucket
+    pub pct: f64,           // % of closed trades in this bucket
+    pub normal_count: f64,  // expected count under normal distribution fit to the data
 }
 
 /// IVR bucket: win rate by IV Rank at entry
@@ -745,6 +777,23 @@ pub struct PerformanceStats {
 
     // Item 4: P&L distribution histogram
     pub pnl_buckets: Vec<PnlBucket>,
+
+    // M5: profit target hit rate
+    pub target_hit_count: usize,
+    pub target_hit_pct: f64,    // % of closed trades that reached their profit target
+    pub closed_count: usize,
+
+    // M9: DTE@entry vs ROC scatter points
+    pub dte_roc_scatter: Vec<(i32, f64, StrategyType)>,  // (entry_dte, roc_pct, strategy)
+
+    // M11: unrealized history — same as balance_history but final point adds open-position theta estimate
+    pub unrealized_history: Vec<f64>,
+
+    // L5: BPR per closed trade chronologically (position sizing consistency)
+    pub bpr_history: Vec<f64>,
+
+    // L6: Sector exposure by month (sparkline rows per sector)
+    pub sector_trends: Vec<SectorTrend>,
 }
 
 impl Default for PerformanceStats {
@@ -766,6 +815,13 @@ impl Default for PerformanceStats {
             avg_fill_vs_mid: None,
             rolling_window_used: 30,
             pnl_buckets: vec![],
+            target_hit_count: 0,
+            target_hit_pct: 0.0,
+            closed_count: 0,
+            dte_roc_scatter: vec![],
+            unrealized_history: vec![],
+            bpr_history: vec![],
+            sector_trends: vec![],
         }
     }
 }

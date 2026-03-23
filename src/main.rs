@@ -18,10 +18,11 @@ use chrono::Utc;
 
 pub struct AppState {
     // Data
-    pub trades:      Vec<models::Trade>,
-    pub playbooks:   Vec<models::PlaybookStrategy>,
-    pub stats:       models::PortfolioStats,
-    pub perf_stats:  models::PerformanceStats,
+    pub trades:             Vec<models::Trade>,
+    pub playbooks:          Vec<models::PlaybookStrategy>,
+    pub stats:              models::PortfolioStats,
+    pub perf_stats:         models::PerformanceStats,
+    pub playbook_analytics: Vec<models::PlaybookAnalytics>,
 
     // Account settings
     pub account_size:         f64,
@@ -149,6 +150,10 @@ pub struct AppState {
 
     // Thesis in-place editor buffer
     pub thesis_edit_buf: String,
+
+    // Journal Note quick-entry (Actions tab, N key)
+    pub journal_note_buf:      String,
+    pub journal_note_trade_id: Option<i32>,
 }
 
 impl AppState {
@@ -210,6 +215,7 @@ impl AppState {
         let live_prices = std::collections::HashMap::new();
         let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, target_undefined_pct, monthly_pnl_target);
         let perf_stats = calculations::build_performance_stats(&trades, account_size, risk_free_rate_pct, rolling_window);
+        let playbook_analytics = calculations::build_playbook_analytics(&trades, &playbooks);
 
         let mut table_state = TableState::default();
         if !trades.is_empty() {
@@ -255,6 +261,7 @@ impl AppState {
             playbooks,
             stats,
             perf_stats,
+            playbook_analytics,
             account_size,
             target_undefined_pct,
             max_heat_pct,
@@ -346,6 +353,8 @@ impl AppState {
             playbook_edit_field_idx: 0,
             playbook_edit_scroll:    0,
             thesis_edit_buf:         String::new(),
+            journal_note_buf:        String::new(),
+            journal_note_trade_id:   None,
         };
         app.rebuild_visual_rows();
         app
@@ -354,8 +363,9 @@ impl AppState {
     pub fn reload(&mut self, storage: &storage::Storage) {
         self.trades      = storage.get_all_trades().unwrap_or_default();
         self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
-        self.stats       = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct, self.monthly_pnl_target);
-        self.perf_stats  = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
+        self.stats              = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct, self.monthly_pnl_target);
+        self.perf_stats         = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
+        self.playbook_analytics = calculations::build_playbook_analytics(&self.trades, &self.playbooks);
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
@@ -1427,6 +1437,7 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
         &t.underlying_price.map(|v| format!("{:.2}", v)).unwrap_or_default())
         .with_section("── Entry Conditions ──────────────────────────────────────────────"));
     f.push(EditField::number("IVR %",             &t.iv_rank.map(|v| format!("{:.1}", v)).unwrap_or_default()));
+    f.push(EditField::number("IV Pct %",          &t.iv_percentile.map(|v| format!("{:.1}", v)).unwrap_or_default()));
     f.push(EditField::number("VIX at Entry",      &t.vix_at_entry.map(|v| format!("{:.1}", v)).unwrap_or_default()));
     f.push(EditField::number("Impl Vol %",        &t.implied_volatility.map(|v| format!("{:.4}", v)).unwrap_or_default()));
     f.push(EditField::number("Underlying @ Close",&t.underlying_price_at_close.map(|v| format!("{:.2}", v)).unwrap_or_default()));
@@ -1551,6 +1562,7 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     // ── Entry conditions
     t.underlying_price          = field_opt_f64(fields, "Underlying $");
     t.iv_rank                   = field_opt_f64(fields, "IVR %");
+    t.iv_percentile             = field_opt_f64(fields, "IV Pct %");
     t.vix_at_entry              = field_opt_f64(fields, "VIX at Entry");
     t.implied_volatility        = field_opt_f64(fields, "Impl Vol %");
     t.underlying_price_at_close = field_opt_f64(fields, "Underlying @ Close");
@@ -2362,6 +2374,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app.export_status.as_deref(),
             app.dash_risk_scroll,
             app.dash_panel_focus,
+            &app.playbook_analytics,
+            &app.journal_note_buf,
+            app.journal_note_trade_id,
         ))?;
         // Decrement export status tick
         if app.export_status_tick > 0 {
@@ -2709,6 +2724,44 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     KeyCode::Enter => { app.thesis_edit_buf.push('\n'); }
                     KeyCode::Backspace => { app.thesis_edit_buf.pop(); }
                     KeyCode::Char(c) => { app.thesis_edit_buf.push(c); }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ── JournalNote mode (Actions tab, N key) ────────────────────────
+            if app.app_mode == AppMode::JournalNote {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.app_mode = AppMode::Normal;
+                        app.journal_note_buf.clear();
+                        app.journal_note_trade_id = None;
+                    }
+                    KeyCode::Enter => {
+                        // Append timestamped note to the trade's notes field
+                        let note = app.journal_note_buf.trim().to_string();
+                        if !note.is_empty() {
+                            if let Some(tid) = app.journal_note_trade_id {
+                                if let Some(trade) = app.trades.iter_mut().find(|t| t.id == tid) {
+                                    let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+                                    let tagged = format!("[{}] {}", ts, note);
+                                    trade.notes = Some(match &trade.notes {
+                                        Some(existing) if !existing.is_empty() => {
+                                            format!("{}\n{}", existing, tagged)
+                                        }
+                                        _ => tagged,
+                                    });
+                                    let _ = storage.update_trade(tid, trade);
+                                }
+                            }
+                        }
+                        app.app_mode = AppMode::Normal;
+                        app.journal_note_buf.clear();
+                        app.journal_note_trade_id = None;
+                        app.reload(&storage);
+                    }
+                    KeyCode::Backspace => { app.journal_note_buf.pop(); }
+                    KeyCode::Char(c)   => { app.journal_note_buf.push(c); }
                     _ => {}
                 }
                 continue;
@@ -3197,6 +3250,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         app.table_state.select(row_idx.or(Some(0)));
                                     }
                                     _ => {}
+                                }
+                            }
+                        }
+                        // L14: N = add quick journal note to the selected alert's trade
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            if let Some(idx) = app.actions_list_state.selected() {
+                                let rows = theta_vault_rust::actions::build_action_rows(
+                                    &app.alerts, &app.collapsed_action_kinds,
+                                );
+                                if let Some(theta_vault_rust::actions::ActionRow::Alert(alert)) = rows.get(idx) {
+                                    if alert.trade_id > 0 {
+                                        app.journal_note_trade_id = Some(alert.trade_id);
+                                        app.journal_note_buf.clear();
+                                        app.app_mode = AppMode::JournalNote;
+                                    }
                                 }
                             }
                         }

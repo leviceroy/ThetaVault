@@ -59,6 +59,7 @@ impl Storage {
                 underlying_price          REAL,
                 underlying_price_at_close REAL,
                 iv_rank                   REAL,
+                iv_percentile             REAL,
                 vix_at_entry              REAL,
                 implied_volatility        REAL,
 
@@ -204,6 +205,8 @@ impl Storage {
             ("cost_basis",               "ALTER TABLE trades ADD COLUMN cost_basis REAL"),
             ("close_notes",              "ALTER TABLE trades ADD COLUMN close_notes TEXT"),
             ("sector",                   "ALTER TABLE trades ADD COLUMN sector TEXT"),
+            ("closed_at_target",         "ALTER TABLE trades ADD COLUMN closed_at_target INTEGER NOT NULL DEFAULT 0"),
+            ("iv_percentile",            "ALTER TABLE trades ADD COLUMN iv_percentile REAL"),
         ];
 
         for (col_name, sql) in migrations {
@@ -256,8 +259,9 @@ impl Storage {
                 theta_at_close=?48, gamma_at_close=?49, vega_at_close=?50,
                 bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
                 was_assigned=?53, assigned_shares=?54, cost_basis=?55,
-                close_notes=?56, sector=?57
-             WHERE id=?58",
+                close_notes=?56, sector=?57, closed_at_target=?58,
+                iv_percentile=?59
+             WHERE id=?60",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -316,7 +320,9 @@ impl Storage {
                 t.cost_basis,                           // 55
                 t.close_notes.as_deref(),               // 56
                 t.sector.as_deref(),                    // 57
-                id,                                     // 58
+                t.closed_at_target as i32,              // 58
+                t.iv_percentile,                        // 59
+                id,                                     // 60
             ],
         )?;
         Ok(())
@@ -356,7 +362,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector
+                close_notes, sector, closed_at_target, iv_percentile
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -376,7 +382,7 @@ impl Storage {
                 ?48, ?49, ?50,
                 ?51, ?52,
                 ?53, ?54, ?55,
-                ?56, ?57
+                ?56, ?57, ?58, ?59
             )",
             params![
                 trade.ticker,               // 1
@@ -434,8 +440,10 @@ impl Storage {
                 trade.was_assigned as i32,  // 53
                 trade.assigned_shares,      // 54
                 trade.cost_basis,           // 55
-                trade.close_notes.as_deref(), // 56
-                trade.sector.as_deref(),      // 57
+                trade.close_notes.as_deref(),       // 56
+                trade.sector.as_deref(),            // 57
+                trade.closed_at_target as i32,      // 58
+                trade.iv_percentile,                // 59
             ],
         )?;
 
@@ -529,7 +537,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector
+                close_notes, sector, closed_at_target, iv_percentile
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -629,6 +637,8 @@ impl Storage {
                 cost_basis:                row.get(55)?,
                 close_notes:               row.get(56)?,
                 sector:                    row.get(57)?,
+                closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
+                iv_percentile:             row.get(59)?,
             })
         })?;
 
@@ -663,7 +673,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector
+                close_notes, sector, closed_at_target, iv_percentile
             FROM trades WHERE id = ?1"
         )?;
 
@@ -762,6 +772,8 @@ impl Storage {
                 cost_basis:                row.get(55)?,
                 close_notes:               row.get(56)?,
                 sector:                    row.get(57)?,
+                closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
+                iv_percentile:             row.get(59)?,
             })
         })?;
 

@@ -106,6 +106,7 @@ pub enum AppMode {
     AdminSettings,  // editing admin/risk management settings
     AnalyzeTrade,   // payoff-at-expiration chart (activated with 'a')
     DatePicker,     // calendar overlay over EditTrade / CloseTrade
+    JournalNote,    // quick note input for a trade from the Actions tab (N key)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

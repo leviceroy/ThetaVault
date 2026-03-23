@@ -1999,13 +1999,112 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             }
         }
     }
-    let pnl_buckets: Vec<PnlBucket> = pnl_bucket_defs.iter().zip(pnl_counts.iter()).map(|((label, _, _), &count)| {
+    // Fit a normal distribution to the closed P&L values for fat-tail overlay
+    let pnl_values: Vec<f64> = sorted_closed.iter().filter_map(|t| t.pnl).collect();
+    let n = pnl_values.len() as f64;
+    let (pnl_mean, pnl_sigma) = if n >= 2.0 {
+        let mean = pnl_values.iter().sum::<f64>() / n;
+        let variance = pnl_values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        (mean, variance.sqrt().max(1.0))
+    } else {
+        (0.0, 1.0)
+    };
+    // M5: profit target hit rate — auto-detect from P&L vs credit × qty × 100 × target%
+    let mut target_hit_count = 0usize;
+    for t in &sorted_closed {
+        if let Some(pnl) = t.pnl {
+            let target_pct = t.target_profit_pct.unwrap_or(50.0);
+            let max_profit = t.credit_received * t.quantity as f64 * 100.0;
+            if max_profit > 0.0 {
+                let profit_target = max_profit * (target_pct / 100.0);
+                if pnl >= profit_target { target_hit_count += 1; }
+            } else if t.closed_at_target {
+                target_hit_count += 1; // fallback: respect explicit flag
+            }
+        }
+    }
+    let target_hit_pct = if closed_count > 0 { target_hit_count as f64 / closed_count as f64 * 100.0 } else { 0.0 };
+
+    let pnl_buckets: Vec<PnlBucket> = pnl_bucket_defs.iter().zip(pnl_counts.iter()).map(|((label, lo, hi), &count)| {
+        let z_lo = if lo.is_infinite() { -8.0 } else { (lo - pnl_mean) / pnl_sigma };
+        let z_hi = if hi.is_infinite() {  8.0 } else { (hi - pnl_mean) / pnl_sigma };
+        let normal_count = (normal_cdf(z_hi) - normal_cdf(z_lo)) * n;
         PnlBucket {
             label,
             count,
             pct: if closed_count > 0 { count as f64 / closed_count as f64 * 100.0 } else { 0.0 },
+            normal_count,
         }
     }).collect();
+
+    // L5: BPR per closed trade chronologically (position sizing consistency)
+    let bpr_history: Vec<f64> = sorted_closed.iter()
+        .map(|t| {
+            // Use stored BPR if present; otherwise compute from credit/legs
+            if let Some(b) = t.bpr { b }
+            else {
+                calculate_bpr(&t.legs, t.credit_received, t.quantity, t.underlying_price, t.spread_type())
+            }
+        })
+        .filter(|&b| b > 0.0)
+        .collect();
+
+    // L6: Sector exposure by month — per-sector trade count per calendar month
+    let sector_trends: Vec<crate::models::SectorTrend> = {
+        use std::collections::HashMap;
+        use chrono::Datelike;
+        // Build a map: (year, month) -> sector -> count from closed trades
+        let mut month_sector: HashMap<(i32, u32), HashMap<String, usize>> = HashMap::new();
+        for t in &sorted_closed {
+            let sector_name = t.sector.clone().unwrap_or_else(|| "Unknown".to_string());
+            let y = t.trade_date.year();
+            let m = t.trade_date.month();
+            let entry = month_sector.entry((y, m)).or_default();
+            *entry.entry(sector_name).or_insert(0) += 1;
+        }
+        // Collect all unique sectors, sort by total trade count descending, cap at 7
+        let mut sector_totals: HashMap<String, usize> = HashMap::new();
+        for sector_map in month_sector.values() {
+            for (s, &c) in sector_map {
+                *sector_totals.entry(s.clone()).or_insert(0) += c;
+            }
+        }
+        let mut sectors_sorted: Vec<(String, usize)> = sector_totals.into_iter().collect();
+        sectors_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sectors_sorted.truncate(7);
+
+        // Build monthly key list from monthly_pnl (already built above)
+        let month_keys: Vec<(i32, u32)> = monthly_pnl.iter().map(|m| (m.year, m.month)).collect();
+
+        sectors_sorted.into_iter().map(|(sector, total_trades)| {
+            let monthly_counts: Vec<usize> = month_keys.iter().map(|&(y, m)| {
+                month_sector.get(&(y, m))
+                    .and_then(|sm| sm.get(&sector))
+                    .copied()
+                    .unwrap_or(0)
+            }).collect();
+            crate::models::SectorTrend { sector, monthly_counts, total_trades }
+        }).collect()
+    };
+
+    // M11: unrealized history — balance_history + one extra point projecting open theta decay
+    let unrealized_history: Vec<f64> = {
+        let today = chrono::Utc::now().date_naive();
+        let unrealized_est: f64 = trades.iter()
+            .filter(|t| t.is_open())
+            .map(|t| {
+                let days_held = (today - t.trade_date.date_naive()).num_days().max(0) as f64;
+                let th_abs = t.theta.unwrap_or(0.0).abs();
+                th_abs * 100.0 * t.quantity as f64 * days_held
+            })
+            .sum();
+        let last_realized = balance_history.last().cloned().unwrap_or(account_size);
+        let mut uh = balance_history.clone();
+        if unrealized_est > 0.0 {
+            uh.push(last_realized + unrealized_est);
+        }
+        uh
+    };
 
     PerformanceStats {
         win_rate: win_rate * 100.0,
@@ -2045,7 +2144,82 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         avg_fill_vs_mid,
         rolling_window_used: rolling_window,
         pnl_buckets,
+        target_hit_count,
+        target_hit_pct,
+        closed_count,
+        dte_roc_scatter: {
+            let mut pts = Vec::new();
+            for t in &sorted_closed {
+                if let (Some(dte), Some(pnl)) = (t.entry_dte, t.pnl) {
+                    let roc = calculate_roc(pnl, &t.legs, t.credit_received, t.quantity, t.spread_type(), t.bpr, t.underlying_price);
+                    if let Some(r) = roc { pts.push((dte, r, t.strategy.clone())); }
+                }
+            }
+            pts
+        },
+        unrealized_history,
+        bpr_history,
+        sector_trends,
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// L10 + L11: Playbook Analytics — win rate matched vs unmatched + violation freq
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Build per-playbook analytics:
+/// - L10: win rate for trades linked to this playbook vs all other closed trades
+/// - L11: most common entry-criteria violations across linked trades
+pub fn build_playbook_analytics(
+    trades: &[Trade],
+    playbooks: &[crate::models::PlaybookStrategy],
+) -> Vec<crate::models::PlaybookAnalytics> {
+    use std::collections::HashMap;
+
+    let closed: Vec<&Trade> = trades.iter()
+        .filter(|t| t.exit_date.is_some() && t.pnl.is_some())
+        .collect();
+
+    playbooks.iter().map(|pb| {
+        let (mut mt, mut mw, mut ut, mut uw) = (0usize, 0usize, 0usize, 0usize);
+
+        for t in &closed {
+            let pnl = t.pnl.unwrap_or(0.0);
+            if t.playbook_id == Some(pb.id) {
+                mt += 1;
+                if pnl > 0.0 { mw += 1; }
+            } else {
+                ut += 1;
+                if pnl > 0.0 { uw += 1; }
+            }
+        }
+
+        // L11: aggregate violations across matched closed trades
+        let mut viol_counts: HashMap<String, usize> = HashMap::new();
+        if let Some(ec) = &pb.entry_criteria {
+            for t in &closed {
+                if t.playbook_id != Some(pb.id) { continue; }
+                for v in check_playbook_compliance(t, ec) {
+                    let key = format!("{} {}", v.field, v.rule);
+                    *viol_counts.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut top_violations: Vec<(String, usize)> = viol_counts.into_iter().collect();
+        top_violations.sort_by(|a, b| b.1.cmp(&a.1));
+        top_violations.truncate(3);
+
+        crate::models::PlaybookAnalytics {
+            playbook_id:        pb.id,
+            matched_trades:     mt,
+            matched_wins:       mw,
+            matched_win_rate:   if mt > 0 { mw as f64 / mt as f64 * 100.0 } else { 0.0 },
+            unmatched_trades:   ut,
+            unmatched_wins:     uw,
+            unmatched_win_rate: if ut > 0 { uw as f64 / ut as f64 * 100.0 } else { 0.0 },
+            top_violations,
+        }
+    }).collect()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
