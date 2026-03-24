@@ -463,9 +463,9 @@ impl Storage {
                 s.to_string()
             }
         }
-        let _ = writeln!(w, "id,ticker,strategy,trade_date,expiration_date,quantity,credit_received,debit_paid,pnl,bpr,entry_dte,dte_at_close,exit_date,exit_reason,delta,theta,gamma,vega,pop,underlying_price,iv_rank,vix_at_entry,implied_volatility,underlying_price_at_close,iv_at_close,commission,target_profit_pct,management_rule,trade_grade,grade_notes,notes,close_notes,tags,is_earnings_play,is_tested,bid_ask_spread_at_entry,fill_vs_mid,was_assigned,assigned_shares,cost_basis,roll_count,rolled_from_id,playbook_id,next_earnings");
+        let _ = writeln!(w, "id,ticker,strategy,trade_date,expiration_date,quantity,credit_received,debit_paid,pnl,bpr,entry_dte,dte_at_close,exit_date,exit_reason,delta,theta,gamma,vega,pop,underlying_price,iv_rank,vix_at_entry,implied_volatility,underlying_price_at_close,iv_at_close,commission,target_profit_pct,management_rule,trade_grade,grade_notes,notes,close_notes,tags,is_earnings_play,is_tested,bid_ask_spread_at_entry,fill_vs_mid,was_assigned,assigned_shares,cost_basis,roll_count,rolled_from_id,playbook_id,next_earnings,sector,closed_at_target,iv_percentile,back_month_expiration");
         for t in &trades {
-            let row = format!("{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            let row = format!("{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 t.id,
                 csv_field(&t.ticker),
                 csv_field(t.strategy.as_str()),
@@ -510,6 +510,10 @@ impl Storage {
                 t.rolled_from_id.map_or(String::new(), |v| v.to_string()),
                 t.playbook_id.map_or(String::new(), |v| v.to_string()),
                 t.next_earnings.map_or(String::new(), |d| d.format("%Y-%m-%d").to_string()),
+                csv_field(t.sector.as_deref().unwrap_or("")),
+                if t.closed_at_target { "1" } else { "0" },
+                t.iv_percentile.map_or(String::new(), |v| format!("{:.1}", v)),
+                t.back_month_expiration.map_or(String::new(), |d| d.format("%Y-%m-%d").to_string()),
             );
             let _ = writeln!(w, "{}", row);
         }

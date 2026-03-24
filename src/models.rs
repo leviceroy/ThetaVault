@@ -723,6 +723,8 @@ pub struct PerformanceStats {
     pub expected_value: f64,
     pub kelly_fraction: Option<f64>,  // Kelly Criterion optimal position size (% of account)
     pub avg_credit_per_dte: Option<f64>,  // avg (credit × 100 × qty / entry_dte) per closed trade
+    pub avg_max_profit_per_day: Option<f64>, // avg (max_profit_dollars / entry_dte) per credit trade
+    pub avg_theta_capture_quality: Option<f64>, // avg (actual_pnl / theoretical_theta_pnl) as %
 
     // Risk-adjusted return
     pub sharpe_ratio: f64,
@@ -817,7 +819,7 @@ impl Default for PerformanceStats {
         Self {
             win_rate: 0.0, scratch_rate: 0.0, scratches: 0,
             avg_win: 0.0, avg_loss: 0.0, profit_factor: 0.0, expected_value: 0.0, kelly_fraction: None,
-            avg_credit_per_dte: None,
+            avg_credit_per_dte: None, avg_max_profit_per_day: None, avg_theta_capture_quality: None,
             sharpe_ratio: 0.0, sortino_ratio: 0.0, calmar_ratio: 0.0, avg_annualized_roc: 0.0,
             avg_dte_at_close: None, avg_pct_max_captured: None,
             avg_credit_width_ratio: None, avg_iv_crush: None,

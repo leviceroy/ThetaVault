@@ -3047,6 +3047,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     'j' => Some(18), // Status
                                     'k' => Some(19), // OTM%
                                     'l' => Some(20), // EM
+                                    'm' => Some(21), // Mgmt
                                     _ => None,
                                 };
                                 if let Some(i) = idx {

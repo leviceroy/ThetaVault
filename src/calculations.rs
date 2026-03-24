@@ -1130,6 +1130,9 @@ fn bs_d1(s: f64, k: f64, t: f64, r: f64, sigma: f64) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return if s >= k { 10.0 } else { -10.0 };
     }
+    if s <= 0.0 || k <= 0.0 {
+        return if s >= k { 10.0 } else { -10.0 };
+    }
     ( (s / k).ln() + (r + 0.5 * sigma.powi(2)) * t ) / (sigma * t.sqrt())
 }
 
@@ -1364,13 +1367,28 @@ pub fn check_playbook_compliance(
         );
         
         if is_neutral && check_delta < 5.0 {
-            // Surrogate Delta = (Credit / Width) * 100. 
-            // e.g. $3.16 credit on $10 wings = 31.6 'delta' proxy.
-            if let Some(width) = trade.spread_width {
-                if width > 0.0 {
-                    let surrogate = (trade.credit_received / width).abs() * 100.0;
-                    if surrogate > check_delta {
-                        check_delta = surrogate;
+            // For neutral strategies (IC/IB/STR/STD), the net delta is near zero
+            // but individual short legs can be dangerously far delta.
+            // Tastytrade standard: check the max absolute delta of each short leg.
+            if let (Some(s), Some(iv)) = (trade.underlying_price, trade.implied_volatility) {
+                let t_days = trade.entry_dte.unwrap_or(30);
+                let mut max_short_leg_delta = 0.0_f64;
+                for leg in &trade.legs {
+                    if leg.leg_type.is_short() && leg.strike > 0.0 {
+                        let is_call = matches!(leg.leg_type, crate::models::LegType::ShortCall);
+                        let (leg_d, _, _, _) = estimate_greeks(s, leg.strike, t_days, 0.045, iv, is_call, false);
+                        max_short_leg_delta = max_short_leg_delta.max(leg_d.abs() * 100.0);
+                    }
+                }
+                if max_short_leg_delta > check_delta {
+                    check_delta = max_short_leg_delta;
+                }
+            } else {
+                // Fallback: credit/width ratio when price/IV unavailable
+                if let Some(width) = trade.spread_width {
+                    if width > 0.0 {
+                        let surrogate = (trade.credit_received / width).abs() * 100.0;
+                        if surrogate > check_delta { check_delta = surrogate; }
                     }
                 }
             }
@@ -1792,6 +1810,28 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         if vals.is_empty() { None } else { Some(vals.iter().sum::<f64>() / vals.len() as f64) }
     };
 
+    // KPI-1: Avg max profit per day — measures theoretical theta decay rate
+    // Formula: (max_profit_dollars / entry_dte) per closed credit trade
+    let avg_max_profit_per_day: Option<f64> = {
+        let vals: Vec<f64> = sorted_closed.iter()
+            .filter_map(|t| {
+                let dte = t.entry_dte.filter(|&d| d > 0)? as f64;
+                let mp = t.credit_received * 100.0 * t.quantity as f64;
+                if mp > 0.0 { Some(mp / dte) } else { None }
+            })
+            .collect();
+        if vals.is_empty() { None } else { Some(vals.iter().sum::<f64>() / vals.len() as f64) }
+    };
+
+    // KPI-3: Avg realized theta capture quality
+    // Formula: actual_pnl / (theta × 100 × qty × days_held) — values < 1.0 indicate gap/jump losses
+    let avg_theta_capture_quality: Option<f64> = if theta_capture_per_trade.is_empty() {
+        None
+    } else {
+        let non_zero: Vec<f64> = theta_capture_per_trade.iter().copied().filter(|&v| v != 0.0).collect();
+        if non_zero.is_empty() { None } else { Some(non_zero.iter().sum::<f64>() / non_zero.len() as f64) }
+    };
+
     // Step 4: Sharpe
     let daily_returns: Vec<f64> = daily_pnl_map.values()
         .map(|p| p / account_size)
@@ -2138,6 +2178,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         expected_value,
         kelly_fraction,
         avg_credit_per_dte,
+        avg_max_profit_per_day,
+        avg_theta_capture_quality,
         sharpe_ratio,
         sortino_ratio,
         calmar_ratio,

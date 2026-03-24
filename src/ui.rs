@@ -566,7 +566,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let vega_color = if vega_val > 0.0 {
             C_RED   // long vega — unusual for premium seller
         } else if vega_val < -5000.0 {
-            Color::LightRed  // dangerously short
+            Color::Rgb(239, 68, 68)  // dangerously short
         } else {
             C_YELLOW // normal negative vega for premium seller
         };
@@ -2656,23 +2656,20 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
     }
 
     // Greeks / POP / P50
+    // Displayed in per-contract terms (×100): tastytrade convention
     {
         let mut gs: Vec<Span> = vec![Span::styled("  ", Style::default())];
         if let Some(d)  = trade.delta {
-            let val = if d.abs() <= 1.0 { d * 100.0 } else { d };
-            gs.push(Span::styled(format!("Δ{:<.1}  ", val), Style::default().fg(C_BLUE)));
+            gs.push(Span::styled(format!("Δ{:<.1}  ", d * 100.0), Style::default().fg(C_BLUE)));
         }
         if let Some(th) = trade.theta {
-            let val = if th.abs() <= 1.0 { th * 100.0 } else { th };
-            gs.push(Span::styled(format!("Θ{:<.2}  ", val), Style::default().fg(C_GREEN)));
+            gs.push(Span::styled(format!("Θ{:<.2}  ", th * 100.0), Style::default().fg(C_GREEN)));
         }
         if let Some(g)  = trade.gamma {
-            let val = if g.abs() <= 1.0 { g * 100.0 } else { g };
-            gs.push(Span::styled(format!("Γ{:<.4}  ", val), Style::default().fg(C_WHITE)));
+            gs.push(Span::styled(format!("Γ{:<.4}  ", g * 100.0), Style::default().fg(C_WHITE)));
         }
         if let Some(v)  = trade.vega  {
-            let val = if v.abs() <= 1.0 { v * 100.0 } else { v };
-            gs.push(Span::styled(format!("V{:<.3}  ", val), Style::default().fg(C_YELLOW)));
+            gs.push(Span::styled(format!("V{:<.3}  ", v * 100.0), Style::default().fg(C_YELLOW)));
         }
         if let Some(pop) = trade.pop {
             let pc = if pop >= 70.0 { C_GREEN } else if pop >= 50.0 { C_YELLOW } else { C_RED };
@@ -3979,18 +3976,18 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 // ── Column visibility picker popup (L9) ──────────────────────────────────────
 
 fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 22]) {
-    const COL_NAMES: [&str; 21] = [
+    const COL_NAMES: [&str; 22] = [
         "Date","Ticker","Spot","ER","Str","Qty","Credit","GTC","BE",
-        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM",
+        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM","Mgmt",
     ];
-    // Keys: 1-9 for columns 0-8, a-l for columns 9-20
-    const KEY_LABELS: [&str; 21] = [
+    // Keys: 1-9 for columns 0-8, a-l for columns 9-20, m for Mgmt (21)
+    const KEY_LABELS: [&str; 22] = [
         "1","2","3","4","5","6","7","8","9",
-        "a","b","c","d","e","f","g","h","i","j","k","l",
+        "a","b","c","d","e","f","g","h","i","j","k","l","m",
     ];
 
     let popup_w = 36u16;
-    let popup_h = 26u16;
+    let popup_h = 27u16;
     let x = area.x + area.width.saturating_sub(popup_w) / 2;
     let y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
@@ -4003,7 +4000,7 @@ fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 22])
         Line::from(""),
     ];
 
-    for i in 0..21 {
+    for i in 0..22 {
         let check = if col_visibility[i] { "✓" } else { "✗" };
         let check_style = if col_visibility[i] {
             Style::default().fg(Color::Green)
@@ -4817,6 +4814,44 @@ fn perf_returns_lines(stats: &PortfolioStats, perf: &PerformanceStats, width: us
             Span::styled(format!("${:.2}/d", cpd), Style::default().fg(cpd_color)),
             Span::styled("   (net credit ÷ entry DTE, per trade)", Style::default().fg(C_GRAY)),
         ]));
+    }
+
+    // KPI-1: Avg Max Profit/Day — higher = faster theta decay (also higher gamma risk)
+    if let Some(mpd) = perf.avg_max_profit_per_day {
+        let mpd_color = if mpd >= 10.0 { C_GREEN } else if mpd >= 4.0 { C_YELLOW } else { C_GRAY };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Avg MaxPft/DTE: ", Style::default().fg(C_GRAY)),
+            Span::styled(format!("${:.2}/d", mpd), Style::default().fg(mpd_color)),
+            Span::styled("   (max profit ÷ entry DTE, per trade)", Style::default().fg(C_GRAY)),
+        ]));
+    }
+
+    // KPI-2: Avg IV Crush captured (earnings plays)
+    if let Some(crush) = perf.avg_iv_crush {
+        if crush.abs() > 0.1 {
+            let crush_color = if crush >= 5.0 { C_GREEN } else if crush >= 2.0 { C_YELLOW } else { C_RED };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Avg IV Crush: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:+.1} pts", crush), Style::default().fg(crush_color)),
+                Span::styled("   (entry IV − close IV, avg across trades)", Style::default().fg(C_GRAY)),
+            ]));
+        }
+    }
+
+    // KPI-3: Realized theta capture quality — how much of theoretical theta was captured
+    // Values >100% = gamma/IV tailwinds; <100% = gap/jump events eroded theta gains
+    if let Some(tcq) = perf.avg_theta_capture_quality {
+        if tcq.abs() > 0.1 {
+            let tcq_color = if tcq >= 80.0 { C_GREEN } else if tcq >= 50.0 { C_YELLOW } else { C_RED };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Theta Capture: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.1}%", tcq), Style::default().fg(tcq_color)),
+                Span::styled("   (<100% = gap/jump losses eroded theta)", Style::default().fg(C_GRAY)),
+            ]));
+        }
     }
 
     // ── Risk ──
