@@ -3394,8 +3394,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('?') => {
                             if let Some(idx) = app.playbook_state.selected() {
                                 if let Some(pb) = app.playbooks.get(idx) {
-                                    if pb.spread_type.as_deref() == Some("covered_call") {
-                                        if app.show_guide { app.stop_guide(); } else { app.start_guide("covered_call"); }
+                                    let supported = matches!(
+                                        pb.spread_type.as_deref(),
+                                        Some("covered_call") | Some("short_put_vertical")
+                                    );
+                                    if supported {
+                                        let strategy = pb.spread_type.as_deref().unwrap_or("covered_call").to_string();
+                                        if app.show_guide { app.stop_guide(); } else { app.start_guide(&strategy); }
                                     }
                                 }
                             }
