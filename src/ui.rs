@@ -1863,6 +1863,9 @@ fn draw_trade_table(
                             && calculate_max_loss_from_legs(&t.legs, t.credit_received, t.quantity, t.spread_type()) <= 0.0;
                         if pbwb_invalid {
                             Cell::from("chk strikes").style(Style::default().fg(C_YELLOW))
+                        } else if max_profit <= 0.0 {
+                            // Debit spreads (LDS, debit calendars): max profit is IV-dependent
+                            Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
                         } else {
                             Cell::from(format!("${:.0}", max_profit)).style(Style::default().fg(C_GRAY))
                         }
@@ -1972,20 +1975,15 @@ fn draw_trade_table(
                             Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
                         }
                     },
-                    // Col 21: Mgmt — management trigger date (open trades, 21 DTE target)
+                    // Col 21: Mgmt — 21 DTE management trigger date = expiration - 21 days
                     {
                         if t.is_open() {
-                            if let Some(entry_dte) = t.entry_dte {
-                                let days_to_mgmt_date = (entry_dte - 21).max(0);
-                                let mgmt_date = t.trade_date.date_naive() + chrono::Duration::days(days_to_mgmt_date as i64);
-                                let days_remaining = (mgmt_date - today).num_days();
-                                let mgmt_color = if days_remaining <= 0 { C_RED }
-                                    else if days_remaining <= 5 { C_YELLOW }
-                                    else { C_GRAY };
-                                Cell::from(mgmt_date.format("%m/%d").to_string()).style(Style::default().fg(mgmt_color))
-                            } else {
-                                Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
-                            }
+                            let mgmt_date = t.expiration_date.date_naive() - chrono::Duration::days(21);
+                            let days_remaining = (mgmt_date - today).num_days();
+                            let mgmt_color = if days_remaining <= 0 { C_RED }
+                                else if days_remaining <= 5 { C_YELLOW }
+                                else { C_GRAY };
+                            Cell::from(mgmt_date.format("%m/%d").to_string()).style(Style::default().fg(mgmt_color))
                         } else {
                             Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
                         }
@@ -2586,29 +2584,23 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         ),
     ]));
 
-    // Manage by date (open trades with entry_dte)
+    // Manage by date (open trades) — expiration - 21 days
     if trade.is_open() {
-        if let Some(entry_dte) = trade.entry_dte {
-            let mgmt_dte = 21i32; // tastytrade standard
-            let days_until_mgmt = entry_dte - mgmt_dte;
-            if days_until_mgmt > 0 {
-                let mgmt_date = trade.entry_date + chrono::Duration::days(days_until_mgmt as i64);
-                let days_to_mgmt = (mgmt_date.date_naive() - Utc::now().date_naive()).num_days();
-                let (mgmt_color, mgmt_note) = if days_to_mgmt < 0 {
-                    (C_RED, format!(" ({}d past)", days_to_mgmt.abs()))
-                } else if days_to_mgmt <= 5 {
-                    (C_YELLOW, format!(" ({}d away)", days_to_mgmt))
-                } else {
-                    (C_GRAY, format!(" ({}d away)", days_to_mgmt))
-                };
-                left_lines.push(Line::from(vec![
-                    Span::styled("  Manage by: ", Style::default().fg(C_GRAY)),
-                    Span::styled(mgmt_date.format("%Y-%m-%d").to_string(), Style::default().fg(mgmt_color)),
-                    Span::styled(mgmt_note, Style::default().fg(mgmt_color)),
-                    Span::styled("  (21 DTE target)", Style::default().fg(C_DARK)),
-                ]));
-            }
-        }
+        let mgmt_date = trade.expiration_date.date_naive() - chrono::Duration::days(21);
+        let days_to_mgmt = (mgmt_date - Utc::now().date_naive()).num_days();
+        let (mgmt_color, mgmt_note) = if days_to_mgmt < 0 {
+            (C_RED, format!(" ({}d past)", days_to_mgmt.abs()))
+        } else if days_to_mgmt <= 5 {
+            (C_YELLOW, format!(" ({}d away)", days_to_mgmt))
+        } else {
+            (C_GRAY, format!(" ({}d away)", days_to_mgmt))
+        };
+        left_lines.push(Line::from(vec![
+            Span::styled("  Manage by: ", Style::default().fg(C_GRAY)),
+            Span::styled(mgmt_date.format("%Y-%m-%d").to_string(), Style::default().fg(mgmt_color)),
+            Span::styled(mgmt_note, Style::default().fg(mgmt_color)),
+            Span::styled("  (21 DTE target)", Style::default().fg(Color::Rgb(100, 116, 139))),
+        ]));
     }
 
     // Spot / IVR / VIX / IV
@@ -2758,7 +2750,10 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             r2.push(Span::styled(format!(" ({:.1}%)", pct), Style::default().fg(pct_color)));
         }
         r2.push(Span::styled("   Max Profit: ", Style::default().fg(C_GRAY)));
-        r2.push(Span::styled(format!("${:.0}", max_profit), Style::default().fg(C_GREEN)));
+        r2.push(Span::styled(
+            if max_profit > 0.0 { format!("${:.0}", max_profit) } else { "\u{2014}".to_string() },
+            if max_profit > 0.0 { C_GREEN } else { C_GRAY },
+        ));
         r2.push(Span::styled("   Max Loss: ", Style::default().fg(C_GRAY)));
         r2.push(Span::styled(
             if max_loss > 0.0 {
@@ -2829,16 +2824,22 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                     ]));
                 } else {
                     let days_rem = ((profit_target - est_pnl) / daily_theta).ceil() as i64;
-                    let target_date = Utc::now() + chrono::Duration::days(days_rem);
-                    let color = if days_rem <= dte as i64 { C_GREEN }
-                                else if days_rem <= dte as i64 * 2 { C_YELLOW }
-                                else { C_RED };
-                    left_lines.push(Line::from(vec![
-                        Span::styled("  50% in ~", Style::default().fg(C_GRAY)),
-                        Span::styled(format!("{}d", days_rem), Style::default().fg(color)),
-                        Span::styled(format!("  (est. by {})", target_date.format("%m/%d")), Style::default().fg(C_GRAY)),
-                        Span::styled("  \u{03b8} heuristic", Style::default().fg(Color::Rgb(100, 116, 139))),
-                    ]));
+                    if days_rem > dte as i64 {
+                        // Theta alone won't reach 50% before expiration — needs delta/move
+                        left_lines.push(Line::from(vec![
+                            Span::styled("  50% via \u{03b8}: ", Style::default().fg(C_GRAY)),
+                            Span::styled("needs move, not \u{03b8} pace", Style::default().fg(C_YELLOW)),
+                        ]));
+                    } else {
+                        let target_date = Utc::now() + chrono::Duration::days(days_rem);
+                        let color = if days_rem <= dte as i64 / 2 { C_GREEN } else { C_YELLOW };
+                        left_lines.push(Line::from(vec![
+                            Span::styled("  50% in ~", Style::default().fg(C_GRAY)),
+                            Span::styled(format!("{}d", days_rem), Style::default().fg(color)),
+                            Span::styled(format!("  (est. by {})", target_date.format("%m/%d")), Style::default().fg(C_GRAY)),
+                            Span::styled("  \u{03b8} heuristic", Style::default().fg(Color::Rgb(100, 116, 139))),
+                        ]));
+                    }
                 }
             }
         }
@@ -4109,7 +4110,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
     let breakevens = calculate_breakevens(&trade.legs, spread_type, Some(trade.credit_received));
     let pop        = trade.pop.unwrap_or_else(|| estimate_pop(trade));
 
-    let profit_str = format!("+${:.0}", max_profit);
+    let profit_str = if max_profit > 0.0 { format!("+${:.0}", max_profit) } else { "\u{2014}".to_string() };
     let loss_str   = if max_loss > 0.0 {
         format!("-${:.0}", max_loss)
     } else if spread_type == "put_broken_wing_butterfly" {
