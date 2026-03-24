@@ -83,6 +83,9 @@ pub struct AppState {
     pub col_visibility:  [bool; 22],
     pub show_col_picker: bool,
 
+    // Strategy guide (Tauri right panel — OSC 9997)
+    pub show_guide: bool,
+
     // Playbook auto-match candidates (when multiple match on save)
     pub playbook_match_candidates: Vec<i32>,
 
@@ -276,6 +279,7 @@ impl AppState {
             export_status_tick: 0,
             col_visibility,
             show_col_picker: false,
+            show_guide: false,
             playbook_match_candidates: Vec::new(),
             current_vix,
             beta_map,
@@ -878,6 +882,28 @@ impl AppState {
         let seq = "\x1b]9998;THETAVAULT_PERF_CLOSE\x07";
         let _ = std::io::stdout().lock().write_all(seq.as_bytes());
         let _ = std::io::stdout().lock().flush();
+    }
+
+    /// Emit OSC 9997 to show strategy guide panel in Tauri right pane.
+    pub fn start_guide(&mut self, strategy: &str) {
+        self.show_guide = true;
+        if self.under_tauri {
+            use std::io::Write;
+            let seq = format!("\x1b]9997;THETAVAULT_GUIDE:{}\x07", strategy);
+            let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+            let _ = std::io::stdout().lock().flush();
+        }
+    }
+
+    /// Send OSC 9997 close signal so Tauri hides the strategy guide panel.
+    pub fn stop_guide(&mut self) {
+        self.show_guide = false;
+        if self.under_tauri {
+            use std::io::Write;
+            let seq = "\x1b]9997;THETAVAULT_GUIDE_CLOSE\x07";
+            let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+            let _ = std::io::stdout().lock().flush();
+        }
     }
 
     pub fn edit_key_char(&mut self, c: char) {
@@ -2904,6 +2930,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Tab navigation
                 KeyCode::Tab => {
                     if app.selected_tab == 5 && app.perf_subtab == 1 { app.stop_perf_charts(); }
+                    if app.show_guide { app.stop_guide(); }
                     app.selected_tab = (app.selected_tab + 1) % 6;
                     app.show_detail  = false;
                     app.detail_scroll = 0;
@@ -2923,6 +2950,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 KeyCode::BackTab => {
                     if app.selected_tab == 5 && app.perf_subtab == 1 { app.stop_perf_charts(); }
+                    if app.show_guide { app.stop_guide(); }
                     app.selected_tab = if app.selected_tab == 0 { 5 } else { app.selected_tab - 1 };
                     app.show_detail  = false;
                     app.detail_scroll = 0;
@@ -3362,6 +3390,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::End if !app.playbooks.is_empty() => {
                             app.playbook_state.select(Some(app.playbooks.len() - 1));
                             app.thesis_scroll = 0;
+                        }
+                        KeyCode::Char('?') => {
+                            if let Some(idx) = app.playbook_state.selected() {
+                                if let Some(pb) = app.playbooks.get(idx) {
+                                    if pb.spread_type.as_deref() == Some("covered_call") {
+                                        if app.show_guide { app.stop_guide(); } else { app.start_guide("covered_call"); }
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
