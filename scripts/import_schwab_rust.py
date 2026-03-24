@@ -37,6 +37,43 @@ from typing import List, Dict, Any, Optional, Tuple
 # Raise this if you intentionally leg into ICs over more than 14 days.
 IC_MERGE_MAX_DAYS: int = 14
 
+# ---------- Sector Map ----------
+# Maps ticker symbols to GICS-style sector names for display in ThetaVault.
+# ETFs and index options (SPX, SPXW) are handled separately.
+TICKER_SECTORS: Dict[str, str] = {
+    # Technology
+    'AAPL': 'Technology', 'AMD': 'Technology', 'AVGO': 'Technology',
+    'CRM': 'Technology', 'CRWD': 'Technology', 'HPE': 'Technology',
+    'INTC': 'Technology', 'IONQ': 'Technology', 'MSFT': 'Technology',
+    'NVDA': 'Technology', 'ORCL': 'Technology', 'SMCI': 'Technology',
+    'SYM': 'Technology', 'TXN': 'Technology', 'MU': 'Technology',
+    'SNDK': 'Technology', 'ADBE': 'Technology',
+    # Communication Services
+    'GOOG': 'Communication Services', 'META': 'Communication Services',
+    'NFLX': 'Communication Services', 'T': 'Communication Services',
+    # Financial Services
+    'C': 'Financial Services', 'GS': 'Financial Services',
+    'PYPL': 'Financial Services', 'SOFI': 'Financial Services',
+    'XLF': 'Financial Services',
+    # Consumer
+    'AMZN': 'Consumer Cyclical', 'CAKE': 'Consumer Cyclical',
+    'WMT': 'Consumer Defensive',
+    # Industrials
+    'AAL': 'Industrials', 'BE': 'Industrials', 'GE': 'Industrials',
+    'SMR': 'Industrials',
+    # Healthcare
+    'JNJ': 'Healthcare',
+    # Materials
+    'GLD': 'Materials', 'SLV': 'Materials',
+    # Energy
+    'USO': 'Energy',
+    # ETFs (broad market / sector)
+    'SPY': 'ETF', 'QQQ': 'ETF', 'IWM': 'ETF',
+    # Cryptocurrency ETF
+    'IBIT': 'Cryptocurrency',
+    # Index derivatives — no sector (SPX, SPXW intentionally omitted)
+}
+
 # ---------- Yahoo Finance Historical Prices ----------
 
 _price_cache: Dict[str, Dict[str, float]] = {}  # ticker -> {date_str -> close_price}
@@ -232,7 +269,14 @@ def estimate_trade_greeks(trade: Dict, ticker_prices: Dict[str, float],
         is_call = 'call' in leg['type']
         is_short = leg['type'].startswith('short_')
         ot = 'call' if is_call else 'put'
-        g = option_greeks(S, leg['strike'], T, r, sigma, ot)
+        # Use per-leg expiration if available (calendar/diagonal spreads have different DTEs)
+        leg_exp_str = leg.get('expirationDate')
+        if leg_exp_str:
+            leg_exp_date = datetime.fromisoformat(leg_exp_str[:10]).date()
+            T_leg = max((leg_exp_date - entry_date).days / 365.25, 1.0 / 365.0)
+        else:
+            T_leg = T
+        g = option_greeks(S, leg['strike'], T_leg, r, sigma, ot)
         sign = -1 if is_short else 1
         leg_qty = leg.get('quantity') or 1
         pos_delta += sign * leg_qty * g['delta']
@@ -345,7 +389,8 @@ def build_trade_dict(ticker, spread_type, qty, short_strike, long_strike,
         'expirationDate': expiration.strftime('%Y-%m-%dT00:00:00Z'),
         'tradeDate': trade_date,
         'commission': round(commission + close_commission, 2),  # Total commission (open + close)
-        'legs': api_legs
+        'legs': api_legs,
+        'sector': TICKER_SECTORS.get(ticker, ''),
     }
     # Set back-month expiration for multi-expiration strategies (calendars, diagonals, PMCC)
     if back_expiration:
@@ -1183,9 +1228,11 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
 
                                 api_legs = [
                                     {'type': f"short_{short_leg['opt_type']}", 'strike': short_leg['strike'],
-                                     'premium': short_leg['price'], 'closePremium': short_close},
+                                     'premium': short_leg['price'], 'closePremium': short_close,
+                                     'expirationDate': short_leg['expiration'].strftime('%Y-%m-%d')},
                                     {'type': f"long_{long_leg['opt_type']}", 'strike': long_leg['strike'],
-                                     'premium': long_leg['price'], 'closePremium': long_close}
+                                     'premium': long_leg['price'], 'closePremium': long_close,
+                                     'expirationDate': long_leg['expiration'].strftime('%Y-%m-%d')}
                                 ]
 
                                 if spread_type != 'calendar_spread':
@@ -2274,7 +2321,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         playbook_id, rolled_from_id,
                         is_earnings_play, is_tested,
                         trade_grade, grade_notes,
-                        legs_json, tags, notes
+                        legs_json, tags, notes, sector
                     ) VALUES (
                         ?,?,?,
                         ?,?,?,?,
@@ -2289,7 +2336,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         ?,?,
                         ?,?,
                         ?,?,
-                        ?,?,?
+                        ?,?,?,?
                     )""",
                     (
                         trade['ticker'],                                            # ticker
@@ -2335,6 +2382,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         legs_json,                                                  # legs_json
                         '',                                                         # tags
                         None,                                                       # notes
+                        trade.get('sector', ''),                                    # sector
                     )
                 )
                 conn.commit()
