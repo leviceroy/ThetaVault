@@ -3396,7 +3396,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 if let Some(pb) = app.playbooks.get(idx) {
                                     let supported = matches!(
                                         pb.spread_type.as_deref(),
-                                        Some("covered_call") | Some("short_put_vertical")
+                                        Some("covered_call") | Some("short_put_vertical") | Some("iron_condor")
                                     );
                                     if supported {
                                         let strategy = pb.spread_type.as_deref().unwrap_or("covered_call").to_string();
