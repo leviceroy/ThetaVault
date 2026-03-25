@@ -920,6 +920,7 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
             temp_used_closes = set()
             new_legs = []
             close_dates: list = []  # actual BTC/STC dates from matched transactions
+            close_fees: float = 0.0   # accumulated commission from close transactions
 
             # For multi-expiry trades (Calendars/Diagonals), legs might have different expiries
             possible_expirations = [t_db['expiration_date'][:10]]
@@ -947,6 +948,8 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                         new_legs.append(leg_copy)
                         if c_date:
                             close_dates.append(c_date)
+                        if c_fee:
+                            close_fees += c_fee
                         found_leg_close = True
                         break
 
@@ -999,7 +1002,7 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                     'tradeDate': t_db['trade_date'] or t_db['entry_date'],
                     'expirationDate': t_db['expiration_date'],
                     'entryTime': t_db['entry_date'],
-                    'commission': t_db['commission'] or 0.0,
+                    'commission': round((t_db['commission'] or 0.0) + close_fees, 2),
                     'legs': new_legs,
                     'is_update': True
                 }
@@ -1118,6 +1121,87 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                                     print(f"  [ROLL] Chain created: {t_db['ticker']} IC {t_db['id']} → new child IC "
                                           f"new legs {new_leg_short['strike']}/{new_leg_long['strike']}, "
                                           f"parent pnl=${updated_trade['forcePnl']:+.2f}, child cr={child_credit:+.2f}")
+
+                    # ── DIAGONAL / PMCC SHORT-LEG ROLL ────────────────────────────────
+                    # LDS / SDS / PMCC / Calendar: exactly 1 of 2 legs closed (the short
+                    # leg) with a matching Sell to Open at a different expiry on the same
+                    # date → roll of the short leg only; long leg carries forward.
+                    elif t_db['strategy'] in ('long_diagonal_spread', 'short_diagonal_spread',
+                                              'pmcc', 'calendar_spread') \
+                            and matched_legs == 1 and close_dates:
+                        matched_leg   = next((l for l in new_legs if l.get('closePremium') is not None), None)
+                        unmatched_leg = next((l for l in new_legs if l.get('closePremium') is None), None)
+
+                        if matched_leg and 'short' in matched_leg['type'] and unmatched_leg:
+                            roll_date = max(close_dates).strftime('%Y-%m-%d')
+                            roll_key  = (roll_date, t_db['ticker'])
+                            roll_pool = opens_by_date_ticker.get(roll_key, [])
+                            opt_type  = 'call' if 'call' in matched_leg['type'] else 'put'
+
+                            cands = [
+                                o for o in roll_pool
+                                if o['opt_type'] == opt_type and o['action'] == 'Sell to Open'
+                            ]
+
+                            if cands:
+                                new_short_txn = cands[0]
+
+                                # Close parent: rolled, short-leg P&L only
+                                updated_trade['exitTime']   = roll_date + 'T16:00:00Z'
+                                updated_trade['exitReason'] = 'rolled'
+                                updated_trade['legs']       = new_legs
+
+                                cp        = matched_leg['closePremium']
+                                short_pnl = (matched_leg['premium'] - cp) * 100.0 * t_db['quantity']
+                                updated_trade['forcePnl'] = round(short_pnl, 2)
+
+                                # New short leg at rolled expiry
+                                new_short_leg = {
+                                    'type':           matched_leg['type'],
+                                    'strike':         new_short_txn['strike'],
+                                    'premium':        new_short_txn['price'],
+                                    'closePremium':   None,
+                                    'expirationDate': new_short_txn['expiration'].strftime('%Y-%m-%d'),
+                                }
+
+                                # Long leg carries forward at original cost basis
+                                long_leg     = dict(unmatched_leg)
+                                child_legs   = [new_short_leg, long_leg]
+                                child_credit = sum(
+                                    l['premium'] if l['type'].startswith('short_') else -l['premium']
+                                    for l in child_legs
+                                )
+
+                                child_trade = {
+                                    'ticker':          t_db['ticker'],
+                                    'spreadType':      t_db['strategy'],
+                                    'quantity':        t_db['quantity'],
+                                    'creditReceived':  round(child_credit, 2),
+                                    'tradeDate':       roll_date,
+                                    'entryTime':       roll_date + 'T10:00:00Z',
+                                    'expirationDate':  t_db['expiration_date'][:10],
+                                    'legs':            child_legs,
+                                    'commission':      t_db.get('commission'),
+                                    'underlyingPrice': t_db.get('underlying_price'),
+                                    'vixAtEntry':      t_db.get('vix_at_entry'),
+                                }
+                                trades.append(child_trade)
+
+                                # Consume rolled open so it doesn't become a standalone trade
+                                roll_pool.remove(new_short_txn)
+
+                                # Fingerprint prevents re-processing on future imports
+                                roll_fp = f"roll|{t_db['id']}|{roll_date}"
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+                                    (roll_fp, t_db['id'])
+                                )
+                                conn.commit()
+
+                                print(f"  [DIAG ROLL] {t_db['ticker']} {t_db['strategy']} {t_db['id']} → "
+                                      f"rolled {matched_leg['type']} {matched_leg['strike']} "
+                                      f"→ exp {new_short_txn['expiration'].strftime('%Y-%m-%d')}, "
+                                      f"pnl=${short_pnl:+.2f}, child cr={child_credit:+.2f}")
 
                 # Pass the oc fingerprint through to insert_trades so it's only persisted
                 # AFTER the UPDATE commit succeeds — avoids blocking future retries on failure.
@@ -2254,16 +2338,17 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
             if trade.get('is_update') and trade.get('id'):
                 # UPDATE existing open trade (could be a simple close or a roll)
                 conn.execute(
-                    """UPDATE trades SET 
+                    """UPDATE trades SET
                         strategy = ?,
                         short_strike = ?, long_strike = ?,
                         short_premium = ?, long_premium = ?,
                         credit_received = ?,
                         trade_date = ?, entry_date = ?,
-                        exit_date = ?, pnl = ?, debit_paid = ?, 
+                        exit_date = ?, pnl = ?, debit_paid = ?,
                         exit_reason = ?, dte_at_close = ?, legs_json = ?,
                         underlying_price_at_close = ?, pop = ?,
-                        spread_width = ?, bpr = ?
+                        spread_width = ?, bpr = ?,
+                        commission = ?
                         WHERE id = ?""",
                     (
                         trade['spreadType'],
@@ -2283,6 +2368,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         pop_val,
                         spread_width,
                         bpr,
+                        trade.get('commission'),
                         trade['id']
                     )
                 )
@@ -2431,6 +2517,13 @@ def link_roll_chains(conn: sqlite3.Connection, trades: List[Dict],
         close_date = closed_trade.get('exitTime', '')[:10]  # YYYY-MM-DD
         ticker = closed_trade['ticker']
 
+        # Guard: skip if this parent already has a child linked in the DB (idempotency)
+        existing_child = conn.execute(
+            "SELECT id FROM trades WHERE rolled_from_id = ?", (closed_db_id,)
+        ).fetchone()
+        if existing_child:
+            continue
+
         # Find the new trade (roll target)
         for j, candidate in enumerate(trades):
             if j == i or j not in id_map:
@@ -2438,8 +2531,13 @@ def link_roll_chains(conn: sqlite3.Connection, trades: List[Dict],
             if candidate['ticker'] != ticker:
                 continue
             if candidate['tradeDate'][:10] == close_date:
-                # This is the roll target — set its rolled_from_id to the closed trade's DB id
                 new_db_id = id_map[j]
+                # Guard: skip if candidate already has a parent linked (prevents double-link)
+                existing_parent = conn.execute(
+                    "SELECT rolled_from_id FROM trades WHERE id = ?", (new_db_id,)
+                ).fetchone()
+                if existing_parent and existing_parent[0] is not None:
+                    continue
                 conn.execute(
                     "UPDATE trades SET rolled_from_id = ? WHERE id = ?",
                     (closed_db_id, new_db_id)
