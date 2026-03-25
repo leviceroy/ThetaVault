@@ -6,8 +6,13 @@
 *.db-shm
 *.db-wal
 
-# Schwab transaction export files (personal financial data)
-*.json
+# Schwab transaction export files (personal financial data — root level only)
+/*.json
+
+# Tauri frontend (nested)
+tauri/node_modules/
+tauri/dist/
+tauri/src-tauri/target/
 
 # One-time migration / fix scripts (not reusable utilities)
 scripts/backfill_import_log.py
