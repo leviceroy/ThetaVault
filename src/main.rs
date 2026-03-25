@@ -668,6 +668,7 @@ impl AppState {
                 let i = self.playbook_state.selected().unwrap_or(0);
                 self.playbook_state.select(Some(if i + 1 >= len { 0 } else { i + 1 }));
                 self.thesis_scroll = 0;
+                self.refresh_guide_if_open();
             }
             3 => {
                 let rows = theta_vault_rust::actions::build_action_rows(
@@ -724,6 +725,7 @@ impl AppState {
                 let i = self.playbook_state.selected().unwrap_or(0);
                 self.playbook_state.select(Some(if i == 0 { len - 1 } else { i - 1 }));
                 self.thesis_scroll = 0;
+                self.refresh_guide_if_open();
             }
             3 => {
                 let rows = theta_vault_rust::actions::build_action_rows(
@@ -885,6 +887,7 @@ impl AppState {
     }
 
     /// Emit OSC 9997 to show strategy guide panel in Tauri right pane.
+    /// Payload is JSON: { strategy, name, description, criteria }
     pub fn start_guide(&mut self, strategy: &str) {
         self.show_guide = true;
         if self.under_tauri {
@@ -892,6 +895,34 @@ impl AppState {
             let seq = format!("\x1b]9997;THETAVAULT_GUIDE:{}\x07", strategy);
             let _ = std::io::stdout().lock().write_all(seq.as_bytes());
             let _ = std::io::stdout().lock().flush();
+        }
+    }
+
+    /// Emit OSC 9997 with full playbook JSON so Tauri right pane gets all data.
+    pub fn start_guide_playbook(&mut self, pb: &models::PlaybookStrategy) {
+        self.show_guide = true;
+        if self.under_tauri {
+            use std::io::Write;
+            let strategy = pb.spread_type.as_deref().unwrap_or("custom");
+            let payload = serde_json::json!({
+                "strategy": strategy,
+                "name": pb.name,
+                "description": pb.description.as_deref().unwrap_or(""),
+                "criteria": pb.entry_criteria,
+            });
+            let seq = format!("\x1b]9997;THETAVAULT_GUIDE:{}\x07", payload);
+            let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+            let _ = std::io::stdout().lock().flush();
+        }
+    }
+
+    /// Re-emit guide for currently selected playbook (called on ↑↓ navigation while guide is open).
+    pub fn refresh_guide_if_open(&mut self) {
+        if !self.show_guide || !self.under_tauri { return; }
+        if let Some(idx) = self.playbook_state.selected() {
+            if let Some(pb) = self.playbooks.get(idx).cloned() {
+                self.start_guide_playbook(&pb);
+            }
         }
     }
 
@@ -1276,7 +1307,8 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::ShortDiagonalSpread,
         models::StrategyType::LongCallVertical,
         models::StrategyType::LongPutVertical,
-        models::StrategyType::Zebra,
+        models::StrategyType::PutZebra,
+        models::StrategyType::CallZebra,
         models::StrategyType::Custom,
         models::StrategyType::PutBrokenWingButterfly,
     ]
@@ -1289,14 +1321,16 @@ fn strategy_shows_per_leg_expiry(strategy: &models::StrategyType) -> bool {
         models::StrategyType::LongDiagonalSpread |
         models::StrategyType::ShortDiagonalSpread |
         models::StrategyType::Pmcc |
-        models::StrategyType::Zebra |
+        models::StrategyType::PutZebra |
+        models::StrategyType::CallZebra |
         models::StrategyType::Custom)
 }
 
 /// True for custom / zebra / PBWB — per-leg quantity fields.
 fn strategy_shows_per_leg_qty(strategy: &models::StrategyType) -> bool {
     matches!(strategy,
-        models::StrategyType::Zebra |
+        models::StrategyType::PutZebra |
+        models::StrategyType::CallZebra |
         models::StrategyType::Custom |
         models::StrategyType::PutBrokenWingButterfly)
 }
@@ -1849,7 +1883,9 @@ fn all_spread_type_strings() -> Vec<String> {
         "short_diagonal_spread".to_string(),
         "long_call_vertical".to_string(),
         "long_put_vertical".to_string(),
-        "zebra".to_string(),
+        "ratio_spread".to_string(),
+        "pzbr".to_string(),
+        "czbr".to_string(),
         "custom".to_string(),
     ]
 }
@@ -3393,15 +3429,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                         KeyCode::Char('?') => {
                             if let Some(idx) = app.playbook_state.selected() {
-                                if let Some(pb) = app.playbooks.get(idx) {
-                                    let supported = matches!(
-                                        pb.spread_type.as_deref(),
-                                        Some("covered_call") | Some("short_put_vertical") | Some("iron_condor") | Some("short_call_vertical") | Some("calendar_spread") | Some("strangle") | Some("put_broken_wing_butterfly") | Some("iron_butterfly")
-                                    );
-                                    if supported {
-                                        let strategy = pb.spread_type.as_deref().unwrap_or("covered_call").to_string();
-                                        if app.show_guide { app.stop_guide(); } else { app.start_guide(&strategy); }
-                                    }
+                                if app.show_guide {
+                                    app.stop_guide();
+                                } else if let Some(pb) = app.playbooks.get(idx).cloned() {
+                                    app.start_guide_playbook(&pb);
                                 }
                             }
                         }

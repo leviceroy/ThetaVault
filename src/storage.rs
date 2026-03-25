@@ -853,17 +853,21 @@ impl Storage {
         Ok(())
     }
 
-    /// One-time migration: update Zebra playbooks from any spread_type → 'zebra'.
-    /// Uses Rust-side name check for reliability regardless of case/spacing.
+    /// Migration: assign correct pzbr/czbr spread_type to Zebra playbooks.
+    /// Handles old "zebra", "call_zebra", and untagged zebra-named playbooks.
     pub fn migrate_zebra_type(&self) -> Result<()> {
         let pbs = self.get_all_playbooks()?;
         for pb in pbs {
-            if pb.name.to_lowercase().contains("zebra")
-                && pb.spread_type.as_deref() != Some("zebra")
-            {
+            let name_lc = pb.name.to_lowercase();
+            let current = pb.spread_type.as_deref().unwrap_or("");
+            let is_call_zebra = name_lc.contains("call zebra") || name_lc.contains("call_zebra") || current == "call_zebra" || current == "czbr";
+            let is_any_zebra  = name_lc.contains("zebra") || current == "zebra" || current == "call_zebra" || current == "pzbr" || current == "czbr";
+            if !is_any_zebra { continue; }
+            let target = if is_call_zebra { "czbr" } else { "pzbr" };
+            if current != target {
                 self.conn.execute(
-                    "UPDATE playbook_strategies SET spread_type = 'zebra' WHERE id = ?1",
-                    params![pb.id],
+                    "UPDATE playbook_strategies SET spread_type = ?1 WHERE id = ?2",
+                    params![target, pb.id],
                 )?;
             }
         }

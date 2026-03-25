@@ -191,7 +191,7 @@ pub fn draw_ui(
         (0, _) => " Q:Quit  Tab:Switch  ←→:Focus  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB) ",
+        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, AppMode::JournalNote)  => " Type note  Enter:Save  Esc:Cancel ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  N:Add Note  R:Refresh ",
@@ -4454,7 +4454,7 @@ fn badge_color(spread_type: &str) -> Color {
         "calendar_spread" | "pmcc"                     => C_YELLOW,
         "long_diagonal_spread" | "short_diagonal_spread" => Color::Rgb(249, 115, 22),
         "long_call_vertical" | "long_put_vertical"    => C_CYAN,
-        "zebra"                                        => Color::Rgb(168, 85, 247),  // purple
+        "pzbr" | "czbr"                                => Color::Rgb(168, 85, 247),  // purple
         "put_broken_wing_butterfly"                    => Color::Rgb(251, 146, 60),  // warm orange
         _                                              => C_GRAY,
     }

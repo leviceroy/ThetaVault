@@ -24,7 +24,8 @@ pub enum StrategyType {
     ShortDiagonalSpread,
     LongCallVertical,
     LongPutVertical,
-    Zebra,
+    PutZebra,
+    CallZebra,
     Custom,
     PutBrokenWingButterfly,
 }
@@ -47,7 +48,8 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "Short Diagonal Spread",
             StrategyType::LongCallVertical    => "Long Call Vertical",
             StrategyType::LongPutVertical     => "Long Put Vertical",
-            StrategyType::Zebra               => "Zebra Spread",
+            StrategyType::PutZebra            => "Put ZEBRA",
+            StrategyType::CallZebra           => "Call ZEBRA",
             StrategyType::Custom              => "Custom / Ratio Spread",
             StrategyType::PutBrokenWingButterfly => "Put Broken Wing Butterfly",
         }
@@ -70,7 +72,8 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "SDS",
             StrategyType::LongCallVertical    => "LCV",
             StrategyType::LongPutVertical     => "LPV",
-            StrategyType::Zebra               => "ZBR",
+            StrategyType::PutZebra            => "PZBR",
+            StrategyType::CallZebra           => "CZBR",
             StrategyType::Custom              => "CUST",
             StrategyType::PutBrokenWingButterfly => "PBWB",
         }
@@ -93,7 +96,8 @@ impl StrategyType {
             "short_diagonal_spread" => StrategyType::ShortDiagonalSpread,
             "long_call_vertical"    => StrategyType::LongCallVertical,
             "long_put_vertical"     => StrategyType::LongPutVertical,
-            "zebra"                          => StrategyType::Zebra,
+            "pzbr"                           => StrategyType::PutZebra,
+            "czbr"                           => StrategyType::CallZebra,
             "put_broken_wing_butterfly"      => StrategyType::PutBrokenWingButterfly,
             _                                => StrategyType::Custom,
         }
@@ -116,7 +120,8 @@ impl StrategyType {
             StrategyType::ShortDiagonalSpread => "short_diagonal_spread",
             StrategyType::LongCallVertical    => "long_call_vertical",
             StrategyType::LongPutVertical     => "long_put_vertical",
-            StrategyType::Zebra               => "zebra",
+            StrategyType::PutZebra            => "pzbr",
+            StrategyType::CallZebra           => "czbr",
             StrategyType::Custom              => "custom",
             StrategyType::PutBrokenWingButterfly => "put_broken_wing_butterfly",
         }
@@ -220,7 +225,8 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::ShortDiagonalSpread => vec![LegType::ShortCall, LegType::LongCall],
         StrategyType::LongCallVertical    => vec![LegType::LongCall,  LegType::ShortCall],
         StrategyType::LongPutVertical     => vec![LegType::LongPut,   LegType::ShortPut],
-        StrategyType::Zebra               => vec![],  // user builds legs freely
+        StrategyType::PutZebra            => vec![],  // user builds legs freely
+        StrategyType::CallZebra           => vec![],
         StrategyType::Custom              => vec![],
         // ShortPut = ATM anchor short; two LongPuts = ATM long (higher) + wing (lower)
         StrategyType::PutBrokenWingButterfly => vec![LegType::ShortPut, LegType::LongPut, LegType::LongPut],
@@ -235,7 +241,7 @@ pub fn merge_legs_for_strategy_change(
     existing_legs: &[TradeLeg],
     new_strategy: &StrategyType,
 ) -> (Vec<TradeLeg>, Vec<TradeLeg>) {
-    if *new_strategy == StrategyType::Custom || *new_strategy == StrategyType::Zebra {
+    if *new_strategy == StrategyType::Custom || *new_strategy == StrategyType::PutZebra || *new_strategy == StrategyType::CallZebra {
         return (existing_legs.to_vec(), vec![]);
     }
 
