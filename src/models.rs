@@ -416,13 +416,19 @@ impl Trade {
     pub fn spread_type(&self) -> &'static str {
         self.strategy.as_str()
     }
+
+    /// True if this was a 0DTE trade (entered on expiration day)
+    pub fn is_0dte(&self) -> bool {
+        self.entry_dte == Some(0)
+            || self.trade_date.date_naive() == self.expiration_date.date_naive()
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Playbook Strategy Entry Criteria
 // ──────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct EntryCriteria {
     #[serde(rename = "minIVR")]
     pub min_ivr: Option<f64>,
@@ -589,7 +595,8 @@ pub struct PortfolioStats {
 #[derive(Debug, Clone)]
 pub struct StrategyBreakdown {
     pub strategy: StrategyType,
-    pub trades: usize,
+    pub trades: usize,      // closed trades
+    pub open_count: usize,  // open (active) trades
     pub wins: usize,
     pub scratches: usize,
     pub total_pnl: f64,
@@ -669,10 +676,11 @@ pub struct PerfChartPayload {
     pub unrealized_history: Vec<f64>,
     pub peak_history:       Vec<f64>,
     pub monthly_pnl:        Vec<MonthlyPnl>,
-    pub rolling_win_rate:   Vec<f64>,
-    pub dte_roc_scatter:    Vec<(i32, f64, String)>,  // (dte, roc%, strategy label)
-    pub bpr_history:        Vec<f64>,
-    pub sector_trends:      Vec<SectorTrend>,
+    pub rolling_win_rate:        Vec<f64>,
+    pub rolling_theta_capture:   Vec<f64>,
+    pub dte_roc_scatter:         Vec<(i32, f64, String)>,  // (dte, roc%, strategy label)
+    pub bpr_history:             Vec<f64>,
+    pub sector_trends:           Vec<SectorTrend>,
 }
 
 /// Item 4: P&L distribution histogram bucket
@@ -818,6 +826,9 @@ pub struct PerformanceStats {
 
     // L6: Sector exposure by month (sparkline rows per sector)
     pub sector_trends: Vec<SectorTrend>,
+
+    // 0DTE: monthly P&L for same-day expiry trades only
+    pub monthly_0dte_pnl: Vec<MonthlyPnl>,
 }
 
 impl Default for PerformanceStats {
@@ -847,6 +858,7 @@ impl Default for PerformanceStats {
             unrealized_history: vec![],
             bpr_history: vec![],
             sector_trends: vec![],
+            monthly_0dte_pnl: vec![],
         }
     }
 }

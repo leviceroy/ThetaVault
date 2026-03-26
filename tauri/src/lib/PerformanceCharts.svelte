@@ -29,6 +29,7 @@
   const peakHist: number[]     = data.peak_history ?? [];
   const monthly: MonthlyPnl[]  = data.monthly_pnl ?? [];
   const rollingWR: number[]    = data.rolling_win_rate ?? [];
+  const rollingTC: number[]    = data.rolling_theta_capture ?? [];
   const scatter: [number, number, string][] = data.dte_roc_scatter ?? [];
   const bprHist: number[]      = data.bpr_history ?? [];
   const sectorTrends: SectorTrend[] = data.sector_trends ?? [];
@@ -137,6 +138,17 @@
     return "#94a3b8";
   }
 
+  // ── Panel 5b: Rolling Theta Capture ────────────────────────────────────────
+
+  const tcXs      = rollingTC.map((_, i) => toX(i, rollingTC.length));
+  const tcYMax    = 150;
+  const tcYs      = rollingTC.map((v) => toY(v, 0, tcYMax));
+  const tcPath    = linePath(tcXs, tcYs);
+  const tc80Y     = toY(80, 0, tcYMax);
+  const tc50Y     = toY(50, 0, tcYMax);
+  const tc100Y    = toY(100, 0, tcYMax);
+  const latestTC  = rollingTC[rollingTC.length - 1] ?? 0;
+
   // ── Panel 6: BPR History ────────────────────────────────────────────────────
 
   const bprMin  = Math.min(...bprHist) * 0.9;
@@ -162,11 +174,12 @@
     <button class="close-btn" on:click={() => dispatch("close")}>✕</button>
   </div>
 
+  <div class="charts-grid">
   <!-- Panel 1: Account Growth -->
   {#if balHist.length >= 2}
   <div class="panel">
     <div class="panel-title">Account Growth</div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <!-- Zero / baseline -->
       <line x1={PL} y1={zeroBalY} x2={W - PR} y2={zeroBalY}
             stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
@@ -198,7 +211,7 @@
   {#if monthly.length >= 2}
   <div class="panel">
     <div class="panel-title">Monthly P&amp;L</div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <line x1={PL} y1={mZeroY} x2={W - PR} y2={mZeroY}
             stroke="#30363d" stroke-width="1"/>
       {#each monthly as m, i}
@@ -230,7 +243,7 @@
       </span>
       &nbsp; worst: <span style="color:#f87171">{worstDd.toFixed(1)}%</span>
     </div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <line x1={PL} y1={ddZeroY} x2={W - PR} y2={ddZeroY}
             stroke="#30363d" stroke-width="1"/>
       <path d={ddFill} fill="#ef4444" opacity="0.15"/>
@@ -250,7 +263,7 @@
         latest: {latestWR.toFixed(0)}%
       </span>
     </div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <!-- 66% target -->
       <line x1={PL} y1={wr66Y} x2={W - PR} y2={wr66Y}
             stroke="#4ade80" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>
@@ -271,11 +284,45 @@
   </div>
   {/if}
 
+  <!-- Panel 4b: Rolling Theta Capture -->
+  {#if rollingTC.length >= 5}
+  <div class="panel">
+    <div class="panel-title">
+      Rolling Theta Capture &nbsp;
+      <span style="color: {latestTC >= 80 && latestTC <= 120 ? '#4ade80' : latestTC >= 50 ? '#fbbf24' : '#f87171'}">
+        latest: {latestTC.toFixed(0)}%
+      </span>
+    </div>
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
+      <!-- 100% reference (break-even theta) -->
+      <line x1={PL} y1={tc100Y} x2={W - PR} y2={tc100Y}
+            stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x={W - PR - 2} y={tc100Y - 3} fill="#475569" font-size="9" text-anchor="end">100%</text>
+      <!-- 80% target -->
+      <line x1={PL} y1={tc80Y} x2={W - PR} y2={tc80Y}
+            stroke="#4ade80" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>
+      <text x={W - PR - 2} y={tc80Y - 3} fill="#4ade80" font-size="9" text-anchor="end">80%</text>
+      <!-- 50% caution -->
+      <line x1={PL} y1={tc50Y} x2={W - PR} y2={tc50Y}
+            stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x={W - PR - 2} y={tc50Y - 3} fill="#64748b" font-size="9" text-anchor="end">50%</text>
+      <path d={tcPath} fill="none"
+            stroke={latestTC >= 80 && latestTC <= 120 ? "#4ade80" : latestTC >= 50 ? "#fbbf24" : "#f87171"}
+            stroke-width="2"/>
+      <text x={PL} y={PT - 6} fill="#94a3b8" font-size="10">{tcYMax}%</text>
+      <text x={PL} y={PH - PB + 14} fill="#94a3b8" font-size="10">0%</text>
+      <text x={W - PR} y={PH - PB + 14} fill="#94a3b8" font-size="10" text-anchor="end">
+        {rollingTC.length} trades
+      </text>
+    </svg>
+  </div>
+  {/if}
+
   <!-- Panel 5: DTE@Entry vs ROC% scatter -->
   {#if scatter.length >= 3}
   <div class="panel">
     <div class="panel-title">DTE@Entry vs ROC%</div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <!-- Zero ROC line -->
       <line x1={PL} y1={scZeroY} x2={W - PR} y2={scZeroY}
             stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
@@ -303,7 +350,7 @@
       Position Sizing (BPR) &nbsp;
       <span style="color:#94a3b8">avg {fmtK(bprAvg)}</span>
     </div>
-    <svg width={W} height={PH} viewBox="0 0 {W} {PH}">
+    <svg width="100%" height={Math.round(PH * 1.3)} viewBox="0 0 {W} {PH}" preserveAspectRatio="xMinYMin meet">
       <!-- avg reference line -->
       <line x1={PL} y1={bprAvgY} x2={W - PR} y2={bprAvgY}
             stroke="#64748b" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
@@ -350,6 +397,7 @@
     </div>
   </div>
   {/if}
+  </div><!-- end charts-grid -->
 </div>
 
 <style>
@@ -395,11 +443,17 @@
     color: #e2e8f0;
   }
 
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
   .panel {
     background: #0d1117;
     border: 1px solid #21262d;
     border-radius: 6px;
-    margin-bottom: 8px;
     padding: 0 0 4px;
     overflow: hidden;
   }

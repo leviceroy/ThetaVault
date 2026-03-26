@@ -1086,6 +1086,188 @@ impl Storage {
         self.insert_playbook(&pb)?;
         Ok(())
     }
+
+    /// Seed all default playbook strategies that don't already exist.
+    /// Called at startup so a fresh clone has a full playbook out of the box.
+    pub fn ensure_default_playbooks(&self) -> Result<()> {
+        use crate::models::EntryCriteria;
+
+        struct Def {
+            name:        &'static str,
+            spread_type: &'static str,
+            desc:        &'static str,
+            ec:          Option<EntryCriteria>,
+        }
+
+        let defs: &[Def] = &[
+            Def {
+                name: "Short Put Vertical",
+                spread_type: "short_put_vertical",
+                desc: build_short_put_vertical_desc(),
+                ec: Some(EntryCriteria {
+                    min_ivr: Some(30.0), max_ivr: None,
+                    min_delta: Some(16.0), max_delta: Some(30.0),
+                    min_dte: Some(10), max_dte: Some(45),
+                    max_allocation_pct: Some(2.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("21 DTE EXIT".to_string()),
+                    min_pop: Some(60.0), vix_min: None, vix_max: None,
+                    max_bpr_pct: Some(5.0), notes: None,
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Cash Secured Put",
+                spread_type: "cash_secured_put",
+                desc: build_cash_secured_put_desc(),
+                ec: Some(EntryCriteria {
+                    target_profit_pct: Some(85.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Covered Call",
+                spread_type: "covered_call",
+                desc: build_covered_call_desc(),
+                ec: Some(EntryCriteria {
+                    target_profit_pct: Some(85.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Iron Condor",
+                spread_type: "iron_condor",
+                desc: build_iron_condor_desc(),
+                ec: Some(EntryCriteria {
+                    min_ivr: Some(30.0), max_ivr: None,
+                    min_delta: Some(16.0), max_delta: Some(30.0),
+                    min_dte: Some(10), max_dte: Some(45),
+                    max_allocation_pct: Some(2.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("21 DTE EXIT".to_string()),
+                    min_pop: Some(60.0), vix_min: None, vix_max: None,
+                    max_bpr_pct: Some(5.0),
+                    notes: Some("Low IV".to_string()),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Short Call Vertical",
+                spread_type: "short_call_vertical",
+                desc: build_short_call_vertical_desc(),
+                ec: Some(EntryCriteria {
+                    min_delta: Some(16.0), max_delta: Some(30.0),
+                    min_dte: Some(10), max_dte: Some(45),
+                    max_allocation_pct: Some(2.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("21 DTE EXIT".to_string()),
+                    min_pop: Some(65.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Calendar Spread",
+                spread_type: "calendar_spread",
+                desc: build_calendar_spread_desc(),
+                ec: Some(EntryCriteria {
+                    min_ivr: Some(25.0), max_ivr: Some(45.0),
+                    min_delta: Some(10.0), max_delta: Some(20.0),
+                    max_allocation_pct: Some(1.0),
+                    target_profit_pct: Some(25.0),
+                    management_rule: Some("Before Expiry".to_string()),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Short Strangle",
+                spread_type: "strangle",
+                desc: build_short_strangle_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Iron Butterfly (Iron Fly)",
+                spread_type: "iron_butterfly",
+                desc: build_iron_fly_desc(),
+                ec: Some(EntryCriteria {
+                    target_profit_pct: Some(25.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Short Diagonal Spread",
+                spread_type: "short_diagonal_spread",
+                desc: build_short_diagonal_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Put ZEBRA",
+                spread_type: "pzbr",
+                desc: build_put_zebra_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Call ZEBRA",
+                spread_type: "czbr",
+                desc: build_call_zebra_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Poor Man's Covered Call",
+                spread_type: "pmcc",
+                desc: build_pmcc_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Long Diagonal Spread",
+                spread_type: "long_diagonal_spread",
+                desc: build_long_diagonal_desc(),
+                ec: None,
+            },
+            Def {
+                name: "Long Put Vertical Spread",
+                spread_type: "long_put_vertical",
+                desc: build_long_put_vertical_desc(),
+                ec: Some(EntryCriteria {
+                    min_dte: Some(30), max_dte: Some(45),
+                    target_profit_pct: Some(50.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Long Call Vertical Spread",
+                spread_type: "long_call_vertical",
+                desc: build_long_call_vertical_desc(),
+                ec: Some(EntryCriteria {
+                    min_ivr: Some(30.0), max_ivr: Some(100.0),
+                    min_delta: Some(16.0), max_delta: Some(30.0),
+                    min_dte: Some(30), max_dte: Some(45),
+                    max_allocation_pct: Some(1.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("dte_exit_21".to_string()),
+                    ..Default::default()
+                }),
+            },
+        ];
+
+        for def in defs {
+            let count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM playbook_strategies WHERE name = ?1",
+                params![def.name],
+                |row| row.get(0),
+            )?;
+            if count > 0 { continue; }
+
+            let criteria_json = def.ec.as_ref()
+                .and_then(|ec| serde_json::to_string(ec).ok())
+                .unwrap_or_else(|| "null".to_string());
+            self.conn.execute(
+                "INSERT INTO playbook_strategies (name, description, spread_type, entry_criteria_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![def.name, def.desc, def.spread_type, criteria_json],
+            )?;
+        }
+        Ok(())
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1178,6 +1360,566 @@ V. MANAGEMENT & DEFENSIVE TACTICS:
 Takeaways:
 • Put BWBs are ideal in products with put skew — skew lets us make them wider or collect a larger credit upfront.
 • BWBs don't appreciate in value much until close to expiration when extrinsic value approaches zero. Primary goal: remove risk early by rolling to a symmetrical butterfly if the spread moves further OTM for a debit less than the original credit — lock in a small profit and eliminate initial risk."
+}
+
+fn build_short_put_vertical_desc() -> &'static str {
+    "Neutral-Bullish defined risk credit trade betting against the stock moving below the short strike. Profits from the stock rising, staying flat, or decaying time.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral-Bullish
+\u{2022} IV Environment: High (Maximizes credit)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 OTM/ATM Put.
+2. Buy 1 further OTM Put (defines max risk).
+\u{2022} Goal: Collect ~1/3rd the width of the strikes in credit.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Credit Received.
+\u{2022} Max Loss: Distance Between Strikes - Credit Received.
+\u{2022} Breakeven: Short Put Strike - Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (Profits as stock rises)
+\u{2022} Theta: Long (Profits from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Flat
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock rises or stays above the short strike, time passes, and volatility contracts.
+\u{2022} Rolling Out: If the spread is tested, roll out to a farther expiration for a credit to add time, reduce max loss, and increase potential profit.
+\u{2022} Early Profit: Close at 50% of max profit to secure gains and free up capital.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Spread expires worthless. Close early to remove gap risk.
+\u{2022} If ITM: Close the trade before expiration to realize max loss and avoid assignment fees.
+\u{2022} If Partially ITM: (Between strikes) Roll out or close. Never let a tested spread go through expiration to avoid unwanted share assignment."
+}
+
+fn build_cash_secured_put_desc() -> &'static str {
+    "Bullish/Neutral strategy where we sell an OTM put and secure the potential assignment with cash. Used to generate income or acquire stock at a lower cost basis.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish / Neutral
+\u{2022} IV Environment: High (Ideal for maximizing premium)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Identify a stock you are willing to own at a lower price.
+2. Sell 1 OTM Put at ~30 Delta (Standard) or lower for more safety.
+3. Ensure cash (Strike x 100) is reserved in the account to \"secure\" the position.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Premium (Credit) Received.
+\u{2022} Max Loss: (Short Strike - Credit Received) x 100 (Stock goes to zero).
+\u{2022} Breakeven: Short Strike - Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (Profits as stock rises)
+\u{2022} Theta: Long (Profits from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Flat / Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock stays above the short strike or rises. Put loses value through theta and is closed for a profit.
+\u{2022} Managing Winners: Close at 50% of max profit or 21 DTE to reduce gamma risk and increase velocity of money.
+\u{2022} Defensive Tactics: If the strike is tested, roll the position out in time for a net credit to buy time and reduce effective cost basis.
+\u{2022} Transition: If assigned, you now own 100 shares. Transition to selling Covered Calls (The \"Wheel\").
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Put expires worthless. Keep the full premium and deploy another CSP if desired.
+\u{2022} If ITM: Assigned 100 shares of stock at the strike price. Your effective entry price is the Breakeven."
+}
+
+fn build_covered_call_desc() -> &'static str {
+    "Bullish stock position where we sell an ATM/OTM call against 100 long shares to reduce cost basis. The short call risk is \"covered\" by the long shares.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish
+\u{2022} IV Environment: High (Ideal for maximizing premium)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 50% to 70%
+
+II. SETUP
+1. Buy 100 shares of the underlying stock.
+2. Sell 1 ATM/OTM Call for every 100 shares owned.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: (Distance Between Stock Purchase & Short Call Strike) + Credit Received.
+\u{2022} Max Loss: Stock Purchase Price - Credit Received (Stock going to zero).
+\u{2022} Breakeven: Stock Purchase Price - Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (Profit as stock rises)
+\u{2022} Theta: Long (Profit from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock moves up to the short call strike by expiration. Capture max extrinsic value + full stock gain.
+\u{2022} Rolling for Credit: If the short call loses value, roll it out in time to add more extrinsic value and further reduce cost basis.
+\u{2022} Rolling Down: If the stock drops, move the call strike down within the same cycle to collect more credit (avoid rolling below your breakeven).
+\u{2022} Assignment Defense: If you want to keep the shares, roll the short call out and up BEFORE it goes ITM.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Call expires worthless. Deploy another call in a further expiration cycle to continue reducing basis.
+\u{2022} If ITM: Stock is \"Called Away\" (exercised). The position is closed, and you realize max profit."
+}
+
+fn build_iron_condor_desc() -> &'static str {
+    "Neutral, defined risk strategy consisting of an OTM put credit spread and OTM call credit spread. We profit from the underlying staying between our short strikes through expiration.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral
+\u{2022} IV Environment: High (Best for maximizing credit)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 OTM Put Spread (Short Put + Long Put).
+2. Sell 1 OTM Call Spread (Short Call + Long Call).
+\u{2022} Goal: Collect ~1/3rd the width of the strikes in total credit.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Total Credit Received.
+\u{2022} Max Loss: Width of Widest Spread - Credit Received.
+\u{2022} Breakeven (Lower): Short Put Strike - Total Credit.
+\u{2022} Breakeven (Upper): Short Call Strike + Total Credit.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Flat (Neutral)
+\u{2022} Theta: Long (Profit from time decay on both sides)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Flat
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Underlying stays between short strikes as time passes, allowing both sides to decay simultaneously.
+\u{2022} Rolling the Untested Side: If one side is tested, roll the other side closer to the price to collect more credit and reduce max loss.
+\u{2022} Extending Duration: Roll the entire spread (or the tested side) out in time for a credit to buy more time.
+\u{2022} Volatility Play: If IV contracts, close for a winner even if price is near a strike.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Both spreads expire worthless. Close early to remove gap risk and secure profit.
+\u{2022} If ITM: Close the losing spread before expiration to avoid assignment fees and after-hours risk."
+}
+
+fn build_short_call_vertical_desc() -> &'static str {
+    "Neutral-Bearish defined risk credit trade betting against the stock moving above the short strike. Profits from the stock falling, staying flat, or decaying time.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral-Bearish
+\u{2022} IV Environment: High (Maximizes credit)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 ATM/OTM Call.
+2. Buy 1 further OTM Call (defines max risk).
+\u{2022} Goal: Collect ~1/3rd the width of the strikes in credit.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Credit Received.
+\u{2022} Max Loss: Distance Between Strikes - Credit Received.
+\u{2022} Breakeven: Short Call Strike + Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Short (Profits as stock falls)
+\u{2022} Theta: Long (Profits from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Flat
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock falls or stays below the short strike, time passes, and volatility contracts.
+\u{2022} Rolling Out: If the spread is tested, roll out to a farther expiration for a credit to add time, reduce max loss, and increase potential profit.
+\u{2022} Early Profit: Close at 50% of max profit to secure gains and free up capital.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Both options expire worthless. Close early to remove gap risk.
+\u{2022} If ITM: Close the trade before expiration to realize max loss and avoid assignment.
+\u{2022} If Partially ITM: (Between strikes) Either close the trade or roll out in time. Never let a tested spread go through expiration to avoid unwanted short stock position."
+}
+
+fn build_calendar_spread_desc() -> &'static str {
+    "Neutral, defined risk trade where we bet on an increase in IV or the stock staying stagnant near our strikes so the short premium decays faster than the long premium.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish (for Call Calendars)
+\u{2022} IV Environment: Low (Ideally IV expands)
+\u{2022} Ideal Expiration: 45 Days (Short leg)
+\u{2022} Probability of Profit (POP): N/A
+
+II. SETUP
+1. Buy a Call/Put in a long-term expiration cycle.
+2. Sell a Call/Put in a near-term expiration cycle at the SAME strike.
+\u{2022} Goal: Enter for a net debit.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Variable (Maximum when stock is at strike at front-month expiration).
+\u{2022} Max Loss: Debit Paid.
+\u{2022} Breakeven: Variable.
+\u{2022} Profit Target: 10-25% of Debit Paid.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (for Call Calendars)
+\u{2022} Theta: Short (Note: Front month decays faster, but strategy captures extrinsic spread)
+\u{2022} Vega: Long (Benefits from IV expansion)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock trickles up to the strike over time. Long option expands while short option contracts.
+\u{2022} Defensive Tactics: If the short option loses value, roll it out in time closer to the long option. This reduces net debit and max loss.
+\u{2022} Volatility Play: If IV expands, the trade sees profit as long as it is not paired with a sharp move away from the strike.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Short option expires worthless. Hold long option or roll short option to a new cycle to reduce cost basis.
+\u{2022} If ATM: Highest potential profit spot. Short option decays completely leaving remaining extrinsic in the long option.
+\u{2022} If ITM: Risk of assignment. Short call converts to 100 short shares (Short put to long shares). Close or roll to avoid buying power spikes."
+}
+
+fn build_short_strangle_desc() -> &'static str {
+    "Neutral, undefined risk strategy consisting of an OTM short put and an OTM short call. We want the stock to stay between our strikes through expiration so the options expire worthless and we keep the credit received up front as profit.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral
+\u{2022} IV Environment: High (Ideal for maximizing credit)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 OTM Put.
+2. Sell 1 OTM Call.
+\u{2022} Note: We do not aim for a specific target credit but trust the premium will be sufficient if the market is liquid.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Total Credit Received.
+\u{2022} Max Loss: Unlimited.
+\u{2022} Breakeven (Lower): Put Strike - Credit Received.
+\u{2022} Breakeven (Upper): Call Strike + Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Flat (Neutralized by two-way selling)
+\u{2022} Theta: Positive (Time decay works on both sides)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Short (Dangerous near expiration)
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: The stock stays between our strikes as time passes. This results in extrinsic value decay on both sides and the trade can be bought back for a profit over time.
+\u{2022} Defensive Tactics: Strangles are undefined risk trades and can be adjusted very easily. If the stock moves towards or past one of our strikes, we can roll the other \"untested\" side closer to the \"tested\" side to pick up additional credit and reduce the delta of the position. We can also roll both strikes out in time to add more credit, or a combination of both.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM at Expiration: Both strikes will expire worthless and we will realize max profit.
+\u{2022} If ITM at Expiration: We can roll the strikes out in time to add credit and duration to the trade, or close the trade if our assumption has changed."
+}
+
+fn build_iron_fly_desc() -> &'static str {
+    "Neutral, defined risk strategy consisting of an ATM put credit spread and ATM call credit spread. We profit from the underlying staying between our breakeven prices through expiration.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral
+\u{2022} IV Environment: High (Ideal for maximizing credit)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell an ATM Straddle (ATM Put + ATM Call).
+2. Buy an OTM Put wing.
+3. Buy an OTM Call wing.
+\u{2022} Goal: Collect a large credit, ideally targeting a 1:1 risk/reward ratio.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Total Credit Received.
+\u{2022} Max Loss: Widest Spread Width - Total Credit Received.
+\u{2022} Breakeven (Lower): ATM Strike - Total Credit Received.
+\u{2022} Breakeven (Upper): ATM Strike + Total Credit Received.
+\u{2022} Profit Target: 25% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Flat (Neutral)
+\u{2022} Theta: Long (Significant time decay at ATM strikes)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Flat
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock stays between breakevens as time passes, allowing extrinsic value to collapse.
+\u{2022} Early Management: Target 25% of max profit due to high gamma risk as expiration approaches.
+\u{2022} Defensive Tactics: Management is limited compared to undefined risk. If the stock moves outside of your long strikes, there is little that can be done without increasing risk.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} Assignment Risk: Strategy will always have at least one strike ITM at expiration. Close or roll prior to expiration to avoid assignment.
+\u{2022} Partially ITM: Close for profit if the price is within the breakeven range.
+\u{2022} ITM at Expiration: Close the trade to avoid assignment fees and move on."
+}
+
+fn build_short_diagonal_desc() -> &'static str {
+    "Directional credit strategy where we sell a long-term OTM option and buy a short-term closer-to-the-money option for protection. A more aggressive version of a credit spread that uses time differential to increase credit.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bearish (Calls) / Bullish (Puts)
+\u{2022} IV Environment: High (Ideally IV contracts)
+\u{2022} Ideal Expiration: 60+ Days (Short leg) / 30 Days (Long leg)
+\u{2022} Probability of Profit (POP): 60% to 75%
+
+II. SETUP
+1. Sell 1 OTM Call/Put in a back-month cycle.
+2. Buy 1 OTM Call/Put in a front-month cycle at a strike closer to the money.
+\u{2022} Goal: Enter for a net credit.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Net Credit Received.
+\u{2022} Max Loss: Defined by strikes, but varies based on time remaining in back month.
+\u{2022} Breakeven: Variable.
+\u{2022} Profit Target: 50% of Credit Received.
+
+IV. THE GREEKS
+\u{2022} Delta: Short (Calls) / Long (Puts)
+\u{2022} Theta: Positive (Captures accelerated back-month decay)
+\u{2022} Vega: Short (Hurt by IV expansion)
+\u{2022} Gamma: Flat
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Underlying stays away from short strike. Front month protection decays, and back month short decays even more.
+\u{2022} Defensive Tactics: If tested, roll the front month out to match the back month, turning it into a standard vertical credit spread.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} Front Month Expiry: If OTM, you are left with a naked short in the back month. Close or add new protection.
+\u{2022} Back Month Expiry: Full profit realized if OTM."
+}
+
+fn build_put_zebra_desc() -> &'static str {
+    "A bearish back-ratio spread where we are buying two ITM puts and selling one ATM put to remove all extrinsic value and achieve 100 negative deltas. Acts like a synthetic short stock position with limited risk.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bearish
+\u{2022} IV Environment: Any
+\u{2022} Ideal Expiration: Any (often 45-60 DTE)
+\u{2022} Probability of Profit (POP): 50%
+
+II. SETUP
+1. Buy 2 ITM Puts (usually 70-80 Delta).
+2. Sell 1 ATM Put (usually 50 Delta).
+\u{2022} Goal: Zero extrinsic value on entry. The debit paid should equal the intrinsic value of the spread.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Unlimited (to the downside, until stock hits 0).
+\u{2022} Max Loss: Debit Paid (Defined Risk).
+\u{2022} Breakeven: Short Put Strike - Any Extrinsic Value Paid.
+\u{2022} Profit Target: 25% of Debit Paid.
+
+IV. THE GREEKS
+\u{2022} Delta: Short / Dynamic (Targeting 100 negative deltas)
+\u{2022} Theta: Flat (Neutralized by back-ratio)
+\u{2022} Vega: Flat (Neutralized by back-ratio)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock moves down. Position gains value at the same rate as 100 short shares without borrowing costs or unlimited risk.
+\u{2022} Defensive Tactics: Roll the short put up a few strikes if the stock rallies. This will decrease the short delta exposure on a rally and reduce overall debit paid.
+\u{2022} Stock Replacement: Great strategy for 100-delta short exposure with defined risk and no margin calls.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Realize max loss (debit paid upfront).
+\u{2022} If ITM: Close trade for a profit.
+\u{2022} If Partially ITM: Close or restructure in a later cycle. Avoid assignment by closing prior to expiration."
+}
+
+fn build_call_zebra_desc() -> &'static str {
+    "A bullish back-ratio spread where we are buying two ITM calls and selling one ATM call to remove all extrinsic value and achieve 100 positive deltas. Acts like a synthetic long stock position with limited risk.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish
+\u{2022} IV Environment: Any
+\u{2022} Ideal Expiration: Any (often 45-60 DTE)
+\u{2022} Probability of Profit (POP): 50%
+
+II. SETUP
+1. Buy 2 ITM Calls (usually 70-80 Delta).
+2. Sell 1 ATM Call (usually 50 Delta).
+\u{2022} Goal: Zero extrinsic value on entry. The debit paid should equal the intrinsic value of the spread.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Unlimited (to the upside).
+\u{2022} Max Loss: Debit Paid (Defined Risk).
+\u{2022} Breakeven: Short Call Strike + Any Extrinsic Value Paid.
+\u{2022} Profit Target: 25% of Debit Paid.
+
+IV. THE GREEKS
+\u{2022} Delta: Long / Dynamic (Targeting 100 positive deltas)
+\u{2022} Theta: Flat (Neutralized by back-ratio)
+\u{2022} Vega: Flat (Neutralized by back-ratio)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock moves up. Position gains value at the same rate as 100 shares of stock without theta decay drag.
+\u{2022} Defensive Tactics: Roll the short call down to a lower strike if the stock sells off to reduce the total debit paid.
+\u{2022} Stock Replacement: Great strategy for 100-delta exposure with limited risk and zero extrinsic cost.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Realize max loss (debit paid upfront).
+\u{2022} If ITM: Close trade for a profit.
+\u{2022} If Partially ITM: Close or restructure in a later cycle. Avoid assignment by closing prior to expiration."
+}
+
+fn build_pmcc_desc() -> &'static str {
+    "A bullish synthetic covered call strategy that consists of an ITM long-term call to replicate 100 shares of stock, with an ATM/OTM short call in a near-term cycle to reduce cost basis.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish
+\u{2022} IV Environment: Low (Ideally IV expands)
+\u{2022} Ideal Expiration: 45 to 60 Days (Short leg)
+\u{2022} Probability of Profit (POP): 50% to 60%
+
+II. SETUP
+1. Buy an ITM Call in a long-term expiration cycle (80+ Delta).
+2. Sell an OTM Call in a near-term expiration cycle (30 Delta).
+\u{2022} Golden Rule: Debit paid should not exceed 75% of the width between strikes.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Distance Between Strikes - Debit Paid + Estimated Extrinsic in Long Option.
+\u{2022} Max Loss: Debit Paid.
+\u{2022} Breakeven: Long Call Strike + Debit Paid.
+\u{2022} Profit Target: 50% of Estimated Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long
+\u{2022} Theta: Flat / Neutral
+\u{2022} Vega: Long (Benefits from IV expansion)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock moves up to the short call strike. Capture max extrinsic from short call + gain on long call.
+\u{2022} Defensive Tactics: If short call loses value, roll it out in time to add extrinsic value. Can also move strike down in same cycle (but not below breakeven).
+\u{2022} Volatility: If IV expands, extrinsic value moves against us temporarily but we can adjust short call if paired with selloff.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Short call expires worthless. Deploy another one in a further cycle.
+\u{2022} If ITM: Max profit reached - close the trade."
+}
+
+fn build_long_diagonal_desc() -> &'static str {
+    "Directional, defined risk strategy that combines a long-term ITM option with a short-term OTM option at a different strike. Effectively \"Poor Man's\" versions of covered calls or cash secured puts.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish (Calls) / Bearish (Puts)
+\u{2022} IV Environment: Low (Ideally IV expands)
+\u{2022} Ideal Expiration: LEAPS (Long leg) / 45 Days (Short leg)
+\u{2022} Probability of Profit (POP): 50% to 60%
+
+II. SETUP
+1. Buy 1 ITM Call/Put in a long-term cycle (80+ Delta).
+2. Sell 1 OTM Call/Put in a near-term cycle (30 Delta).
+\u{2022} Golden Rule: Debit paid should be less than 75% of the width of the strikes (for Call Diagonals).
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Unlimited (theoretically) or Width of Strikes - Debit + Extrinsic in Long.
+\u{2022} Max Loss: Debit Paid (Defined Risk).
+\u{2022} Breakeven: Long Strike + Debit Paid.
+\u{2022} Profit Target: 50% of Estimated Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (Calls) / Short (Puts)
+\u{2022} Theta: Neutral / Positive (Front month decay offsets back month)
+\u{2022} Vega: Long (Benefits from IV expansion)
+\u{2022} Gamma: Dynamic
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Underlying moves towards short strike. Capture max extrinsic from short leg while long leg gains intrinsic value.
+\u{2022} Rolling: If short strike is tested, roll out in time for a credit to add more extrinsic value.
+\u{2022} Volatility Play: If IV spikes, the long-term option gains significant value.
+
+VI. EXPIRATION OUTCOMES
+\u{2022} If OTM: Short leg expires worthless. Hold long leg or sell another short leg.
+\u{2022} If ITM: Position reaches peak profit. Close the entire spread."
+}
+
+fn build_long_put_vertical_desc() -> &'static str {
+    "Bearish, defined risk debit trade where we are betting on the stock moving below our short put strike price by the expiration of our contract.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bearish
+\u{2022} IV Environment: Any
+\u{2022} Days to Expiration: 45
+\u{2022} Probability of Profit: 50% to 60%
+
+II. SETUP
+\u{2022} 1. Buy an ITM put
+\u{2022} 2. Sell an ATM/OTM put
+\u{2022} Max Profit: Distance Between Strikes - Debit Paid
+\u{2022} Max Loss: Debit Paid
+\u{2022} Profit Target: 50% of Max Profit
+\u{2022} Breakeven: Long Put Strike - Debit Paid
+
+III. GREEKS
+\u{2022} Delta: Short
+\u{2022} Vega: Flat
+\u{2022} Theta: Flat
+\u{2022} Gamma: Flat
+
+IV. HOW THE TRADE WORKS
+\u{2022} NOT IDEAL: The stock increases in value. The value of the long put spread would decrease, which means the spread will be less valuable to sell to close compared to the original purchase price, which would result in a loss.
+\u{2022} IDEAL: The stock decreases in value. A long put spread is a directionally bearish position - so ideally the stock price decreases so that the long put strike increases in value to a greater degree than the short put.
+
+V. VOLATILITY
+\u{2022} IF VOLATILITY EXPANDS: Extrinsic value may have increased - but this is primarily a bearish trade and if the increase in IV is paired with a bearish move, we may see profitability and can close if we are happy with the exit price.
+\u{2022} IF VOLATILITY CONTRACTS: Extrinsic value may have decreased, but this could be paired with a rally in the product. We may consider holding the position, or rolling the short option up closer to the long option, but not above the breakeven price.
+
+VI. EXPIRATION
+\u{2022} IF ITM AT EXPIRATION: The trade will be at max profit. We close the trade.
+\u{2022} IF OTM AT EXPIRATION: The trade will be at max loss, as both options will have lost all of their value. We let the trade expire worthless.
+\u{2022} IF PARTIALLY ITM AT EXPIRATION: We either roll out in time to extend the trade or close it. We avoid letting these trades go through expiration, because if the long put is ITM and the short put is OTM we can come back to the market the next trading session with 100 shares of short stock.
+
+VII. TAKEAWAYS
+\u{2022} 1. Vertical spreads have a less volatile P/L because of the long option that defines our risk. If we see profit on the short option, we will see losses on the long option and vice versa. For this reason, we should expect to be in spread trades longer than naked options to reach profit targets.
+\u{2022} 2. With spreads, it's important to realize that options will be exercised if they are ITM and held through expiration. If one strike is ITM and the other moves OTM, close the trade prior to expiration to avoid unwanted shares."
+}
+
+fn build_long_call_vertical_desc() -> &'static str {
+    "Bullish defined risk debit trade where we are betting on the stock moving above our short call strike price by the expiration of our contract.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bullish
+\u{2022} IV Environment: Any
+\u{2022} Days to Expiration: 45
+\u{2022} Probability of Profit: 40% to 60%
+
+II. SETUP
+\u{2022} 1. Buy an ITM call
+\u{2022} 2. Sell an ATM/OTM call
+\u{2022} Max Profit: Distance Between Strikes - Debit Paid
+\u{2022} Max Loss: Debit Paid
+\u{2022} Profit Target: 50% of Max Profit
+\u{2022} Breakeven: Long Call Strike + Debit Paid
+
+III. GREEKS
+\u{2022} Delta: Long
+\u{2022} Vega: Flat
+\u{2022} Theta: Flat
+\u{2022} Gamma: Flat
+
+IV. HOW THE TRADE WORKS
+\u{2022} IDEAL: The stock increases in value. A long call spread is a directionally bullish position - so ideally the stock price rises so that the long call strike increases in value to a greater degree than the short call, resulting in a profit.
+\u{2022} NOT IDEAL: The stock decreases in value. The value of the long call spread would decrease, which means the spread will be less valuable to sell to close compared to the original purchase price, which would result in a loss.
+
+V. VOLATILITY
+\u{2022} IF VOLATILITY EXPANDS: We may hold the position - this may be paired with a sell-off in the stock price, but our risk is capped at the debit paid so we typically let the trade play out. However, we can close the trade if our assumption has changed.
+\u{2022} IF VOLATILITY CONTRACTS: We may hold the position - if this is paired with a bullish move in the stock price, we may see profit in the spread and we can close if we're happy with the trade.
+
+VI. EXPIRATION
+\u{2022} IF OTM AT EXPIRATION: The trade will be at max loss, as both options will have lost all value. We let the trade expire worthless.
+\u{2022} IF ITM AT EXPIRATION: Both options will be trading for intrinsic value, and the trade will be at max profit. To avoid assignment fees and the possibility of one of the options moving OTM, close the trade prior to expiration.
+\u{2022} IF PARTIALLY ITM AT EXPIRATION: We either close the trade or roll out in time to extend it. We avoid letting these trades go through expiration because if the long call is ITM and the short call is OTM, we can come back to the market in the next trading session with 100 shares of stock.
+
+VII. TAKEAWAYS
+\u{2022} 1. Vertical spreads have a less volatile P/L because of the long option that defines our risk. For this reason, we should expect to be in spread trades longer than naked options to reach profit targets.
+\u{2022} 2. Options will be exercised if they are ITM and held through expiration. If one strike is ITM and the other moves OTM, close the trade prior to expiration to avoid unwanted shares."
 }
 
 fn parse_dt(s: String) -> Option<DateTime<Utc>> {

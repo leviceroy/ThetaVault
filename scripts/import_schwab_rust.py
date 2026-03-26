@@ -1079,30 +1079,85 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                                             side_pnl += cp - l['premium']   # long: received minus paid
                                     updated_trade['forcePnl'] = round(side_pnl * 100.0 * t_db['quantity'], 2)
 
-                                    # Build child trade (new IC: open put legs + new call/put spread)
-                                    exp_str = t_db['expiration_date'][:10]
-                                    new_leg_short['expirationDate'] = exp_str
-                                    new_leg_long['expirationDate']  = exp_str
+                                    # Use the actual expiry from the new legs (may differ from parent when rolled out)
+                                    parent_exp_str = t_db['expiration_date'][:10]
+                                    new_exp_str = new_short['expiration'].strftime('%Y-%m-%d')
+                                    new_leg_short['expirationDate'] = new_exp_str
+                                    new_leg_long['expirationDate']  = new_exp_str
+
                                     put_legs_open = [l for l in new_legs if 'put' in l['type']]
-                                    child_legs    = put_legs_open + [new_leg_short, new_leg_long]
-                                    child_credit  = sum(
-                                        l['premium'] if l['type'].startswith('short_') else -l['premium']
-                                        for l in child_legs
-                                    )
-                                    child_trade = {
-                                        'ticker':          t_db['ticker'],
-                                        'spreadType':      t_db['strategy'],
-                                        'quantity':        t_db['quantity'],
-                                        'creditReceived':  round(child_credit, 2),
-                                        'tradeDate':       roll_date,
-                                        'entryTime':       roll_date + 'T10:00:00Z',
-                                        'expirationDate':  exp_str,
-                                        'legs':            child_legs,
-                                        'commission':      t_db.get('commission'),
-                                        'underlyingPrice': t_db.get('underlying_price'),
-                                        'vixAtEntry':      t_db.get('vix_at_entry'),
-                                    }
-                                    trades.append(child_trade)
+                                    call_legs_open = [l for l in new_legs if 'call' in l['type']]
+
+                                    if new_exp_str != parent_exp_str:
+                                        # Mismatched expiries after roll: create two separate vertical trades
+                                        # 1) Remaining put spread (original expiry)
+                                        if put_legs_open:
+                                            put_credit = sum(
+                                                l['premium'] if l['type'].startswith('short_') else -l['premium']
+                                                for l in put_legs_open
+                                            )
+                                            put_strategy = 'short_put_vertical' if roll_opt_type == 'call' else 'short_call_vertical'
+                                            put_trade = {
+                                                'ticker':          t_db['ticker'],
+                                                'spreadType':      put_strategy,
+                                                'quantity':        t_db['quantity'],
+                                                'creditReceived':  round(put_credit, 2),
+                                                'tradeDate':       roll_date,
+                                                'entryTime':       roll_date + 'T10:00:00Z',
+                                                'expirationDate':  parent_exp_str,
+                                                'legs':            put_legs_open,
+                                                'commission':      t_db.get('commission'),
+                                                'underlyingPrice': t_db.get('underlying_price'),
+                                                'vixAtEntry':      t_db.get('vix_at_entry'),
+                                            }
+                                            trades.append(put_trade)
+                                        # 2) New rolled spread (new expiry)
+                                        new_call_credit = sum(
+                                            l['premium'] if l['type'].startswith('short_') else -l['premium']
+                                            for l in [new_leg_short, new_leg_long]
+                                        )
+                                        new_spread_strategy = 'short_call_vertical' if roll_opt_type == 'call' else 'short_put_vertical'
+                                        new_spread_trade = {
+                                            'ticker':          t_db['ticker'],
+                                            'spreadType':      new_spread_strategy,
+                                            'quantity':        t_db['quantity'],
+                                            'creditReceived':  round(new_call_credit, 2),
+                                            'tradeDate':       roll_date,
+                                            'entryTime':       roll_date + 'T10:00:00Z',
+                                            'expirationDate':  new_exp_str,
+                                            'legs':            [new_leg_short, new_leg_long],
+                                            'commission':      t_db.get('commission'),
+                                            'underlyingPrice': t_db.get('underlying_price'),
+                                            'vixAtEntry':      t_db.get('vix_at_entry'),
+                                        }
+                                        trades.append(new_spread_trade)
+                                        print(f"  [ROLL+SPLIT] IC {t_db['id']} rolled call to {new_exp_str} "
+                                              f"→ split into {put_strategy} ({parent_exp_str}) + {new_spread_strategy} ({new_exp_str}), "
+                                              f"parent pnl=${updated_trade['forcePnl']:+.2f}")
+                                    else:
+                                        # Same expiry: build child IC as before
+                                        child_legs   = put_legs_open + [new_leg_short, new_leg_long]
+                                        child_credit = sum(
+                                            l['premium'] if l['type'].startswith('short_') else -l['premium']
+                                            for l in child_legs
+                                        )
+                                        child_trade = {
+                                            'ticker':          t_db['ticker'],
+                                            'spreadType':      t_db['strategy'],
+                                            'quantity':        t_db['quantity'],
+                                            'creditReceived':  round(child_credit, 2),
+                                            'tradeDate':       roll_date,
+                                            'entryTime':       roll_date + 'T10:00:00Z',
+                                            'expirationDate':  new_exp_str,
+                                            'legs':            child_legs,
+                                            'commission':      t_db.get('commission'),
+                                            'underlyingPrice': t_db.get('underlying_price'),
+                                            'vixAtEntry':      t_db.get('vix_at_entry'),
+                                        }
+                                        trades.append(child_trade)
+                                        print(f"  [ROLL] Chain created: {t_db['ticker']} IC {t_db['id']} → new child IC "
+                                              f"new legs {new_leg_short['strike']}/{new_leg_long['strike']}, "
+                                              f"parent pnl=${updated_trade['forcePnl']:+.2f}, child cr={child_credit:+.2f}")
 
                                     # Consume the roll opens so they don't become new standalone trades
                                     if new_short in roll_pool:
@@ -1117,10 +1172,6 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                                         (roll_fp, t_db['id'])
                                     )
                                     conn.commit()
-
-                                    print(f"  [ROLL] Chain created: {t_db['ticker']} IC {t_db['id']} → new child IC "
-                                          f"new legs {new_leg_short['strike']}/{new_leg_long['strike']}, "
-                                          f"parent pnl=${updated_trade['forcePnl']:+.2f}, child cr={child_credit:+.2f}")
 
                     # ── DIAGONAL / PMCC SHORT-LEG ROLL ────────────────────────────────
                     # LDS / SDS / PMCC / Calendar: exactly 1 of 2 legs closed (the short

@@ -1552,6 +1552,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 
     // monthly_map: (year, month) -> (pnl, trade_count, win_count)
     let mut monthly_map: HashMap<(i32, u32), (f64, usize, usize)> = HashMap::new();
+    // 0DTE-only monthly map
+    let mut monthly_0dte_map: HashMap<(i32, u32), (f64, usize, usize)> = HashMap::new();
 
     // strategy_map: StrategyType -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
     let mut strategy_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
@@ -1652,6 +1654,14 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         entry.0 += pnl;
         entry.1 += 1;
         if pnl > 0.0 { entry.2 += 1; }
+
+        // 0DTE monthly P&L
+        if t.is_0dte() {
+            let e0 = monthly_0dte_map.entry(month_key).or_insert((0.0, 0, 0));
+            e0.0 += pnl;
+            e0.1 += 1;
+            if pnl > 0.0 { e0.2 += 1; }
+        }
 
         // Strategy breakdown
         let strat_key = format!("{:?}", t.strategy);
@@ -1867,6 +1877,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         StrategyBreakdown {
             strategy,
             trades,
+            open_count: 0,
             wins,
             scratches,
             total_pnl,
@@ -1879,6 +1890,32 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         }
     }).collect();
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
+
+    // Populate open_count: for each open trade, find or create its strategy entry
+    let open_trades: Vec<&Trade> = trades.iter().filter(|t| t.exit_date.is_none()).collect();
+    for trade in open_trades {
+        let key = format!("{:?}", trade.strategy);
+        if let Some(sb) = strategy_breakdown.iter_mut().find(|sb| format!("{:?}", sb.strategy) == key) {
+            sb.open_count += 1;
+        } else {
+            strategy_breakdown.push(StrategyBreakdown {
+                strategy: trade.strategy.clone(),
+                trades: 0,
+                open_count: 1,
+                wins: 0,
+                scratches: 0,
+                total_pnl: 0.0,
+                avg_pnl: 0.0,
+                avg_roc: 0.0,
+                win_rate: 0.0,
+                scratch_rate: 0.0,
+                avg_cw_ratio: None,
+                avg_entry_dte: None,
+            });
+        }
+    }
+    // Re-sort: closed trades first (by count desc), then open-only entries
+    strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades).then(b.open_count.cmp(&a.open_count)));
 
     // Step 7a: ticker breakdown
     let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, scratches, total_pnl, roc_sum, roc_count, ivr_sum, ivr_count, dte_sum, dte_count))| {
@@ -1904,6 +1941,11 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         MonthlyPnl { year, month, pnl, trade_count, win_count }
     }).collect();
     monthly_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
+
+    let mut monthly_0dte_pnl: Vec<MonthlyPnl> = monthly_0dte_map.into_iter().map(|((year, month), (pnl, trade_count, win_count))| {
+        MonthlyPnl { year, month, pnl, trade_count, win_count }
+    }).collect();
+    monthly_0dte_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
 
     let avg_annualized_roc = if ann_roc_count > 0 { ann_roc_sum / ann_roc_count as f64 } else { 0.0 };
     let sortino_ratio = calculate_sortino_ratio(&daily_returns, risk_free_rate_pct / 100.0);
@@ -2226,6 +2268,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         unrealized_history,
         bpr_history,
         sector_trends,
+        monthly_0dte_pnl,
     }
 }
 

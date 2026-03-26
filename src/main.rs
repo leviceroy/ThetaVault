@@ -101,11 +101,13 @@ pub struct AppState {
     pub dash_risk_max_scroll: usize,
     pub dash_panel_focus:     u8,   // 0 = Risk Distribution, 1 = Open Positions
     pub perf_subtab:              usize,   // 0 = OVERVIEW, 1 = CHARTS, 2 = ANALYTICS
-    pub perf_overview_scroll:     u16,
-    pub perf_overview_max_scroll: u16,
-    pub perf_analytics_scroll:    u16,
-    pub perf_analytics_max_scroll: u16,
-    pub perf_collapsed:   [bool; 14], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=PnlDist 12=Held 13=Commission
+    pub perf_overview_scroll:        u16,
+    pub perf_overview_scroll_target: u16,
+    pub perf_overview_max_scroll:    u16,
+    pub perf_analytics_scroll:        u16,
+    pub perf_analytics_scroll_target: u16,
+    pub perf_analytics_max_scroll:    u16,
+    pub perf_collapsed:   [bool; 15], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=PnlDist 12=Held 13=Commission 14=0DteMonthly
     pub perf_section_cursor: usize,  // 0-based index into current subtab's navigable section list
     pub perf_scroll_dirty:   bool,   // true → scroll refresh block should sync scroll to cursor
 
@@ -323,11 +325,13 @@ impl AppState {
             dash_panel_focus:     1,   // default: Open Positions focused (existing behavior)
             perf_subtab: 0,
             perf_overview_scroll: 0,
+            perf_overview_scroll_target: 0,
             perf_overview_max_scroll: u16::MAX,
             perf_analytics_scroll: 0,
+            perf_analytics_scroll_target: 0,
             perf_analytics_max_scroll: u16::MAX,
             // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
-            perf_collapsed:   [false, false, false, false, false, true, true, true, true, true, true, true, true, true],
+            perf_collapsed:   [false, false, false, false, false, true, true, true, true, true, true, true, true, true, true],
             perf_section_cursor: 0,
             perf_scroll_dirty:   false,
             cal_year:      0,
@@ -689,9 +693,16 @@ impl AppState {
                 }
             }
             5 => {
-                let count = perf_section_count(self.perf_subtab);
-                self.perf_section_cursor = (self.perf_section_cursor + 1) % count;
-                self.perf_scroll_dirty = true;
+                if self.perf_subtab == 2 {
+                    let new = self.perf_analytics_scroll.saturating_add(1)
+                        .min(self.perf_analytics_max_scroll);
+                    self.perf_analytics_scroll = new;
+                    self.perf_analytics_scroll_target = new;
+                } else {
+                    let count = perf_section_count(self.perf_subtab);
+                    self.perf_section_cursor = (self.perf_section_cursor + 1) % count;
+                    self.perf_scroll_dirty = true;
+                }
             }
             _ => {}
         }
@@ -744,13 +755,19 @@ impl AppState {
                 }
             }
             5 => {
-                let count = perf_section_count(self.perf_subtab);
-                self.perf_section_cursor = if self.perf_section_cursor == 0 {
-                    count - 1
+                if self.perf_subtab == 2 {
+                    let new = self.perf_analytics_scroll.saturating_sub(1);
+                    self.perf_analytics_scroll = new;
+                    self.perf_analytics_scroll_target = new;
                 } else {
-                    self.perf_section_cursor - 1
-                };
-                self.perf_scroll_dirty = true;
+                    let count = perf_section_count(self.perf_subtab);
+                    self.perf_section_cursor = if self.perf_section_cursor == 0 {
+                        count - 1
+                    } else {
+                        self.perf_section_cursor - 1
+                    };
+                    self.perf_scroll_dirty = true;
+                }
             }
             _ => {}
         }
@@ -862,8 +879,9 @@ impl AppState {
             unrealized_history: self.perf_stats.unrealized_history.clone(),
             peak_history:       self.perf_stats.peak_history.clone(),
             monthly_pnl:        self.perf_stats.monthly_pnl.clone(),
-            rolling_win_rate:   self.perf_stats.rolling_win_rate.clone(),
-            dte_roc_scatter:    self.perf_stats.dte_roc_scatter.iter()
+            rolling_win_rate:       self.perf_stats.rolling_win_rate.clone(),
+            rolling_theta_capture:  self.perf_stats.rolling_theta_capture.clone(),
+            dte_roc_scatter:        self.perf_stats.dte_roc_scatter.iter()
                 .map(|(d, r, s)| (*d, *r, s.label().to_string()))
                 .collect(),
             bpr_history:        self.perf_stats.bpr_history.clone(),
@@ -2181,22 +2199,30 @@ fn col_visibility_to_string(vis: &[bool; 22]) -> String {
 // Perf tab cursor helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Ease scroll one step toward target (fast start, gentle stop)
+fn smooth_step_u16(current: u16, target: u16) -> u16 {
+    if current == target { return current; }
+    let diff = (target as i32 - current as i32).unsigned_abs() as u16;
+    let step = (diff / 3 + 1).min(diff);
+    if target > current { current + step } else { current - step }
+}
+
 fn perf_section_count(subtab: usize) -> usize {
     match subtab {
         0 => 2,  // health, returns
         1 => 1,  // growth chart
-        _ => 11, // analytics
+        _ => 12, // analytics
     }
 }
 
 /// Maps (subtab, cursor) → `perf_collapsed` global index.
 /// Overview map: [0=Health, 1=Returns]
 /// Charts map:   [3=Growth]
-/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission]
+/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission, 14=0DteMonthly]
 fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
     const OVERVIEW_MAP:  [usize; 2]  = [0, 1];
     const CHARTS_MAP:    [usize; 1]  = [3];
-    const ANALYTICS_MAP: [usize; 11] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    const ANALYTICS_MAP: [usize; 12] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
     match subtab {
         0 => OVERVIEW_MAP.get(cursor).copied(),
         1 => CHARTS_MAP.get(cursor).copied(),
@@ -2218,6 +2244,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _ = storage.migrate_zebra_type();
     let _ = storage.ensure_ratio_spread_playbook();
     let _ = storage.ensure_put_bwb_playbook();
+    let _ = storage.ensure_default_playbooks();
     let _ = storage.backfill_ivr_all_trades();
     let mut app = AppState::new(&storage);
 
@@ -2387,9 +2414,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         content_w,
                     );
                     if app.perf_subtab == 0 {
-                        app.perf_overview_scroll = target.min(app.perf_overview_max_scroll);
+                        app.perf_overview_scroll_target = target.min(app.perf_overview_max_scroll);
                     } else if app.perf_subtab == 2 {
-                        app.perf_analytics_scroll = target.min(app.perf_analytics_max_scroll);
+                        app.perf_analytics_scroll_target = target.min(app.perf_analytics_max_scroll);
                     }
                     // subtab 1 (Charts) has no text scroll — no-op
                 }
@@ -2502,7 +2529,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let has_event = event::poll(std::time::Duration::from_millis(750))?;
+        // ── Smooth scroll: step toward targets ───────────────────────────────
+        app.perf_overview_scroll  = smooth_step_u16(app.perf_overview_scroll,  app.perf_overview_scroll_target);
+        app.perf_analytics_scroll = smooth_step_u16(app.perf_analytics_scroll, app.perf_analytics_scroll_target);
+        let is_scrolling = app.perf_overview_scroll  != app.perf_overview_scroll_target
+                        || app.perf_analytics_scroll != app.perf_analytics_scroll_target;
+
+        let poll_ms = if is_scrolling { 16 } else { 750 };
+        let has_event = event::poll(std::time::Duration::from_millis(poll_ms))?;
         if !has_event {
             app.pulse_on = !app.pulse_on;
             continue;
@@ -2971,7 +3005,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.show_detail  = false;
                     app.detail_scroll = 0;
                     app.perf_overview_scroll = 0;
+                    app.perf_overview_scroll_target = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_analytics_scroll_target = 0;
                     app.perf_section_cursor = 0;
                     app.perf_scroll_dirty = false;
                     app.cancel_mode();
@@ -2991,7 +3027,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.show_detail  = false;
                     app.detail_scroll = 0;
                     app.perf_overview_scroll = 0;
+                    app.perf_overview_scroll_target = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_analytics_scroll_target = 0;
                     app.perf_section_cursor = 0;
                     app.perf_scroll_dirty = false;
                     app.cancel_mode();
@@ -3029,7 +3067,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let prev = app.perf_subtab;
                         app.perf_subtab -= 1;
                         app.perf_overview_scroll = 0;
+                        app.perf_overview_scroll_target = 0;
                         app.perf_analytics_scroll = 0;
+                        app.perf_analytics_scroll_target = 0;
                         app.perf_section_cursor = 0;
                         app.perf_scroll_dirty = false;
                         if prev == 1 { app.stop_perf_charts(); }
@@ -3040,7 +3080,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let prev = app.perf_subtab;
                     app.perf_subtab = (app.perf_subtab + 1) % 3;
                     app.perf_overview_scroll = 0;
+                    app.perf_overview_scroll_target = 0;
                     app.perf_analytics_scroll = 0;
+                    app.perf_analytics_scroll_target = 0;
                     app.perf_section_cursor = 0;
                     app.perf_scroll_dirty = false;
                     if prev == 1 { app.stop_perf_charts(); }
@@ -3057,8 +3099,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     };
                     if let Some(gi) = gi {
                         app.perf_collapsed[gi] = !app.perf_collapsed[gi];
-                        app.perf_overview_scroll = 0;
-                        app.perf_analytics_scroll = 0;
+                        app.perf_scroll_dirty = true;
+                    }
+                }
+
+                // Performance analytics A/B/C section toggle (sections 10-12 → A/B/C)
+                KeyCode::Char(c) if app.selected_tab == 5 && app.perf_subtab == 2 && matches!(c.to_ascii_lowercase(), 'a'|'b'|'c') => {
+                    let gi: Option<usize> = match c.to_ascii_lowercase() {
+                        'a' => Some(12),
+                        'b' => Some(13),
+                        'c' => Some(14),
+                        _   => None,
+                    };
+                    if let Some(gi) = gi {
+                        app.perf_collapsed[gi] = !app.perf_collapsed[gi];
+                        app.perf_scroll_dirty = true;
                     }
                 }
 
@@ -3320,26 +3375,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ if app.selected_tab == 5 => {
                     match key.code {
                         KeyCode::Enter => {
-                            if let Some(gi) = perf_cursor_to_gi(app.perf_subtab, app.perf_section_cursor) {
+                            if app.perf_subtab == 2 {
+                                let w = term.size().map(|s| s.width).unwrap_or(80).saturating_sub(2) as usize;
+                                if let Some(gi) = theta_vault_rust::ui::perf_gi_at_analytics_scroll(
+                                    app.perf_analytics_scroll, &app.perf_collapsed,
+                                    &app.stats, &app.perf_stats, &app.spy_monthly, w,
+                                ) {
+                                    app.perf_collapsed[gi] = !app.perf_collapsed[gi];
+                                    app.perf_scroll_dirty = true;
+                                }
+                            } else if let Some(gi) = perf_cursor_to_gi(app.perf_subtab, app.perf_section_cursor) {
                                 app.perf_collapsed[gi] = !app.perf_collapsed[gi];
-                                // do NOT reset scroll — keep view on toggled header
+                                app.perf_scroll_dirty = true;
                             }
                         }
                         KeyCode::Down | KeyCode::Char('j') => app.nav_down(),
                         KeyCode::Up   | KeyCode::Char('k') => app.nav_up(),
                         KeyCode::PageDown => {
-                            // Scroll content without moving cursor (Charts tab has no text scroll)
                             if app.perf_subtab == 0 {
-                                app.perf_overview_scroll = app.perf_overview_scroll.saturating_add(5).min(app.perf_overview_max_scroll);
+                                app.perf_overview_scroll_target = app.perf_overview_scroll_target.saturating_add(5).min(app.perf_overview_max_scroll);
                             } else if app.perf_subtab == 2 {
-                                app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_add(5).min(app.perf_analytics_max_scroll);
+                                let new = app.perf_analytics_scroll.saturating_add(5).min(app.perf_analytics_max_scroll);
+                                app.perf_analytics_scroll = new;
+                                app.perf_analytics_scroll_target = new;
                             }
                         }
                         KeyCode::PageUp => {
                             if app.perf_subtab == 0 {
-                                app.perf_overview_scroll = app.perf_overview_scroll.saturating_sub(5);
+                                app.perf_overview_scroll_target = app.perf_overview_scroll_target.saturating_sub(5);
                             } else if app.perf_subtab == 2 {
-                                app.perf_analytics_scroll = app.perf_analytics_scroll.saturating_sub(5);
+                                let new = app.perf_analytics_scroll.saturating_sub(5);
+                                app.perf_analytics_scroll = new;
+                                app.perf_analytics_scroll_target = new;
                             }
                         }
                         _ => {}

@@ -96,7 +96,10 @@
   }
 </script>
 
-<main class:split={showChart && !!chartTrade || showPerf && !!perfData || showGuide && !!guideData}>
+<main
+  class:split={showChart && !!chartTrade || showGuide && !!guideData}
+  class:perf-full={showPerf && !!perfData}
+>
   <div class="terminal-pane">
     <Terminal />
   </div>
@@ -141,6 +144,31 @@
 
   main.split {
     grid-template-columns: 1fr 1fr;
+  }
+
+  main.perf-full {
+    position: relative;
+    grid-template-columns: 1fr;
+  }
+
+  /* Overlay charts over content area only; header (3 rows × 17px + 4px pad) and footer (1 row × 17px + 4px pad) stay visible */
+  main.perf-full .chart-pane {
+    position: absolute;
+    top: 55px;
+    bottom: 26px;
+    left: 0;
+    right: 0;
+    height: auto;      /* override height:100% so top+bottom control the bounds */
+    border-left: none;
+    border-bottom: 1px solid #30363d;
+    z-index: 10;
+    overflow: hidden;  /* hard-clip SVG/content bleed past bottom edge */
+  }
+
+  /* Give the inner component full height so overflow-y:auto scrolls within bounds */
+  main.perf-full .chart-pane > :global(*) {
+    height: 100%;
+    overflow-y: auto;
   }
 
   .terminal-pane {
