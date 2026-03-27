@@ -701,14 +701,23 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         else if v >= 15.0 { "→ Std premium" }
         else { "→ Reduce/cals" }
     }).unwrap_or("");
-    let vix_em_line = if let Some(vix) = stats.vix {
+    let (vix_em_line, vix_spx_line) = if let Some(vix) = stats.vix {
         let d = (vix / 100.0) / 252.0_f64.sqrt() * 100.0;
-        let w = (vix / 100.0) * (5.0_f64 / 252.0).sqrt() * 100.0;
-        Line::from(vec![
-            Span::styled(format!(" 1d ±{:.2}%  1w ±{:.2}%", d, w), Style::default().fg(C_CYAN)),
-        ])
+        let em_line = Line::from(vec![
+            Span::styled(format!(" 1d ±{:.2}%", d), Style::default().fg(C_CYAN)),
+        ]);
+        let spx_line = if let Some(spx) = stats.spy_price {
+            let spx_em = spx * (vix / 100.0) / 365.0_f64.sqrt();
+            Line::from(vec![
+                Span::styled(" SPX ±", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.2}", spx_em), Style::default().fg(C_CYAN)),
+            ])
+        } else {
+            Line::from("")
+        };
+        (em_line, spx_line)
     } else {
-        Line::from("")
+        (Line::from(""), Line::from(""))
     };
     f.render_widget(
         Paragraph::new(vec![
@@ -719,6 +728,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             vix_ivr_line,
             vix_em_line,
+            vix_spx_line,
             Line::from(vec![Span::styled(format!(" {}", vix_suggestion), Style::default().fg(C_GRAY))]),
         ])
         .wrap(Wrap { trim: true })
