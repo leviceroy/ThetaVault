@@ -75,8 +75,11 @@
   const minS = strikes.length ? Math.min(...strikes) : (spot ?? 100);
   const maxS = strikes.length ? Math.max(...strikes) : (spot ?? 100);
   const range = maxS - minS < 0.01 ? minS * 0.2 : 0;
-  const priceMin = (minS - (range || (maxS - minS) * 0.5)) * 0.94;
-  const priceMax = (maxS + (range || (maxS - minS) * 0.5)) * 1.06;
+  const rawPriceMin = (minS - (range || (maxS - minS) * 0.5)) * 0.94;
+  const rawPriceMax = (maxS + (range || (maxS - minS) * 0.5)) * 1.06;
+  // Always include spot in the visible range (with a small buffer)
+  const priceMin = spot !== null ? Math.min(rawPriceMin, spot * 0.97) : rawPriceMin;
+  const priceMax = spot !== null ? Math.max(rawPriceMax, spot * 1.03) : rawPriceMax;
 
   const N_POINTS = 300;
   const prices = Array.from({ length: N_POINTS }, (_, i) =>
@@ -97,7 +100,12 @@
   const dteDays: number | null = (() => {
     if (!expirationDate) return null;
     const msLeft = new Date(expirationDate).getTime() - Date.now();
-    return Math.max(msLeft / 86_400_000, 0);
+    if (msLeft <= 0) {
+      // Trade has expired — use entry_dte so SD lines still render for closed trades
+      const dte = trade.entry_dte ?? trade.dte ?? null;
+      return typeof dte === "number" && dte > 0 ? dte : null;
+    }
+    return msLeft / 86_400_000;
   })();
   const expectedMove: number | null =
     spot !== null && ivDec !== null && dteDays !== null && dteDays > 0
