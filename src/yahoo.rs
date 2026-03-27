@@ -116,6 +116,18 @@ pub async fn fetch_spy_price() -> Option<f64> {
         .and_then(|s| s.parse::<f64>().ok())
 }
 
+/// Fetch current SPX (S&P 500 index) price via CNBC.
+pub async fn fetch_spx_price() -> Option<f64> {
+    let client = build_client()?;
+    let url = "https://quote.cnbc.com/quote-html-webservice/quote.htm\
+               ?symbols=.SPX&noform=1&output=json";
+    let resp = client.get(url).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.pointer("/QuickQuoteResult/QuickQuote/0/last")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+}
+
 /// Fetch beta vs SPY for each ticker from Yahoo Finance quoteSummary.
 /// Any ticker that fails silently defaults to 1.0 (market-correlated).
 pub async fn fetch_betas(tickers: &[String]) -> HashMap<String, f64> {

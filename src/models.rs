@@ -539,6 +539,7 @@ pub struct PortfolioStats {
     pub net_beta_weighted_delta: f64,   // BWD = Σ delta × beta × (underlying/SPY) × qty × 100
     pub net_theta: f64,         // total daily theta on open positions
     pub spy_price: Option<f64>,         // reference SPY price used for BWD calc
+    pub spx_price: Option<f64>,         // S&P 500 index price for VIX EM formula
 
     // OTJ Dashboard metrics
     pub account_size: f64,

@@ -766,12 +766,14 @@ pub fn calculate_drawdown(balance_history: &[f64]) -> (f64, f64, f64) {
 /// `vix` is the current VIX fetched from Yahoo Finance (None if unavailable).
 /// `beta_map` maps ticker → beta vs SPY (default 1.0 if missing).
 /// `spy_price` is the current SPY price (None → BWD skipped).
+/// `spx_price` is the S&P 500 index price (None → VIX EM dollar line hidden).
 pub fn build_portfolio_stats(
     trades: &[Trade],
     account_size: f64,
     vix: Option<f64>,
     beta_map: &HashMap<String, f64>,
     spy_price: Option<f64>,
+    spx_price: Option<f64>,
     target_undefined_pct: f64,
     monthly_pnl_target: f64,
 ) -> crate::models::PortfolioStats {
@@ -1073,6 +1075,7 @@ pub fn build_portfolio_stats(
         net_beta_weighted_delta: net_bwd,
         net_theta,
         spy_price,
+        spx_price,
         // OTJ Dashboard
         account_size,
         balance,

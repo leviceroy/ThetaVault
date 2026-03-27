@@ -40,6 +40,7 @@ pub struct AppState {
     pub current_vix:          Option<f64>,
     pub beta_map:             std::collections::HashMap<String, f64>,
     pub spy_price:            Option<f64>,
+    pub spx_price:            Option<f64>,
     pub live_prices:          std::collections::HashMap<String, f64>,
     pub spy_monthly:          std::collections::HashMap<(i32, u32), f64>,
     pub alerts:               Vec<theta_vault_rust::actions::TradeAlert>,
@@ -217,8 +218,9 @@ impl AppState {
         let current_vix: Option<f64> = None;
         let beta_map = std::collections::HashMap::new();
         let spy_price: Option<f64> = None;
+        let spx_price: Option<f64> = None;
         let live_prices = std::collections::HashMap::new();
-        let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, target_undefined_pct, monthly_pnl_target);
+        let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, spx_price, target_undefined_pct, monthly_pnl_target);
         let perf_stats = calculations::build_performance_stats(&trades, account_size, risk_free_rate_pct, rolling_window);
         let playbook_analytics = calculations::build_playbook_analytics(&trades, &playbooks);
 
@@ -286,6 +288,7 @@ impl AppState {
             current_vix,
             beta_map,
             spy_price,
+            spx_price,
             live_prices,
             spy_monthly: std::collections::HashMap::new(),
             alerts,
@@ -371,7 +374,7 @@ impl AppState {
     pub fn reload(&mut self, storage: &storage::Storage) {
         self.trades      = storage.get_all_trades().unwrap_or_default();
         self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
-        self.stats              = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.target_undefined_pct, self.monthly_pnl_target);
+        self.stats              = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.spx_price, self.target_undefined_pct, self.monthly_pnl_target);
         self.perf_stats         = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
         self.playbook_analytics = calculations::build_playbook_analytics(&self.trades, &self.playbooks);
         self.alerts = theta_vault_rust::actions::compute_alerts(
@@ -2277,6 +2280,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         yahoo::fetch_vix(),
                         yahoo::fetch_betas(&open_tickers),
                         yahoo::fetch_spy_price(),
+                        yahoo::fetch_spx_price(),
                         yahoo::fetch_underlying_prices(&open_tickers),
                         yahoo::fetch_sectors(&sector_tickers),
                     )
@@ -2284,7 +2288,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await;
 
-            if let Ok((earnings_map, vix_val, beta_map, spy_val, prices, sector_map)) = fetch {
+            if let Ok((earnings_map, vix_val, beta_map, spy_val, spx_val, prices, sector_map)) = fetch {
                 // Collect trades that need updating
                 let updates: Vec<(i32, chrono::NaiveDate)> = app.trades.iter()
                     .filter(|t| t.is_open())
@@ -2311,11 +2315,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 app.current_vix = vix_val;
                 app.beta_map    = beta_map;
                 app.spy_price   = spy_val;
+                app.spx_price   = spx_val;
                 app.live_prices = prices;
                 app.stats = calculations::build_portfolio_stats(
                     &app.trades, app.account_size, app.current_vix,
-                    &app.beta_map, app.spy_price, app.target_undefined_pct,
-                    app.monthly_pnl_target,
+                    &app.beta_map, app.spy_price, app.spx_price,
+                    app.target_undefined_pct, app.monthly_pnl_target,
                 );
                 app.alerts = theta_vault_rust::actions::compute_alerts(
                     &app.trades, &app.live_prices, app.account_size, app.current_vix,
