@@ -709,7 +709,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let spx_line = if let Some(spx) = stats.spx_price {
             let spx_em = spx * (vix / 100.0) / 365.0_f64.sqrt();
             Line::from(vec![
-                Span::styled(" SPX ±", Style::default().fg(C_GRAY)),
+                Span::styled(" SPX ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.0}", spx), Style::default().fg(C_WHITE)),
+                Span::styled("  ±", Style::default().fg(C_GRAY)),
                 Span::styled(format!("{:.2}", spx_em), Style::default().fg(C_CYAN)),
             ])
         } else {
