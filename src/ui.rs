@@ -4460,7 +4460,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
             } else if is_sd {
                 ("│", Color::Magenta)
             } else if is_spot {
-                ("·", C_CYAN)
+                ("\u{2502}", C_CYAN)
             } else {
                 (" ", C_DARK)
             };
@@ -4493,8 +4493,8 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
             Span::styled("  ", Style::default()),
             Span::styled("|", Style::default().fg(Color::Magenta)),
             Span::styled(": ±1σ   ", Style::default().fg(C_GRAY)),
-            Span::styled("●", Style::default().fg(C_CYAN)),
-            Span::styled(": price   ", Style::default().fg(C_GRAY)),
+            Span::styled("│", Style::default().fg(C_CYAN)),
+            Span::styled(": spot   ", Style::default().fg(C_GRAY)),
             Span::styled("BE", Style::default().fg(C_YELLOW)),
             Span::styled(": breakeven", Style::default().fg(C_GRAY)),
         ]));

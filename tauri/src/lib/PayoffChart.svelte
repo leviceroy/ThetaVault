@@ -68,6 +68,8 @@
   const theta: number | null = trade.theta ?? null;
   const vega: number | null = trade.vega ?? null;
   const gamma: number | null = trade.gamma ?? null;
+  const iv: number | null = trade.implied_volatility ?? null;
+  const expirationDate: string | null = trade.expiration_date ?? null;
 
   const strikes = legs.map((l) => l.strike).filter((s) => s > 0);
   const minS = strikes.length ? Math.min(...strikes) : (spot ?? 100);
@@ -89,6 +91,20 @@
   const maxPft = maxProfit(credit, qty);
   const maxLss = maxLoss(legs, credit, qty, spreadType);
   const bes = breakevens(legs, credit, spreadType);
+
+  // ── Expected move (±1σ) ────────────────────────────────────────────────────
+  const ivDec: number | null = iv !== null ? (iv > 2 ? iv / 100 : iv) : null;
+  const dteDays: number | null = (() => {
+    if (!expirationDate) return null;
+    const msLeft = new Date(expirationDate).getTime() - Date.now();
+    return Math.max(msLeft / 86_400_000, 0);
+  })();
+  const expectedMove: number | null =
+    spot !== null && ivDec !== null && dteDays !== null && dteDays > 0
+      ? spot * ivDec * Math.sqrt(dteDays / 365)
+      : null;
+  const sd1Lo: number | null = expectedMove !== null && spot !== null ? spot - expectedMove : null;
+  const sd1Hi: number | null = expectedMove !== null && spot !== null ? spot + expectedMove : null;
 
   // ── SVG dimensions ─────────────────────────────────────────────────────────
 
@@ -263,7 +279,24 @@
           {@const sx = xScale(spot)}
           <line x1={sx} y1={PAD_T} x2={sx} y2={PAD_T + CHART_H} stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.5" />
           <circle cx={sx} cy={zeroY} r="6" fill="#0d1117" stroke="#ffffff" stroke-width="2" />
-          <text x={sx} y={zeroY - 12} text-anchor="middle" font-size="9" fill="#e5e7eb" font-family="monospace">SPOT</text>
+          <text x={sx} y={zeroY - 22} text-anchor="middle" font-size="9" fill="#e5e7eb" font-family="monospace">SPOT</text>
+          <text x={sx} y={zeroY - 10} text-anchor="middle" font-size="10" fill="#ffffff" font-family="monospace" font-weight="bold">${spot.toFixed(2)}</text>
+        {/if}
+
+        <!-- ±1σ expected move lines -->
+        {#if sd1Lo !== null && sd1Lo >= priceMin && sd1Lo <= priceMax}
+          {@const lx = xScale(sd1Lo)}
+          <line x1={lx} y1={PAD_T} x2={lx} y2={PAD_T + CHART_H}
+                stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5 4" stroke-opacity="0.85" />
+          <text x={lx} y={PAD_T - 6} text-anchor="middle" font-size="9" fill="#a855f7" font-family="monospace">{sd1Lo.toFixed(0)}</text>
+          <text x={lx} y={PAD_T + CHART_H + 32} text-anchor="middle" font-size="9" fill="#a855f7" font-family="monospace">-1σ</text>
+        {/if}
+        {#if sd1Hi !== null && sd1Hi >= priceMin && sd1Hi <= priceMax}
+          {@const hx = xScale(sd1Hi)}
+          <line x1={hx} y1={PAD_T} x2={hx} y2={PAD_T + CHART_H}
+                stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5 4" stroke-opacity="0.85" />
+          <text x={hx} y={PAD_T - 6} text-anchor="middle" font-size="9" fill="#a855f7" font-family="monospace">{sd1Hi.toFixed(0)}</text>
+          <text x={hx} y={PAD_T + CHART_H + 32} text-anchor="middle" font-size="9" fill="#a855f7" font-family="monospace">+1σ</text>
         {/if}
 
         <!-- Y-axis title -->
@@ -303,6 +336,12 @@
             <span class="info-value">{pop.toFixed(0)}%</span>
           </div>
         {/if}
+        {#if expectedMove !== null}
+          <div class="info-row">
+            <span class="info-label">±1σ EM</span>
+            <span class="info-value em">±${expectedMove.toFixed(2)}</span>
+          </div>
+        {/if}
       </div>
 
       <div class="greeks-box">
@@ -333,7 +372,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    Press <kbd>Esc</kbd> in the terminal to close · Breakevens shown in yellow · Strike labels on x-axis
+    Press <kbd>Esc</kbd> in the terminal to close · Breakevens in yellow · Purple dashed = ±1σ EM · White line = spot
   </div>
 </div>
 
@@ -465,6 +504,7 @@
   .info-value.profit { color: #3fb950; }
   .info-value.loss   { color: #f85149; }
   .info-value.be     { color: #e3b341; font-size: 11px; }
+  .info-value.em     { color: #a855f7; }
 
   .greeks-box {
     display: flex;
