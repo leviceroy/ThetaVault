@@ -5629,11 +5629,11 @@ fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool, select
 
     let bar_max = (width.saturating_sub(50)).max(8).min(25);
     lines.push(Line::from(vec![Span::styled(
-        format!("  {:<14}{:<bar_max$} {:>6}  {:>5}  {:>8}", "VIX Regime", "Bar", "Trades", "Win%", "Avg P&L", bar_max = bar_max + 1),
+        format!("  {:<16}{:<bar_max$} {:>6}  {:>5}  {:>8}", "VIX Regime", "Bar", "Trades", "Win%", "Avg P&L", bar_max = bar_max + 1),
         Style::default().fg(C_GRAY),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        format!("  {}", "\u{2500}".repeat(14 + bar_max + 1 + 6 + 2 + 5 + 2 + 8)),
+        format!("  {}", "\u{2500}".repeat(16 + bar_max + 1 + 6 + 2 + 5 + 2 + 8)),
         Style::default().fg(C_DARK),
     )]));
 
@@ -5645,7 +5645,7 @@ fn perf_vix_lines(perf: &PerformanceStats, width: usize, collapsed: bool, select
         let pnl_color = if v.avg_pnl >= 0.0 { C_GREEN } else { C_RED };
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<14}", v.label), Style::default().fg(C_CYAN)),
+            Span::styled(format!("{:<16}", v.label), Style::default().fg(C_CYAN)),
             Span::styled("\u{2588}".repeat(bar_len), Style::default().fg(C_BLUE)),
             Span::styled("\u{2591}".repeat(empty_len), Style::default().fg(C_DARK)),
             Span::raw(" "),
