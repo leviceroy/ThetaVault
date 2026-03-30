@@ -6320,7 +6320,7 @@ fn draw_performance(
 
 fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &PerformanceStats, max_heat_pct: f64, scroll: u16, max_scroll: &mut u16, default_mgmt_dte: i32) {
     let w: u16 = 82.min(area.width.saturating_sub(4));
-    let h: u16 = 42.min(area.height.saturating_sub(2));
+    let h: u16 = area.height.saturating_sub(4).max(10);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let dialog = Rect::new(x, y, w, h);
@@ -6442,8 +6442,40 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             Span::styled(format!("account_size + realized_pnl = ${:.2}", stats.balance), Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
+            lbl("  BP Avail  "),
+            Span::styled(format!("account_size − total_open_bpr = ${:.0}  (buying power remaining)", stats.account_size - stats.total_open_bpr), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Health    "),
+            Span::styled("composite portfolio grade A–F across 5 factors: Win Rate, Max DD, Heat, BWD, EV", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("A ≥3.5 avg · B ≥2.5 · C ≥1.5 · D ≥0.5 · F otherwise. Sub-scores shown below grade."),
+        ]),
+        Line::from(vec![
             lbl("  P&L       "),
             Span::styled(format!("realized P&L from closed trades = ${:+.2}", stats.realized_pnl), Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Streak    "),
+            Span::styled("current consecutive wins (+xW) or losses (−xL) across closed trades", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Pace      "),
+            Span::styled("annualized monthly P&L pace vs monthly target (set in Admin settings)", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Progress bar shows % of monthly target reached. Green=on track, Yellow=behind, Red=off."),
+        ]),
+        Line::from(vec![
+            lbl("  Est. M-end"),
+            Span::styled("month-end P&L projection = (P&L so far ÷ days elapsed) × days in month", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Shown after ≥5 days elapsed in the current month."),
         ]),
         Line::from(vec![
             lbl("  R:R       "),
@@ -6484,6 +6516,26 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             Span::styled("beta-weighted delta of full portfolio (see β-WΔ above)", Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
+            lbl("  -5% Stress"),
+            Span::styled("est. P&L if SPY drops 5% = BWD × SPY_price × −0.05", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Quick directional stress test. Positive = portfolio benefits from a drop (net short delta)."),
+        ]),
+        Line::from(vec![
+            lbl("  ⚠ Gamma   "),
+            Span::styled("tickers shown in BWD card with open positions ≤7 DTE (elevated gamma/pin risk)", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Consider closing or defending before expiration weekend. Replaces Θ/Δ line when triggered."),
+        ]),
+        Line::from(vec![
+            lbl("  Θ/Δ       "),
+            Span::styled("theta earned per unit of directional risk = net_theta / |BWD|  (same as Θ/|Δ| above)", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
             lbl("  Vega      "),
             Span::styled(format!("net vega {:+.0}V  (/1% IV ≈ ${:+.0}).  Negative = normal for prem. sellers.", stats.net_vega, stats.net_vega), Style::default().fg(C_WHITE)),
         ]),
@@ -6500,6 +6552,22 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             sub("VIX adaptive: lowers cap in calm markets, raises cap in high-VIX."),
         ]),
         Line::from(vec![
+            lbl("  Room      "),
+            Span::styled("remaining heat capacity ÷ avg BPR/trade = est. # of new trades before heat cap", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Green = room available. Yellow ≤2 trades. Red = full (at or over heat cap)."),
+        ]),
+        Line::from(vec![
+            lbl("  Kelly/½K  "),
+            Span::styled("Kelly criterion = win_rate − (loss_rate ÷ R:R).  ½K = conservative half-Kelly.", Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Optimal % of account to risk. Green = within heat cap. Yellow/Red = oversized."),
+        ]),
+        Line::from(vec![
             lbl("  POP       "),
             Span::styled(format!("avg probability of profit = {:.1}%  across {} open positions", stats.avg_pop, stats.open_trades), Style::default().fg(C_WHITE)),
         ]),
@@ -6510,6 +6578,34 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
         Line::from(vec![
             lbl("  VIX       "),
             Span::styled(vix_line, Style::default().fg(C_WHITE)),
+        ]),
+        Line::from(vec![
+            lbl("  Avg IVR   "),
+            Span::styled(
+                stats.avg_ivr_open.map_or("— (no open positions)".to_string(), |r| format!("{:.0}  average IV Rank across all open positions at entry", r)),
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            pad.clone(),
+            sub("Green ≥50 (elevated IV). Yellow ≥25. Red <25 — low IV environment, reduce premium selling."),
+        ]),
+        Line::from(vec![
+            lbl("  1d ±%     "),
+            Span::styled(
+                stats.vix.map_or("— (no VIX)".to_string(), |v| format!("±{:.2}%  = (VIX/100) / √252 × 100  — annualized vol scaled to 1 trading day", (v/100.0)/252.0_f64.sqrt()*100.0)),
+                Style::default().fg(C_WHITE),
+            ),
+        ]),
+        Line::from(vec![
+            lbl("  SPX ±$    "),
+            Span::styled(
+                match (stats.vix, stats.spx_price) {
+                    (Some(v), Some(s)) => format!("±{:.2}  = SPX({:.0}) × (VIX/100) / √365  — 1-day $ expected move", s*(v/100.0)/365.0_f64.sqrt(), s),
+                    _ => "— (needs live SPX + VIX)".to_string(),
+                },
+                Style::default().fg(C_WHITE),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled("  ── RULES ──────────────────────────────────────────────────────", Style::default().fg(C_GRAY))]),
