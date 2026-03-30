@@ -6323,7 +6323,7 @@ fn draw_performance(
 // ── KPI Popup ─────────────────────────────────────────────────────────────────
 
 fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &PerformanceStats, max_heat_pct: f64, scroll: u16, max_scroll: &mut u16, default_mgmt_dte: i32) {
-    let w: u16 = 82.min(area.width.saturating_sub(4));
+    let w: u16 = 98.min(area.width.saturating_sub(4));
     let h: u16 = area.height.saturating_sub(4).max(10);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
@@ -6627,11 +6627,13 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
 
     let content_lines = lines.len() as u16;
     let inner_h = h.saturating_sub(2);
-    *max_scroll = content_lines.saturating_sub(inner_h);
+    // Multiply by 4/3 to leave room for any lines that wrap at the new width
+    *max_scroll = (content_lines * 4 / 3).saturating_sub(inner_h);
 
     f.render_widget(
         Paragraph::new(lines)
             .scroll((scroll, 0))
+            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
