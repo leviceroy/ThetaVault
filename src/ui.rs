@@ -5536,8 +5536,9 @@ fn perf_0dte_monthly_lines(perf: &PerformanceStats, width: usize, collapsed: boo
         let m_name = month_names.get(mp.month as usize).unwrap_or(&"???");
         let bar_len = ((mp.pnl.abs() / max_abs) * bar_max as f64).round() as usize;
         let pnl_color = if mp.pnl >= 0.0 { C_GREEN } else { C_RED };
+        // Both positive and negative bars are always bar_max wide so W% label stays fixed
         let bar_str = if mp.pnl >= 0.0 {
-            format!("{}", "█".repeat(bar_len))
+            format!("{}{}", "█".repeat(bar_len), " ".repeat(bar_max.saturating_sub(bar_len)))
         } else {
             format!("{}{}", "░".repeat(bar_max.saturating_sub(bar_len)), "█".repeat(bar_len))
         };
@@ -5547,15 +5548,15 @@ fn perf_0dte_monthly_lines(perf: &PerformanceStats, width: usize, collapsed: boo
         let wr_color = if win_rate >= 50.0 { C_GREEN } else { C_RED };
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{} {:4}", m_name, mp.year), Style::default().fg(c_amber)),
-            Span::styled(format!(" ({:2}T) ", mp.trade_count), Style::default().fg(C_GRAY)),
+            Span::styled(format!("{:<10}", format!("{} {:4}", m_name, mp.year)), Style::default().fg(c_amber)),
+            Span::styled(format!("({:>2}T) ", mp.trade_count), Style::default().fg(C_GRAY)),
             Span::styled(format!("{:>+8.0}   ", mp.pnl), Style::default().fg(pnl_color)),
             Span::styled(bar_str, Style::default().fg(pnl_color)),
-            Span::styled(format!("  W{:.0}%", win_rate), Style::default().fg(wr_color)),
+            Span::styled(format!("W{:.0}%", win_rate), Style::default().fg(wr_color)),
         ]));
     }
 
-    // Totals summary
+    // Totals summary — label+count cols match monthly rows so P&L column aligns
     let total_pnl: f64 = perf.monthly_0dte_pnl.iter().map(|m| m.pnl).sum();
     let total_trades: usize = perf.monthly_0dte_pnl.iter().map(|m| m.trade_count).sum();
     let total_wins: usize = perf.monthly_0dte_pnl.iter().map(|m| m.win_count).sum();
@@ -5565,10 +5566,10 @@ fn perf_0dte_monthly_lines(perf: &PerformanceStats, width: usize, collapsed: boo
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("Total 0DTE   ", Style::default().fg(c_amber).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("({:2}T) ", total_trades), Style::default().fg(C_GRAY)),
-        Span::styled(format!("{:>+8.0}", total_pnl), Style::default().fg(total_color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("   W{:.0}%", overall_wr), Style::default().fg(wr_color)),
+        Span::styled(format!("{:<10}", "Total 0DTE"), Style::default().fg(c_amber).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("({:>2}T) ", total_trades), Style::default().fg(C_GRAY)),
+        Span::styled(format!("{:>+8.0}   ", total_pnl), Style::default().fg(total_color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("W{:.0}%", overall_wr), Style::default().fg(wr_color)),
     ]));
 
     lines
