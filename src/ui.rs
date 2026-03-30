@@ -5225,15 +5225,14 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
         return lines;
     }
 
-    // Header: col widths must match data spans exactly
-    // name(24) trades(6) "  " win%(6) "  " pnl(10) "  " avgpnl(8) "  " avgroc(8) cw%(6) edte(4)
+    // Header: name(26) trades(6) "  " win%(6) "  " pnl(10) "  " avgpnl(8) "  " avgroc(8) "  " cw%(5) "  " edte(4)
     lines.push(Line::from(vec![Span::styled(
-        format!("  {:<24}{:>6}  {:>6}  {:>10}  {:>8}  {:>8}{:>6}{:>4}",
+        format!("  {:<26}{:>6}  {:>6}  {:>10}  {:>8}  {:>8}  {:>5}  {:>4}",
             "Strategy", "Trades", "Win%", "P&L", "Avg P&L", "Avg ROC", "C/W%", "eDTE"),
         Style::default().fg(C_GRAY),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        format!("  {}", "\u{2500}".repeat(24+6+2+6+2+10+2+8+2+8+6+4)),
+        format!("  {}", "\u{2500}".repeat(26+6+2+6+2+10+2+8+2+8+2+5+2+4)),
         Style::default().fg(C_DARK),
     )]));
 
@@ -5247,20 +5246,20 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
         total_pnl += sb.total_pnl;
 
         let strat_name = sb.strategy.label().to_string();
-        // Trades column: show closed count + "+N" open indicator if any
+        // Trades column: always 6 chars — show "closed+open" when any open
         let trades_str = if sb.open_count > 0 {
-            format!("{:>3}+{}", sb.trades, sb.open_count)
+            format!("{:>6}", format!("{}+{}", sb.trades, sb.open_count))
         } else {
             format!("{:>6}", sb.trades)
         };
 
         if sb.trades == 0 {
             // Open-only strategy: show dashes for all metric columns
-            let cw_str = "     \u{2014}".to_string();
-            let dte_str = sb.avg_entry_dte.map_or("   \u{2014}".to_string(), |d| format!(" {:>3.0}", d));
+            let cw_str = "    \u{2014}".to_string(); // 5 chars
+            let dte_str = sb.avg_entry_dte.map_or("   \u{2014}".to_string(), |d| format!("{:>4.0}", d));
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(format!("{:<24}", strat_name), Style::default().fg(C_CYAN)),
+                Span::styled(format!("{:<26}", strat_name), Style::default().fg(C_CYAN)),
                 Span::styled(trades_str, Style::default().fg(C_YELLOW)),
                 Span::raw("  "),
                 Span::styled(format!("{:>6}", "\u{2014}"), Style::default().fg(C_GRAY)),
@@ -5270,19 +5269,21 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
                 Span::styled(format!("{:>8}", "\u{2014}"), Style::default().fg(C_GRAY)),
                 Span::raw("  "),
                 Span::styled(format!("{:>8}", "\u{2014}"), Style::default().fg(C_GRAY)),
+                Span::raw("  "),
                 Span::styled(cw_str, Style::default().fg(C_GRAY)),
+                Span::raw("  "),
                 Span::styled(dte_str, Style::default().fg(C_GRAY)),
             ]));
         } else {
             let wr_color = if sb.win_rate >= 65.0 { C_GREEN } else if sb.win_rate >= 50.0 { C_YELLOW } else { C_RED };
             let pnl_color = if sb.total_pnl >= 0.0 { C_GREEN } else { C_RED };
             let roc_color = if sb.avg_roc >= 5.0 { C_GREEN } else if sb.avg_roc >= 0.0 { C_YELLOW } else { C_RED };
-            let cw_str = sb.avg_cw_ratio.map_or("     \u{2014}".to_string(), |r| format!(" {:>4.0}%", r));
-            let dte_str = sb.avg_entry_dte.map_or("   \u{2014}".to_string(), |d| format!(" {:>3.0}", d));
+            let cw_str = sb.avg_cw_ratio.map_or("    \u{2014}".to_string(), |r| format!("{:>4.0}%", r)); // 5 chars
+            let dte_str = sb.avg_entry_dte.map_or("   \u{2014}".to_string(), |d| format!("{:>4.0}", d)); // 4 chars
             let cw_color = sb.avg_cw_ratio.map_or(C_GRAY, |r| if r >= 33.0 { C_GREEN } else if r >= 20.0 { C_YELLOW } else { C_RED });
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(format!("{:<24}", strat_name), Style::default().fg(C_CYAN)),
+                Span::styled(format!("{:<26}", strat_name), Style::default().fg(C_CYAN)),
                 Span::styled(trades_str, Style::default().fg(C_WHITE)),
                 Span::raw("  "),
                 Span::styled(format!("{:>5.0}%", sb.win_rate), Style::default().fg(wr_color)),
@@ -5292,14 +5293,16 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
                 Span::styled(format!("{:>+8.0}", sb.avg_pnl), Style::default().fg(pnl_color)),
                 Span::raw("  "),
                 Span::styled(format!("{:>7.1}%", sb.avg_roc), Style::default().fg(roc_color)),
+                Span::raw("  "),
                 Span::styled(cw_str, Style::default().fg(cw_color)),
+                Span::raw("  "),
                 Span::styled(dte_str, Style::default().fg(C_GRAY)),
             ]));
         }
     }
 
     lines.push(Line::from(vec![Span::styled(
-        format!("  {}", "\u{2500}".repeat(24+6+2+6+2+10+2+8+2+8+6+4)),
+        format!("  {}", "\u{2500}".repeat(26+6+2+6+2+10+2+8+2+8+2+5+2+4)),
         Style::default().fg(C_DARK),
     )]));
     let total_wr = if total_trades > 0 { total_wins as f64 / total_trades as f64 * 100.0 } else { 0.0 };
@@ -5307,7 +5310,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
     let total_pnl_color = if total_pnl >= 0.0 { C_GREEN } else { C_RED };
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("{:<24}", "TOTAL"), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:<26}", "TOTAL"), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
         Span::styled(format!("{:>6}", total_trades), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled(format!("{:>5.0}%", total_wr), Style::default().fg(C_WHITE).add_modifier(Modifier::BOLD)),
@@ -5333,7 +5336,7 @@ fn perf_strategy_lines(perf: &PerformanceStats, width: usize, collapsed: bool, s
             let bar = bar_char.repeat(bar_len);
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(format!("{:<20}", sb.strategy.label()), Style::default().fg(C_CYAN)),
+                Span::styled(format!("{:<26}", sb.strategy.label()), Style::default().fg(C_CYAN)),
                 Span::styled(format!("{:>+8.0}  ", sb.total_pnl), Style::default().fg(pnl_color)),
                 Span::styled(bar, Style::default().fg(pnl_color)),
             ]));
