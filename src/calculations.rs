@@ -288,10 +288,19 @@ pub fn calculate_roc(
     bpr: Option<f64>,
     underlying_price: Option<f64>,
 ) -> Option<f64> {
-    // Covered Call: stock margin (BPR) is the only valid capital basis.
-    // If BPR not stored (old trades), return None — display "—" not "0%".
+    // Covered Call: stock margin (BPR) is preferred capital basis.
+    // Fallback: estimate from 50% stock margin (Reg-T standard) when BPR not stored.
     if spread_type == "covered_call" {
-        return bpr.map(|b| if b > 0.0 { (pnl / b) * 100.0 } else { 0.0 });
+        if let Some(b) = bpr {
+            return Some(if b > 0.0 { (pnl / b) * 100.0 } else { 0.0 });
+        }
+        if let Some(u) = underlying_price {
+            if u > 0.0 {
+                let margin = u * 0.50 * 100.0 * quantity as f64;
+                return Some((pnl / margin) * 100.0);
+            }
+        }
+        return None;
     }
 
     let mut capital_at_risk =
@@ -821,6 +830,10 @@ pub fn build_portfolio_stats(
     // L3: strategy counts for open trades
     let mut open_strategy_map: HashMap<String, usize> = HashMap::new();
 
+    // KPI 5: largest single position BPR concentration
+    let mut largest_bpr = 0.0_f64;
+    let mut largest_ticker: Option<String> = None;
+
     // Sort by exit_date so streak and drawdown are chronological
     let mut all_refs: Vec<&Trade> = trades.iter().collect();
     all_refs.sort_by_key(|t| t.exit_date);
@@ -885,6 +898,12 @@ pub fn build_portfolio_stats(
                 )
             });
             total_open_bpr += bpr;
+
+            // KPI 5: track largest single position
+            if bpr > largest_bpr {
+                largest_bpr = bpr;
+                largest_ticker = Some(trade.ticker.clone());
+            }
 
             // Undefined risk: CSP, CC, Strangle, Straddle
             let is_undefined = matches!(
@@ -959,7 +978,9 @@ pub fn build_portfolio_stats(
         bh_running += pnl;
         balance_history.push(bh_running);
     }
-    let (max_drawdown, max_drawdown_pct, _) = calculate_drawdown(&balance_history);
+    let (max_drawdown, max_drawdown_pct, current_drawdown_abs) = calculate_drawdown(&balance_history);
+    let current_peak: f64 = balance_history.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let current_drawdown_pct = if current_peak > 0.0 { current_drawdown_abs / current_peak * 100.0 } else { 0.0 };
 
     let (current_streak, max_win_streak, max_loss_streak) =
         get_streak_analysis(&all_refs);
@@ -983,6 +1004,7 @@ pub fn build_portfolio_stats(
     let drift   = undefined_pct - target_undefined_pct;
     let avg_pop = if pop_count > 0 { pop_sum / pop_count as f64 } else { 0.0 };
     let balance = account_size + realized_pnl;
+    let largest_position_bpr_pct = if account_size > 0.0 { largest_bpr / account_size * 100.0 } else { 0.0 };
 
     // M5: sort critical positions by DTE ascending
     critical_positions.sort_by_key(|(_, dte)| *dte);
@@ -1104,6 +1126,9 @@ pub fn build_portfolio_stats(
         stress_test,
         stress_priced_count,
         stress_open_count,
+        current_drawdown_pct,
+        largest_position_bpr_pct,
+        largest_position_ticker: largest_ticker,
     }
 }
 
@@ -1156,7 +1181,7 @@ pub fn estimate_greeks(
     } else {
         theta_ann += r * k * (-r * t).exp() * normal_cdf(-d2);
     }
-    let mut theta = theta_ann / 365.0;
+    let mut theta = theta_ann / 365.25;
     let mut vega = s * nd1 * t.sqrt() / 100.0;
 
     // Apply signs for short positions
@@ -1501,9 +1526,10 @@ fn calculate_sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     let n = returns.len() as f64;
     let mean = returns.iter().sum::<f64>() / n;
     let risk_free_daily = risk_free_annual / 252.0;
-    let (d_count, d_sum_sq) = returns.iter().filter(|&&r| r < 0.0)
+    let (_, d_sum_sq) = returns.iter().filter(|&&r| r < 0.0)
         .fold((0usize, 0.0_f64), |(cnt, sq), &r| (cnt + 1, sq + r.powi(2)));
-    let downside_var = d_sum_sq / d_count.max(1) as f64;
+    // Divide by total N (not just loss count) — standard Sortino semi-deviation formula
+    let downside_var = d_sum_sq / returns.len().max(1) as f64;
     let downside_std = downside_var.sqrt();
     if downside_std <= 0.0 { return 0.0; }
     (mean - risk_free_daily) / downside_std * 252.0_f64.sqrt()
@@ -1713,9 +1739,11 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             cw_ratio_count += 1;
         }
 
-        // IV crush: entry_iv - iv_at_close (both stored as whole % e.g. 30.0 = 30%)
+        // IV crush: entry_iv - iv_at_close, both normalized to whole % (30.0 = 30%)
+        // Guard handles inconsistent storage: decimal (0.30) and whole-% (30.0) both accepted
         if let (Some(entry_iv), Some(close_iv)) = (t.implied_volatility, t.iv_at_close) {
-            iv_crush_sum   += entry_iv - close_iv; // already in % pts — no multiply needed
+            let to_pct = |v: f64| if v < 2.0 { v * 100.0 } else { v };
+            iv_crush_sum   += to_pct(entry_iv) - to_pct(close_iv);
             iv_crush_count += 1;
         }
 
@@ -2415,7 +2443,7 @@ pub fn build_payoff_series(
     let dte = calculate_remaining_dte(&trade.expiration_date).max(0) as f64;
     let expected_move = if iv > 0.0 && dte > 0.0 {
         let iv_dec = if iv > 2.0 { iv / 100.0 } else { iv };
-        Some(underlying * iv_dec * (dte / 365.0).sqrt())
+        Some(underlying * iv_dec * (dte / 365.25).sqrt())
     } else {
         None
     };

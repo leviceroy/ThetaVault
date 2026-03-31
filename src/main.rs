@@ -160,6 +160,9 @@ pub struct AppState {
     // Journal Note quick-entry (Actions tab, N key)
     pub journal_note_buf:      String,
     pub journal_note_trade_id: Option<i32>,
+
+    // UI 7: Roll shortcut — template for new rolled trade (id=0 signals insert)
+    pub new_trade_template: Option<models::Trade>,
 }
 
 impl AppState {
@@ -178,6 +181,17 @@ impl AppState {
                 if bpr > 0.0 {
                     t.bpr = Some(bpr);
                     let _ = storage.set_bpr(t.id, bpr);
+                }
+            }
+        }
+        // Auto-tag expired trades: open trades past expiration_date get exit_reason="expired"
+        {
+            let today = chrono::Utc::now().date_naive();
+            for t in &mut trades {
+                if t.is_open() && t.expiration_date.date_naive() < today {
+                    t.exit_reason = Some("expired".to_string());
+                    t.exit_date = Some(t.expiration_date);
+                    let _ = storage.update_trade(t.id, t);
                 }
             }
         }
@@ -366,6 +380,7 @@ impl AppState {
             thesis_edit_buf:         String::new(),
             journal_note_buf:        String::new(),
             journal_note_trade_id:   None,
+            new_trade_template:      None,
         };
         app.rebuild_visual_rows();
         app
@@ -1089,6 +1104,14 @@ impl AppState {
     pub fn build_updated_trade(&self, original: &models::Trade) -> models::Trade {
         let mut t = original.clone();
         apply_edit_fields_to_trade(&self.edit_fields, &mut t);
+        // Auto-inherit roll_count from parent when this trade is a roll continuation
+        if let Some(pid) = t.rolled_from_id {
+            if t.roll_count == 0 {
+                if let Some(parent) = self.trades.iter().find(|p| p.id == pid) {
+                    t.roll_count = parent.roll_count + 1;
+                }
+            }
+        }
         // L8: auto-match playbook if none assigned
         if t.playbook_id.is_none() {
             let matches = calculations::find_matching_playbooks(&t, &self.playbooks);
@@ -1106,6 +1129,30 @@ impl AppState {
         self.close_fields    = build_close_fields(trade);
         self.close_field_idx = 0;
         self.app_mode        = AppMode::CloseTrade;
+        self.show_detail     = false;
+    }
+
+    /// Open a new trade edit form pre-populated from source trade (roll workflow).
+    /// Sets rolled_from_id = source.id and trade_date = today.  id=0 signals insert on save.
+    pub fn start_roll(&mut self, source: &models::Trade) {
+        use chrono::Utc;
+        let today = Utc::now();
+        let mut template = source.clone();
+        template.id            = 0;
+        template.rolled_from_id = Some(source.id);
+        template.trade_date    = today;
+        template.exit_date     = None;
+        template.exit_reason   = None;
+        template.pnl           = None;
+        template.debit_paid    = None;
+        template.closed_at_target = false;
+        template.roll_count    = source.roll_count + 1;
+        self.edit_trade_id   = Some(0);
+        self.edit_fields     = build_edit_fields(&template);
+        self.edit_field_idx  = 0;
+        self.edit_scroll     = 0;
+        self.new_trade_template = Some(template);
+        self.app_mode        = AppMode::EditTrade;
         self.show_detail     = false;
     }
 
@@ -1210,6 +1257,7 @@ impl AppState {
         self.close_trade_id   = None;
         self.close_fields     = Vec::new();
         self.delete_trade_id  = None;
+        self.new_trade_template = None;
         self.edit_playbook_id        = None;
         self.playbook_edit_fields    = Vec::new();
         self.playbook_edit_field_idx = 0;
@@ -1818,6 +1866,10 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
 fn apply_close_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.exit_date   = parse_date_field(fields, "Exit Date");
     t.exit_reason = field_select_value(fields, "Exit Reason");
+    // Track roll count: increment on the trade being closed as "rolled"
+    if t.exit_reason.as_deref() == Some("rolled") {
+        t.roll_count += 1;
+    }
     t.underlying_price_at_close = field_opt_f64(fields, "Underlying @ Close");
     t.iv_at_close    = field_opt_f64(fields, "IV at Close");
     t.delta_at_close = field_opt_f64(fields, "Delta at Close");
@@ -2699,7 +2751,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         // Save
                         if let Some(tid) = app.edit_trade_id {
-                            if let Some(orig) = app.trades.iter().find(|t| t.id == tid).cloned() {
+                            if tid == 0 {
+                                // New trade (from roll shortcut): use template as base
+                                if let Some(tmpl) = app.new_trade_template.take() {
+                                    let mut updated = app.build_updated_trade(&tmpl);
+                                    if updated.iv_rank.is_none() {
+                                        if let Some(iv) = updated.implied_volatility {
+                                            if let Ok(Some(ivr)) = storage.compute_ivr_for_ticker(&updated.ticker, iv) {
+                                                updated.iv_rank = Some(ivr);
+                                            }
+                                        }
+                                    }
+                                    let _ = storage.insert_trade(&updated);
+                                    app.cancel_mode();
+                                    app.reload(&storage);
+                                }
+                            } else if let Some(orig) = app.trades.iter().find(|t| t.id == tid).cloned() {
                                 let mut updated = app.build_updated_trade(&orig);
                                 // Auto-compute IVR if implied_volatility is set and iv_rank is blank
                                 if updated.iv_rank.is_none() {
@@ -3238,6 +3305,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('e') | KeyCode::Char('E') => {
                             if let Some(t) = app.selected_trade_cloned() {
                                 app.start_edit(&t);
+                            }
+                        }
+                        // Roll trade (UI 7): open new trade form pre-populated from selected
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            if let Some(t) = app.selected_trade_cloned() {
+                                if t.is_open() {
+                                    app.start_roll(&t);
+                                }
                             }
                         }
                         // Close trade

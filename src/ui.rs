@@ -146,7 +146,7 @@ pub fn draw_ui(
 
     // ── Content
     match selected_tab {
-        0 => draw_dashboard(f, chunks[1], stats, perf_stats, all_trades, dash_open_scroll, max_heat_pct, alerts, dash_risk_scroll, dash_panel_focus),
+        0 => draw_dashboard(f, chunks[1], stats, perf_stats, all_trades, dash_open_scroll, max_heat_pct, alerts, dash_risk_scroll, dash_panel_focus, default_profit_target_pct),
         1 => draw_journal(
             f, chunks[1],
             display_count, visual_rows, collapsed_months, all_trades,
@@ -286,7 +286,7 @@ fn health_grade(stats: &PortfolioStats) -> (char, Color, String) {
     (grade, color, detail)
 }
 
-fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats: &PerformanceStats, trades: &[Trade], open_scroll: usize, max_heat_pct: f64, alerts: &[crate::actions::TradeAlert], risk_scroll: usize, panel_focus: u8) {
+fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats: &PerformanceStats, trades: &[Trade], open_scroll: usize, max_heat_pct: f64, alerts: &[crate::actions::TradeAlert], risk_scroll: usize, panel_focus: u8, default_profit_target_pct: f64) {
     // L9: 2-row KPI fallback when terminal is narrow (<130 cols)
     let wide = area.width >= 130;
 
@@ -339,6 +339,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     let bal_color = if stats.balance >= stats.account_size { C_GREEN } else { C_RED };
     let bp_color = if stats.bp_available >= 0.0 { C_GRAY } else { C_RED };
     let (hgrade, hcolor, hdetail) = health_grade(stats);
+    let dd_color = if stats.current_drawdown_pct >= 20.0 { C_RED }
+        else if stats.current_drawdown_pct >= 10.0 { C_YELLOW }
+        else { C_GREEN };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -355,7 +358,13 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             Line::from(vec![
                 Span::styled(format!(" ${:.0}", stats.bp_available), Style::default().fg(bp_color)),
             ]),
-            Line::from(""),
+            Line::from(vec![
+                Span::styled(" DD: ", Style::default().fg(C_GRAY)),
+                Span::styled(
+                    format!("{:.1}% / {:.1}%", stats.current_drawdown_pct, stats.max_drawdown_pct),
+                    Style::default().fg(dd_color),
+                ),
+            ]),
             Line::from(vec![
                 Span::styled(" Health: ", Style::default().fg(C_GRAY)),
                 Span::styled(hgrade.to_string(), Style::default().fg(hcolor).add_modifier(Modifier::BOLD)),
@@ -567,7 +576,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let vega_color = if vega_val > 0.0 {
             C_RED   // long vega — unusual for premium seller
         } else if vega_val < -5000.0 {
-            Color::Rgb(239, 68, 68)  // dangerously short
+            Color::Rgb(249, 115, 22)  // dangerously short — orange (distinct from long-vega red)
         } else {
             C_YELLOW // normal negative vega for premium seller
         };
@@ -628,6 +637,21 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
     } else {
         Line::from("")
     };
+    let conc_line = if stats.largest_position_bpr_pct > 5.0 {
+        let ticker = stats.largest_position_ticker.as_deref().unwrap_or("?");
+        Line::from(vec![Span::styled(
+            format!(" ⚠ {}: {:.1}%", ticker, stats.largest_position_bpr_pct),
+            Style::default().fg(C_RED),
+        )])
+    } else if stats.largest_position_bpr_pct > 3.0 {
+        let ticker = stats.largest_position_ticker.as_deref().unwrap_or("?");
+        Line::from(vec![Span::styled(
+            format!(" {} max: {:.1}%", ticker, stats.largest_position_bpr_pct),
+            Style::default().fg(C_YELLOW),
+        )])
+    } else {
+        Line::from("")
+    };
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -641,6 +665,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             Line::from(vec![Span::styled(per_trade_str, Style::default().fg(C_GRAY))]),
             room_line,
+            conc_line,
             kelly_heat_line,
         ])
         .wrap(Wrap { trim: true })
@@ -1262,12 +1287,21 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                 (0.0_f64, Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)))
             }
         };
-        // ── GTC: Good Till Cancel buy-to-close target price ───────────────────────
+        // ── GTC: Good Till Cancel target price (cascade: per-trade → global → strategy)
         let target_pct = t.target_profit_pct
-            .unwrap_or_else(|| t.strategy.default_profit_target_pct());
+            .unwrap_or_else(|| {
+                if default_profit_target_pct > 0.0 { default_profit_target_pct }
+                else { t.strategy.default_profit_target_pct() }
+            });
         let (gtc_str, gtc_color) = if t.credit_received > 0.0 {
+            // Credit spread: show DB (debit-to-close) target
             let gtc = t.credit_received * (1.0 - target_pct / 100.0);
             (format!("${:.2}", gtc), C_CYAN)
+        } else if t.credit_received < 0.0 {
+            // Debit spread: show CR (credit-to-close) target
+            let debit_paid = -t.credit_received;
+            let gtc = debit_paid * (target_pct / 100.0);
+            (format!("${:.2}CR", gtc), C_CYAN)
         } else {
             ("\u{2014}".to_string(), C_GRAY)
         };
@@ -2668,6 +2702,26 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         if cs.len() > 1 { left_lines.push(Line::from(cs)); }
     }
 
+    // Earnings date in detail pane (when next_earnings is set)
+    if let Some(er_date) = trade.next_earnings {
+        let today_nd = chrono::Utc::now().date_naive();
+        let days_to_er = (er_date - today_nd).num_days();
+        let (er_color, er_note) = if days_to_er < 0 {
+            (C_GRAY, " (passed)".to_string())
+        } else if days_to_er <= 7 {
+            (C_RED, format!(" ({}d)", days_to_er))
+        } else if days_to_er <= 14 {
+            (C_YELLOW, format!(" ({}d)", days_to_er))
+        } else {
+            (C_GRAY, format!(" ({}d)", days_to_er))
+        };
+        left_lines.push(Line::from(vec![
+            Span::styled("  ER: ", Style::default().fg(C_GRAY)),
+            Span::styled(er_date.format("%Y-%m-%d").to_string(), Style::default().fg(er_color)),
+            Span::styled(er_note, Style::default().fg(er_color)),
+        ]));
+    }
+
     // B/A spread + Fill vs Mid (Tastytrade fill quality)
     {
         let mut fq: Vec<Span> = vec![Span::styled("  ", Style::default())];
@@ -2703,6 +2757,9 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         if let Some(pop) = trade.pop {
             let pc = if pop >= 70.0 { C_GREEN } else if pop >= 50.0 { C_YELLOW } else { C_RED };
             gs.push(Span::styled(format!("POP: {:.1}%  ", pop), Style::default().fg(pc)));
+            let pit = 100.0 - pop;
+            let pitc = if pit <= 30.0 { C_GREEN } else if pit <= 50.0 { C_YELLOW } else { C_RED };
+            gs.push(Span::styled(format!("PIT: {:.1}%  ", pit), Style::default().fg(pitc)));
         }
         if let Some(p) = p50 {
             let p50c = if p >= 60.0 { C_GREEN } else if p >= 45.0 { C_YELLOW } else { C_RED };
@@ -6355,7 +6412,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
 
     let lbl = |s: &'static str| Span::styled(s, Style::default().fg(C_YELLOW));
     let sub = |s: &'static str| Span::styled(s, Style::default().fg(C_GRAY));
-    let pad = Span::styled("           ", Style::default().fg(C_YELLOW));
+    let pad = Span::styled("            ", Style::default().fg(C_YELLOW));
 
     let lines = vec![
         Line::from(vec![Span::styled("  ◆ KPI Reference  (tastytrade philosophy)", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))]),
@@ -6471,10 +6528,10 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
         ]),
         Line::from(vec![
             pad.clone(),
-            sub("Progress bar shows % of monthly target reached. Green=on track, Yellow=behind, Red=off."),
+            sub("Progress bar: % of monthly target reached. Green=on track, Yellow=behind, Red=off."),
         ]),
         Line::from(vec![
-            lbl("  Est. M-end"),
+            lbl("  M-end Est "),
             Span::styled("month-end P&L projection = (P&L so far ÷ days elapsed) × days in month", Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
@@ -6494,7 +6551,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
         ]),
         Line::from(vec![
             pad.clone(),
-            sub("Best: ≥ 1.0 means winners ≥ losers. Premium sellers often < 1 but offset by high win rate."),
+            sub("Best: ≥ 1.0 means winners ≥ losers. Premium sellers often < 1, offset by high win rate."),
         ]),
         Line::from(vec![
             lbl("  EV        "),
@@ -6520,12 +6577,12 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             Span::styled("beta-weighted delta of full portfolio (see β-WΔ above)", Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
-            lbl("  -5% Stress"),
+            lbl("  -5% Str   "),
             Span::styled("est. P&L if SPY drops 5% = BWD × SPY_price × −0.05", Style::default().fg(C_WHITE)),
         ]),
         Line::from(vec![
             pad.clone(),
-            sub("Quick directional stress test. Positive = portfolio benefits from a drop (net short delta)."),
+            sub("Directional stress test. Positive = portfolio benefits from drop (net short delta)."),
         ]),
         Line::from(vec![
             lbl("  ⚠ Gamma   "),
@@ -6533,7 +6590,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
         ]),
         Line::from(vec![
             pad.clone(),
-            sub("Consider closing or defending before expiration weekend. Replaces Θ/Δ line when triggered."),
+            sub("Close or defend before expiration weekend. Replaces Θ/Δ line when triggered."),
         ]),
         Line::from(vec![
             lbl("  Θ/Δ       "),

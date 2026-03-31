@@ -587,6 +587,13 @@ pub struct PortfolioStats {
     pub stress_test: Vec<StressPoint>,
     pub stress_priced_count: usize,  // open trades with underlying_price > 0 and legs
     pub stress_open_count: usize,    // total open trades
+
+    // KPI 4: current drawdown from recent peak
+    pub current_drawdown_pct: f64,
+
+    // KPI 5: largest single position concentration (BPR as % of account)
+    pub largest_position_bpr_pct: f64,
+    pub largest_position_ticker: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
