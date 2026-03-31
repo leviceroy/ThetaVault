@@ -467,7 +467,8 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
                 long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
                 if let Some(atm) = long_puts.first() {
                     let long_width = atm.strike - sp.strike;
-                    return vec![sp.strike - (long_width + credit)];
+                    let be = sp.strike - (long_width + credit);
+                    if be > 0.0 { return vec![be]; }
                 }
             }
         }
@@ -508,7 +509,7 @@ pub fn calculate_calendar_payoff_at_price(
     remaining_dte: f64,
     iv: f64,
 ) -> f64 {
-    let r = 0.0_f64; // risk-free rate approximation
+    let r = 0.045_f64; // risk-free rate (consistent with estimate_pop and calculate_p50)
 
     // Detect call vs put calendar from which long leg is present
     let is_call_calendar = legs.iter().any(|l| l.leg_type == LegType::LongCall);
@@ -1173,7 +1174,7 @@ pub fn estimate_greeks(
     let nd1 = normal_pdf(d1);
 
     let mut delta = if is_call { normal_cdf(d1) } else { normal_cdf(d1) - 1.0 };
-    let gamma = nd1 / (s * sigma * t.sqrt());
+    let mut gamma = nd1 / (s * sigma * t.sqrt());
     
     let mut theta_ann = -(s * nd1 * sigma) / (2.0 * t.sqrt());
     if is_call {
@@ -1188,8 +1189,8 @@ pub fn estimate_greeks(
     if is_short {
         delta = -delta;
         theta = -theta;
-        vega = -vega;
-        // gamma is technically always positive for long, negative for short
+        vega  = -vega;
+        gamma = -gamma;  // Short gamma is negative (position loses delta faster on moves)
     }
 
     (delta, theta, gamma, vega)
@@ -1286,24 +1287,26 @@ pub fn calculate_p50(trade: &Trade) -> Option<f64> {
 
     let p50 = match trade.strategy {
         StrategyType::CashSecuredPut | StrategyType::ShortPutVertical => {
-            // 50% profit when stock stays above: short_strike + credit*0.5
+            // 50% profit when stock stays above: short_strike - credit*0.5
+            // Proof: P&L = credit - max(0, k-S). For P&L = credit/2: S = k - credit/2.
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortPut)
                 .map(|l| l.strike)
                 .unwrap_or(trade.short_strike);
             if k <= 0.0 { return None; }
-            let threshold = k + credit * 0.5;
+            let threshold = k - credit * 0.5;
             let d2 = bs_d1(s, threshold, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
         StrategyType::CoveredCall | StrategyType::ShortCallVertical => {
-            // 50% profit when stock stays below: short_strike - credit*0.5
+            // 50% profit when stock stays below: short_strike + credit*0.5
+            // Proof: P&L = credit - max(0, S-k). For P&L = credit/2: S = k + credit/2.
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortCall)
                 .map(|l| l.strike)
                 .unwrap_or(trade.short_strike);
             if k <= 0.0 { return None; }
-            let threshold = k - credit * 0.5;
+            let threshold = k + credit * 0.5;
             let d2 = bs_d1(s, threshold, t, r, iv) - iv * t.sqrt();
             normal_cdf(-d2) * 100.0
         }
@@ -1313,8 +1316,9 @@ pub fn calculate_p50(trade: &Trade) -> Option<f64> {
             let kc = trade.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike);
             match (kp, kc) {
                 (Some(kp), Some(kc)) if kp > 0.0 && kc > 0.0 => {
-                    let tp = kp + credit * 0.5;
-                    let tc = kc - credit * 0.5;
+                    // 50%-profit zone: (kp - credit/2) to (kc + credit/2)
+                    let tp = kp - credit * 0.5;
+                    let tc = kc + credit * 0.5;
                     let d2_put  = bs_d1(s, tp, t, r, iv) - iv * t.sqrt();
                     let d2_call = bs_d1(s, tc, t, r, iv) - iv * t.sqrt();
                     (normal_cdf(d2_put) + normal_cdf(-d2_call) - 1.0) * 100.0

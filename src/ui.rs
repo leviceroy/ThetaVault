@@ -99,7 +99,7 @@ pub fn draw_ui(
     live_prices:             &std::collections::HashMap<String, f64>,
     perf_collapsed:          &[bool; 15],
     perf_section_cursor:     usize,
-    col_visibility:          &[bool; 22],
+    col_visibility:          &[bool; 23],
     show_col_picker:         bool,
     journal_chain_view:      bool,
     default_profit_target_pct: f64,
@@ -1437,7 +1437,7 @@ fn draw_journal(
     live_prices:      &std::collections::HashMap<String, f64>,
     under_tauri:      bool,
     playbooks:        &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 22],
+    col_visibility:     &[bool; 23],
     show_col_picker:    bool,
     journal_chain_view: bool,
     account_size:       f64,
@@ -1626,13 +1626,13 @@ fn draw_trade_table(
     state:              &mut TableState,
     live_prices:        &std::collections::HashMap<String, f64>,
     playbooks:          &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 22],
+    col_visibility:     &[bool; 23],
     journal_chain_view: bool,
     account_size:       f64,
     max_pos_bpr_pct:    f64,
     default_profit_target_pct: f64,
 ) {
-    const COL_NAMES: [&str; 22] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt"];
+    const COL_NAMES: [&str; 23] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt", "IVP"];
 
     let header = Row::new(
         COL_NAMES.iter().enumerate()
@@ -2051,6 +2051,17 @@ fn draw_trade_table(
                             Cell::from("\u{2014}").style(Style::default().fg(C_GRAY))
                         }
                     },
+                    // Col 22: IVP — IV Percentile (optional, default OFF)
+                    {
+                        match t.iv_percentile {
+                            Some(ivp) => {
+                                // IVP: ≥50 = elevated (green for premium sellers), <30 = low (red)
+                                let color = if ivp >= 50.0 { C_GREEN } else if ivp >= 30.0 { C_YELLOW } else { C_RED };
+                                Cell::from(format!("{:.0}%", ivp)).style(Style::default().fg(color))
+                            }
+                            None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                        }
+                    },
                 ];
                 let visible_cells: Vec<Cell> = all_cells.into_iter().enumerate()
                     .filter(|(i, _)| col_visibility[*i])
@@ -2061,7 +2072,7 @@ fn draw_trade_table(
         }
     }).collect();
 
-    const COL_WIDTHS: [u16; 22] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7, 6];
+    const COL_WIDTHS: [u16; 23] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7, 6, 5];
     let visible_widths: Vec<Constraint> = COL_WIDTHS.iter().enumerate()
         .filter(|(i, _)| col_visibility[*i])
         .map(|(_, &w)| Constraint::Length(w))
@@ -3169,8 +3180,11 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
 
     // ── Compute active vs rolled legs (used by both Campaign and Legs blocks) ─
     let trade_is_open = trade.exit_date.is_none();
-    let some_legs_closed = trade.legs.iter().any(|l| l.close_premium.is_some());
-    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if trade_is_open && some_legs_closed {
+    // For closed trades only: partition legs into active vs closed legs.
+    // For open trades: always show all legs as active — close_premium on a leg of an open trade
+    // records a partial BTC price, not that the leg is gone from the position.
+    let some_legs_closed = !trade_is_open && trade.legs.iter().any(|l| l.close_premium.is_some());
+    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if some_legs_closed {
         trade.legs.iter().partition(|l| l.close_premium.is_none())
     } else {
         (trade.legs.iter().collect(), vec![])
@@ -3373,6 +3387,35 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                 Span::styled("   No playbook assigned", Style::default().fg(C_GRAY)),
             ]));
         }
+
+        // ── Strategy guidelines: DTE and width checks (E1/E5) ─────────────
+        let mut guideline_warnings: Vec<String> = vec![];
+        if let Some(dte) = trade.entry_dte {
+            if let Some((min_dte, max_dte)) = trade.strategy.recommended_entry_dte() {
+                if dte < min_dte || dte > max_dte {
+                    guideline_warnings.push(format!("Entry DTE {} outside {}-{} range", dte, min_dte, max_dte));
+                }
+            }
+        }
+        if let Some(width) = trade.spread_width {
+            if let Some(max_w) = trade.strategy.recommended_max_width() {
+                if width > max_w {
+                    guideline_warnings.push(format!("Width ${:.0} exceeds ${:.0} max", width, max_w));
+                }
+            }
+        }
+        if !guideline_warnings.is_empty() {
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(vec![Span::styled(
+                format!(" ── STRATEGY GUIDELINES {}", "\u{2500}".repeat(43)),
+                sep_style,
+            )]));
+            for w in &guideline_warnings {
+                right_lines.push(Line::from(vec![
+                    Span::styled(format!("   \u{26a0} {}", w), Style::default().fg(C_YELLOW)),
+                ]));
+            }
+        }
     }
 
     // ── Render two-column layout ─────────────────────────────────────────────
@@ -3496,8 +3539,11 @@ pub fn count_detail_lines_right(
 
     // Compute active vs rolled legs — mirrors renderer partition
     let trade_is_open = trade.exit_date.is_none();
-    let some_legs_closed = trade.legs.iter().any(|l| l.close_premium.is_some());
-    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if trade_is_open && some_legs_closed {
+    // For closed trades only: partition legs into active vs closed legs.
+    // For open trades: always show all legs as active — close_premium on a leg of an open trade
+    // records a partial BTC price, not that the leg is gone from the position.
+    let some_legs_closed = !trade_is_open && trade.legs.iter().any(|l| l.close_premium.is_some());
+    let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if some_legs_closed {
         trade.legs.iter().partition(|l| l.close_premium.is_none())
     } else {
         (trade.legs.iter().collect(), vec![])
@@ -3600,6 +3646,23 @@ pub fn count_detail_lines_right(
             n += 1; // blank
             n += 1; // PLAYBOOK separator
             n += 1; // "No playbook assigned"
+        }
+
+        // Strategy guidelines: DTE + width warnings
+        let mut gw = 0usize;
+        if let Some(dte) = trade.entry_dte {
+            if let Some((min_dte, max_dte)) = trade.strategy.recommended_entry_dte() {
+                if dte < min_dte || dte > max_dte { gw += 1; }
+            }
+        }
+        if let Some(width) = trade.spread_width {
+            if let Some(max_w) = trade.strategy.recommended_max_width() {
+                if width > max_w { gw += 1; }
+            }
+        }
+        if gw > 0 {
+            n += 2; // blank + separator
+            n += gw;
         }
     }
 
@@ -3817,7 +3880,7 @@ fn draw_playbook(
                 Line::from(vec![Span::styled("  no data", Style::default().fg(C_GRAY))])
             }
         } else {
-            Line::from(vec![Span::styled("  no data", Style::default().fg(C_DARK))])
+            Line::from(vec![Span::styled("  no data", Style::default().fg(C_GRAY))])
         };
         ListItem::new(vec![name_line, stats_line])
     }).collect();
@@ -4103,19 +4166,19 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 
 // ── Column visibility picker popup (L9) ──────────────────────────────────────
 
-fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 22]) {
-    const COL_NAMES: [&str; 22] = [
+fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 23]) {
+    const COL_NAMES: [&str; 23] = [
         "Date","Ticker","Spot","ER","Str","Qty","Credit","GTC","BE",
-        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM","Mgmt",
+        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM","Mgmt","IVP",
     ];
-    // Keys: 1-9 for columns 0-8, a-l for columns 9-20, m for Mgmt (21)
-    const KEY_LABELS: [&str; 22] = [
+    // Keys: 1-9 for columns 0-8, a-m for columns 9-21, n for IVP (22)
+    const KEY_LABELS: [&str; 23] = [
         "1","2","3","4","5","6","7","8","9",
-        "a","b","c","d","e","f","g","h","i","j","k","l","m",
+        "a","b","c","d","e","f","g","h","i","j","k","l","m","n",
     ];
 
     let popup_w = 36u16;
-    let popup_h = 27u16;
+    let popup_h = 28u16;
     let x = area.x + area.width.saturating_sub(popup_w) / 2;
     let y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
@@ -4128,7 +4191,7 @@ fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 22])
         Line::from(""),
     ];
 
-    for i in 0..22 {
+    for i in 0..23 {
         let check = if col_visibility[i] { "✓" } else { "✗" };
         let check_style = if col_visibility[i] {
             Style::default().fg(Color::Green)

@@ -81,7 +81,7 @@ pub struct AppState {
     pub journal_chain_view: bool,
 
     // Column visibility for trade table (21 columns — last is EM)
-    pub col_visibility:  [bool; 22],
+    pub col_visibility:  [bool; 23],
     pub show_col_picker: bool,
 
     // Strategy guide (Tauri right panel — OSC 9997)
@@ -1641,6 +1641,17 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::number("Fill vs Mid",
         &t.fill_vs_mid.map(|v| format!("{:.2}", v)).unwrap_or_default()));
 
+    // ── Assignment (CSP / CC only)
+    if matches!(t.strategy, models::StrategyType::CashSecuredPut | models::StrategyType::CoveredCall) {
+        f.push(EditField::bool_field("Was Assigned", t.was_assigned)
+            .with_section("── Assignment ────────────────────────────────────────────────────"));
+        f.push(EditField::number("Assigned Shares",
+            &t.assigned_shares.map(|v| format!("{}", v)).unwrap_or_default()));
+        f.push(EditField::number("Cost Basis",
+            &t.cost_basis.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+        f.push(EditField::text("Close Notes", &t.close_notes.clone().unwrap_or_default()));
+    }
+
     f
 }
 
@@ -1785,6 +1796,14 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.is_tested        = field_str(fields, "Is Tested") == "true";
     t.bid_ask_spread_at_entry = field_opt_f64(fields, "Bid-Ask Spread");
     t.fill_vs_mid             = field_opt_f64(fields, "Fill vs Mid");
+    // Assignment fields (only present when strategy is CSP/CC)
+    if fields.iter().any(|f| f.label == "Was Assigned") {
+        t.was_assigned    = field_str(fields, "Was Assigned") == "true";
+        t.assigned_shares = fields.iter().find(|f| f.label == "Assigned Shares")
+            .and_then(|f| if f.value.is_empty() { None } else { f.value.parse().ok() });
+        t.cost_basis      = field_opt_f64(fields, "Cost Basis");
+        t.close_notes     = field_opt_str(fields, "Close Notes");
+    }
     t.next_earnings = {
         let s = field_str(fields, "Earnings Date");
         if s.is_empty() { None } else { chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok() }
@@ -2218,8 +2237,9 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 22] {
-    let mut vis = [true; 22];
+fn parse_col_visibility(s: &str) -> [bool; 23] {
+    let mut vis = [true; 23];
+    vis[22] = false; // IVP col defaults OFF
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -2235,18 +2255,21 @@ fn parse_col_visibility(s: &str) -> [bool; 22] {
     } else {
         chars
     };
-    // Pad to 22 with col 21 (Mgmt) defaulting to ON
+    // Pad to 23 with IVP (col 22) defaulting to OFF
     let mut padded = padded;
     while padded.len() < 22 {
         padded.push('1');
     }
-    for (i, ch) in padded.iter().take(22).enumerate() {
+    if padded.len() < 23 {
+        padded.push('0'); // IVP defaults OFF
+    }
+    for (i, ch) in padded.iter().take(23).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 22]) -> String {
+fn col_visibility_to_string(vis: &[bool; 23]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
@@ -3239,6 +3262,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     'k' => Some(19), // OTM%
                                     'l' => Some(20), // EM
                                     'm' => Some(21), // Mgmt
+                                    'n' => Some(22), // IVP
                                     _ => None,
                                 };
                                 if let Some(i) = idx {

@@ -139,6 +139,32 @@ impl StrategyType {
             _ => 50.0,
         }
     }
+
+    /// Recommended entry DTE range (min, max) per tastytrade guidelines.
+    /// Returns None for strategies where DTE is irrelevant (0DTE handled by (0,0)).
+    pub fn recommended_entry_dte(&self) -> Option<(i32, i32)> {
+        match self {
+            StrategyType::IronCondor | StrategyType::IronButterfly => Some((40, 55)),
+            StrategyType::CashSecuredPut | StrategyType::CoveredCall => Some((30, 45)),
+            StrategyType::ShortPutVertical | StrategyType::ShortCallVertical => Some((21, 45)),
+            StrategyType::Strangle | StrategyType::Straddle => Some((25, 45)),
+            StrategyType::CalendarSpread | StrategyType::Pmcc => Some((30, 60)),
+            StrategyType::LongCallVertical | StrategyType::LongPutVertical => Some((21, 45)),
+            _ => None,
+        }
+    }
+
+    /// Recommended maximum spread width per tastytrade guidelines.
+    /// Returns None for strategies where width is not applicable.
+    pub fn recommended_max_width(&self) -> Option<f64> {
+        match self {
+            StrategyType::ShortPutVertical | StrategyType::ShortCallVertical => Some(10.0),
+            StrategyType::IronCondor => Some(10.0),   // per-side
+            StrategyType::IronButterfly => Some(5.0),
+            StrategyType::LongCallVertical | StrategyType::LongPutVertical => Some(10.0),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for StrategyType {
