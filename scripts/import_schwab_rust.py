@@ -1017,6 +1017,15 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                 else:
                     print(f"  Matched partial orphan close ({matched_legs}/{len(t_db['legs'])}) for {t_db['ticker']} ID {t_db['id']} ({t_db['strategy']})")
 
+                    # ── ALL LEGS NOW CLOSED CHECK ──────────────────────────────────
+                    # Previous import may have set closePremium on some legs; if this
+                    # import closes the remaining legs, all are now closed → set exit.
+                    all_now_closed = all(l.get('closePremium') is not None for l in new_legs)
+                    if all_now_closed and close_dates:
+                        updated_trade['exitTime'] = max(close_dates).strftime('%Y-%m-%dT16:00:00Z')
+                        updated_trade['exitReason'] = 'closed'
+                        print(f"  [ALL LEGS CLOSED] {t_db['ticker']} ID {t_db['id']} now fully closed via incremental match")
+
                     # ── ROLL DETECTION ────────────────────────────────────────────────
                     # If this is an IC and exactly one side (call or put) was closed,
                     # look for replacement open legs in opens_by_date_ticker that form a
@@ -1441,6 +1450,11 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
     # DB-aware IC promotion: pair new SPV/SCV in this batch with an existing open
     # SCV/SPV already in the DB (incremental narrow-window imports use this path)
     trades = upgrade_verticals_to_ic(trades, conn)
+
+    # DB-aware CSP/CC→Vertical promotion: if a new long_put/long_call in this batch
+    # matches an open CSP/CC in the DB (same ticker, expiry, qty), the user legged into
+    # a vertical by adding a hedge.  Upgrade the DB CSP/CC to SPV/SCV in-place.
+    trades = upgrade_csp_to_spv(trades, conn)
 
     # REMOVED: merge_rolled_ic_sides(trades)
     # Merging rolled sides collapses campaign history. We want separate linked trades
@@ -1961,6 +1975,181 @@ def merge_rolled_ic_sides(trades: List[Dict]) -> List[Dict]:
     return result
 
 
+def upgrade_csp_to_spv(trades: List[Dict], conn: Optional[sqlite3.Connection]) -> List[Dict]:
+    """
+    DB-aware CSP→SPV / CC→SCV promotion.
+
+    When a trader "legs in" to a vertical by first selling a naked put (CSP) and
+    then buying a long put on a later date to cap the risk, Schwab records the two
+    transactions on different days.  The CSP was already imported; the long_put
+    arrives in the current batch as a standalone debit leg.
+
+    This function detects those pairs and upgrades the existing DB CSP to a
+    short_put_vertical (or CC to short_call_vertical) in-place, removing the
+    standalone long leg from the batch so it is never stored separately.
+
+    Matching criteria: same ticker, same expiration (normalized YYYY-MM-DD), same qty.
+    Only promotes if the DB trade has no closePremium on any leg (still fully open).
+    """
+    if conn is None:
+        return trades
+
+    conn.row_factory = sqlite3.Row
+    db_rows = conn.execute(
+        """SELECT * FROM trades
+           WHERE strategy IN ('cash_secured_put', 'covered_call')
+             AND exit_date IS NULL AND (pnl IS NULL)"""
+    ).fetchall()
+
+    db_csp_by_key: Dict[tuple, Dict] = {}
+    db_cc_by_key:  Dict[tuple, Dict] = {}
+
+    for row in db_rows:
+        t = dict(row)
+        t['legs'] = json.loads(t.get('legs_json', '[]'))
+        # Skip if any leg already has a close premium (partial close)
+        if any(l.get('closePremium') is not None for l in t['legs']):
+            continue
+        exp_norm = t['expiration_date'][:10]
+        key = (t['ticker'], exp_norm, t['quantity'])
+        if t['strategy'] == 'cash_secured_put':
+            db_csp_by_key[key] = t
+        elif t['strategy'] == 'covered_call':
+            db_cc_by_key[key] = t
+
+    if not db_csp_by_key and not db_cc_by_key:
+        return trades
+
+    consumed: set = set()
+
+    for i, trade in enumerate(trades):
+        if i in consumed:
+            continue
+        exp_norm = trade['expirationDate'][:10]
+        key = (trade['ticker'], exp_norm, trade['quantity'])
+
+        if trade['spreadType'] == 'long_put' and key in db_csp_by_key:
+            db_rec = db_csp_by_key.pop(key)
+            _promote_csp_to_spv(conn, db_rec, trade)
+            consumed.add(i)
+
+        elif trade['spreadType'] == 'long_call' and key in db_cc_by_key:
+            db_rec = db_cc_by_key.pop(key)
+            _promote_cc_to_scv(conn, db_rec, trade)
+            consumed.add(i)
+
+    if consumed:
+        print(f"  CSP/CC→Vertical promoted {len(consumed)} trade(s) by adding long hedge leg")
+
+    return [t for i, t in enumerate(trades) if i not in consumed]
+
+
+def _promote_csp_to_spv(conn: sqlite3.Connection, db_record: Dict, new_long_put: Dict) -> None:
+    """Upgrade an open CSP to short_put_vertical by merging the incoming long_put leg."""
+    ticker = db_record['ticker']
+    qty    = db_record['quantity']
+    db_legs = db_record['legs']
+
+    sp_leg = next(l for l in db_legs if l['type'] == 'short_put')
+
+    # Prefer the premium from the batch trade's legs list; fall back to creditReceived
+    batch_legs = new_long_put.get('legs', [])
+    lp_entry   = next((l for l in batch_legs if l['type'] == 'long_put'), None)
+    lp_premium = lp_entry['premium'] if lp_entry else abs(new_long_put['creditReceived'])
+    lp_strike  = lp_entry['strike']  if lp_entry else new_long_put.get('longStrike', 0)
+    lp_exp     = new_long_put['expirationDate'][:10]
+
+    total_credit = round(sp_leg['premium'] - lp_premium, 2)
+    width        = abs(sp_leg['strike'] - lp_strike)
+    bpr          = round((width - total_credit) * 100.0 * qty, 2) if width else None
+
+    new_legs = [
+        {'type': 'short_put', 'strike': sp_leg['strike'], 'premium': sp_leg['premium'],
+         'closePremium': None, 'expirationDate': sp_leg.get('expirationDate', lp_exp)},
+        {'type': 'long_put',  'strike': lp_strike,        'premium': lp_premium,
+         'closePremium': None, 'expirationDate': lp_exp},
+    ]
+
+    conn.execute(
+        """UPDATE trades SET
+             strategy        = 'short_put_vertical',
+             long_strike     = ?,
+             long_premium    = ?,
+             credit_received = ?,
+             spread_width    = ?,
+             bpr             = ?,
+             legs_json       = ?
+           WHERE id = ?""",
+        (lp_strike, lp_premium, total_credit,
+         width, bpr, json.dumps(new_legs), db_record['id'])
+    )
+    conn.commit()
+
+    # Block future re-import of the standalone long_put
+    batch_fp = get_trade_fingerprint(new_long_put)
+    conn.execute(
+        "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+        (batch_fp, db_record['id'])
+    )
+    conn.commit()
+
+    print(f"  CSP→SPV: {ticker} #{db_record['id']} "
+          f"sell={sp_leg['strike']} / buy={lp_strike} "
+          f"net_cr=${total_credit:.2f} bpr=${bpr}")
+
+
+def _promote_cc_to_scv(conn: sqlite3.Connection, db_record: Dict, new_long_call: Dict) -> None:
+    """Upgrade an open CC to short_call_vertical by merging the incoming long_call leg."""
+    ticker = db_record['ticker']
+    qty    = db_record['quantity']
+    db_legs = db_record['legs']
+
+    sc_leg = next(l for l in db_legs if l['type'] == 'short_call')
+
+    batch_legs = new_long_call.get('legs', [])
+    lc_entry   = next((l for l in batch_legs if l['type'] == 'long_call'), None)
+    lc_premium = lc_entry['premium'] if lc_entry else abs(new_long_call['creditReceived'])
+    lc_strike  = lc_entry['strike']  if lc_entry else new_long_call.get('longStrike', 0)
+    lc_exp     = new_long_call['expirationDate'][:10]
+
+    total_credit = round(sc_leg['premium'] - lc_premium, 2)
+    width        = abs(sc_leg['strike'] - lc_strike)
+    bpr          = round((width - total_credit) * 100.0 * qty, 2) if width else None
+
+    new_legs = [
+        {'type': 'short_call', 'strike': sc_leg['strike'], 'premium': sc_leg['premium'],
+         'closePremium': None, 'expirationDate': sc_leg.get('expirationDate', lc_exp)},
+        {'type': 'long_call',  'strike': lc_strike,        'premium': lc_premium,
+         'closePremium': None, 'expirationDate': lc_exp},
+    ]
+
+    conn.execute(
+        """UPDATE trades SET
+             strategy        = 'short_call_vertical',
+             long_strike     = ?,
+             long_premium    = ?,
+             credit_received = ?,
+             spread_width    = ?,
+             bpr             = ?,
+             legs_json       = ?
+           WHERE id = ?""",
+        (lc_strike, lc_premium, total_credit,
+         width, bpr, json.dumps(new_legs), db_record['id'])
+    )
+    conn.commit()
+
+    batch_fp = get_trade_fingerprint(new_long_call)
+    conn.execute(
+        "INSERT OR IGNORE INTO import_log (fingerprint, trade_id) VALUES (?, ?)",
+        (batch_fp, db_record['id'])
+    )
+    conn.commit()
+
+    print(f"  CC→SCV: {ticker} #{db_record['id']} "
+          f"sell={sc_leg['strike']} / buy={lc_strike} "
+          f"net_cr=${total_credit:.2f} bpr=${bpr}")
+
+
 def detect_rolls(trades: List[Dict]) -> None:
     """
     Detect rolled trades: when a position is closed and a new one opened
@@ -2330,9 +2519,10 @@ def get_existing_fingerprints(conn: sqlite3.Connection) -> set:
 
 
 def get_open_trades_from_db(conn: sqlite3.Connection) -> List[Dict]:
-    """Fetch currently open trades from the DB to match against new closing transactions."""
+    """Fetch currently open trades from the DB to match against new closing transactions.
+    Excludes trades where pnl is already set (effectively closed even if exit_date is missing)."""
     conn.row_factory = sqlite3.Row
-    cur = conn.execute("SELECT * FROM trades WHERE exit_date IS NULL")
+    cur = conn.execute("SELECT * FROM trades WHERE exit_date IS NULL AND pnl IS NULL")
     open_trades = []
     for row in cur.fetchall():
         t = dict(row)

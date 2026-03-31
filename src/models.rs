@@ -96,6 +96,9 @@ impl StrategyType {
             "short_diagonal_spread" => StrategyType::ShortDiagonalSpread,
             "long_call_vertical"    => StrategyType::LongCallVertical,
             "long_put_vertical"     => StrategyType::LongPutVertical,
+            // Standalone long legs imported before CSP/CC→Vertical upgrade existed
+            "long_put"              => StrategyType::LongPutVertical,
+            "long_call"             => StrategyType::LongCallVertical,
             "pzbr"                           => StrategyType::PutZebra,
             "czbr"                           => StrategyType::CallZebra,
             "put_broken_wing_butterfly"      => StrategyType::PutBrokenWingButterfly,
