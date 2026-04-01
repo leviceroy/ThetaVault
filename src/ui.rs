@@ -14,8 +14,9 @@ use ratatui::{
 };
 use crate::models::{LegType, PlaybookStrategy, PerformanceStats, PortfolioStats, StrategyType, Trade};
 use crate::calculations::{
-    calculate_breakevens, calculate_calendar_payoff_at_price, calculate_held_duration,
+    calculate_breakevens, calculate_calendar_payoff_at_price, calculate_diagonal_max_profit, calculate_held_duration,
     calculate_max_loss_from_legs, calculate_max_profit, calculate_payoff_at_price,
+    estimate_greeks, estimate_iv_from_premium,
     calculate_pct_max_profit, calculate_pnl_per_day, calculate_roc, calculate_remaining_dte,
     compute_spread_width_from_legs, estimate_pop, format_trade_description, vix_max_heat,
 };
@@ -496,22 +497,57 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         kpi[1],
     );
 
-    // Card 3 — Unreal (estimated unrealized P&L from theta decay)
-    let unreal_color = if stats.unrealized_pnl >= 0.0 { C_GREEN } else { C_RED };
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                format!(" ${:+.0}", stats.unrealized_pnl),
-                Style::default().fg(unreal_color).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![Span::styled(" est. θ decay", Style::default().fg(C_GRAY))]),
-        ])
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
-            .title(Span::styled(" Unreal ", Style::default().fg(C_CYAN)))),
-        kpi[2],
-    );
+    // Card 3 — Theta (Net daily theta + tastytrade Θ/NLV target 0.1–0.3%)
+    {
+        let net_theta = stats.net_theta;
+        // Θ/NLV: target 0.1–0.3% per day (Tom Sosnoff's key portfolio metric)
+        let (theta_nlv_line, theta_color) = if let Some(ratio) = stats.theta_netliq_ratio {
+            let c = if ratio >= 0.1 && ratio <= 0.3 { C_GREEN }
+                    else if ratio >= 0.05 && ratio <= 0.5 { C_YELLOW }
+                    else { C_RED };
+            (Line::from(vec![
+                Span::styled(" Θ/NLV: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.2}%", ratio), Style::default().fg(c)),
+                Span::styled(" tgt 0.1–0.3", Style::default().fg(Color::Rgb(100, 116, 139))),
+            ]), c)
+        } else {
+            (Line::from(vec![Span::styled(" Θ/NLV: —", Style::default().fg(C_GRAY))]), C_GRAY)
+        };
+        let theta_bpr_line = if let Some(tb) = stats.theta_bpr_ratio {
+            let c = if tb >= 0.3 { C_GREEN } else if tb >= 0.1 { C_YELLOW } else { C_GRAY };
+            Line::from(vec![
+                Span::styled(" Θ/BPR: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.2}%/d", tb), Style::default().fg(c)),
+            ])
+        } else {
+            Line::from("")
+        };
+        let td_line = if let Some(ratio) = stats.theta_delta_ratio {
+            let c = if ratio >= 1.0 { C_GREEN } else if ratio >= 0.5 { C_YELLOW } else { C_RED };
+            Line::from(vec![
+                Span::styled(" Θ/Δ: ", Style::default().fg(C_GRAY)),
+                Span::styled(format!("{:.2}", ratio), Style::default().fg(c)),
+            ])
+        } else {
+            Line::from("")
+        };
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    format!(" ${:+.0}/d", net_theta),
+                    Style::default().fg(theta_color).add_modifier(Modifier::BOLD),
+                )]),
+                theta_nlv_line,
+                theta_bpr_line,
+                td_line,
+            ])
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(C_BLUE))
+                .title(Span::styled(" Theta ", Style::default().fg(C_CYAN)))),
+            kpi[2],
+        );
+    }
 
     // Card 4 — BWD (Beta-Weighted Delta)
     let (bwd_str, bwd_color) = if stats.spy_price.is_none() {
@@ -727,7 +763,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         else { "→ Reduce/cals" }
     }).unwrap_or("");
     let (vix_em_line, vix_spx_line) = if let Some(vix) = stats.vix {
-        let d = (vix / 100.0) / 252.0_f64.sqrt() * 100.0;
+        // Tastytrade uses calendar-day convention: IV / sqrt(365) for 1-day EM
+        let d = (vix / 100.0) / 365.0_f64.sqrt() * 100.0;
         let em_line = Line::from(vec![
             Span::styled(format!(" 1d ±{:.2}%", d), Style::default().fg(C_CYAN)),
         ]);
@@ -1310,7 +1347,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         let (bpr_pct_str, bpr_pct_color) = match t.bpr {
             Some(b) if stats.account_size > 0.0 => {
                 let pct = b / stats.account_size * 100.0;
-                let color = if pct > 5.0 { C_RED } else if pct > 3.0 { C_YELLOW } else if pct >= 1.0 { C_GREEN } else { C_YELLOW };
+                // Tastylive sizing: defined risk warn >2% alert >3%; undefined warn >5% alert >7%
+                let (bpr_w, bpr_a) = if t.strategy.is_defined_risk() { (2.0, 3.0) } else { (5.0, 7.0) };
+                let color = if pct > bpr_a { C_RED } else if pct > bpr_w { C_YELLOW } else if pct >= 0.05 { C_GREEN } else { C_YELLOW };
                 (format!("{:.1}%", pct), color)
             }
             _ => ("\u{2014}".to_string(), C_GRAY),
@@ -1629,7 +1668,7 @@ fn draw_trade_table(
     col_visibility:     &[bool; 23],
     journal_chain_view: bool,
     account_size:       f64,
-    max_pos_bpr_pct:    f64,
+    _max_pos_bpr_pct:   f64,
     default_profit_target_pct: f64,
 ) {
     const COL_NAMES: [&str; 23] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt", "IVP"];
@@ -1845,7 +1884,7 @@ fn draw_trade_table(
                 let has_compliance_violation = if t.is_open() {
                     t.playbook_id.and_then(|pid| playbooks.iter().find(|pb| pb.id == pid))
                         .and_then(|pb| pb.entry_criteria.as_ref())
-                        .map(|ec| !crate::calculations::check_playbook_compliance(t, ec).is_empty())
+                        .map(|ec| !crate::calculations::check_playbook_compliance(t, ec, account_size).is_empty())
                         .unwrap_or(false)
                 } else {
                     false
@@ -1911,8 +1950,10 @@ fn draw_trade_table(
                                 None => Cell::from("—").style(Style::default().fg(C_GRAY)),
                                 Some(b) if account_size > 0.0 => {
                                     let pct = b / account_size * 100.0;
-                                    let color = if pct > max_pos_bpr_pct { C_RED }
-                                                else if pct > max_pos_bpr_pct * 0.75 { C_YELLOW }
+                                    // Tastylive sizing: defined risk warn >2% alert >3%; undefined warn >5% alert >7%
+                                    let (bpr_warn, bpr_alert) = if t.strategy.is_defined_risk() { (2.0, 3.0) } else { (5.0, 7.0) };
+                                    let color = if pct > bpr_alert { C_RED }
+                                                else if pct > bpr_warn { C_YELLOW }
                                                 else { C_GREEN };
                                     Cell::from(format!("{:.1}%", pct)).style(Style::default().fg(color))
                                 },
@@ -2595,13 +2636,20 @@ fn draw_journal_note_popup(
 
 // ── Trade detail pane ─────────────────────────────────────────────────────────
 
-fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chain: &[Trade], playbooks: &[crate::models::PlaybookStrategy], live_prices: &std::collections::HashMap<String, f64>, account_size: f64, max_pos_bpr_pct: f64) {
+fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chain: &[Trade], playbooks: &[crate::models::PlaybookStrategy], live_prices: &std::collections::HashMap<String, f64>, account_size: f64, _max_pos_bpr_pct: f64) {
     let spread_type = trade.spread_type();
-    let max_profit  = crate::calculations::calculate_max_profit_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type);
+    let dte         = calculate_remaining_dte(&trade.expiration_date);
+    let max_profit  = if matches!(spread_type, "long_diagonal_spread" | "short_diagonal_spread") {
+        let iv = trade.implied_volatility
+            .map(|v| if v > 2.0 { v / 100.0 } else { v })
+            .unwrap_or(0.25);
+        calculate_diagonal_max_profit(&trade.legs, trade.credit_received, trade.quantity, dte as f64, iv)
+    } else {
+        crate::calculations::calculate_max_profit_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type)
+    };
     let max_loss    = calculate_max_loss_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type);
     let breakevens  = calculate_breakevens(&trade.legs, spread_type, Some(trade.credit_received));
     let leg_desc    = format_trade_description(&trade.legs, spread_type);
-    let dte         = calculate_remaining_dte(&trade.expiration_date);
     let roc         = trade.pnl.and_then(|p| calculate_roc(p, &trade.legs, trade.credit_received, trade.quantity, spread_type, trade.bpr, trade.underlying_price));
     let pct_max     = trade.pnl.map(|p| calculate_pct_max_profit(p, trade.credit_received, trade.quantity));
     let pnl_per_day = calculate_pnl_per_day(trade.pnl, &trade.entry_date, trade.exit_date.as_ref());
@@ -2682,7 +2730,7 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         let mut cs: Vec<Span> = vec![Span::styled("  ", Style::default())];
         let spot = trade.underlying_price
             .map(|p| (format!("${:.2}  ", p), C_WHITE))
-            .or_else(|| live_prices.get(&trade.ticker).map(|&p| (format!("${:.2}*  ", p), C_GRAY)));
+            .or_else(|| live_prices.get(&trade.ticker).map(|&p| (format!("${:.2}  ", p), C_GRAY)));
         if let Some((spot_str, spot_color)) = spot {
             cs.push(Span::styled("Spot: ", Style::default().fg(C_GRAY)));
             cs.push(Span::styled(spot_str, Style::default().fg(spot_color)));
@@ -2702,9 +2750,11 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
             cs.push(Span::styled("VIX: ", Style::default().fg(C_GRAY)));
             cs.push(Span::styled(format!("{:.1}  ", vx), Style::default().fg(C_YELLOW)));
         }
-        if let Some(iv) = trade.implied_volatility {
+        if let Some(iv_raw) = trade.implied_volatility {
+            // Normalize: stored as % (30.0) or decimal (0.30) — same guard used elsewhere
+            let iv_display = if iv_raw > 2.0 { iv_raw } else { iv_raw * 100.0 };
             cs.push(Span::styled("IV: ", Style::default().fg(C_GRAY)));
-            cs.push(Span::styled(format!("{:.1}%", iv * 100.0), Style::default().fg(C_WHITE)));
+            cs.push(Span::styled(format!("{:.1}%", iv_display), Style::default().fg(C_WHITE)));
         }
         if let Some(sec) = trade.sector.as_deref() {
             cs.push(Span::styled("   Sector: ", Style::default().fg(C_GRAY)));
@@ -2751,19 +2801,76 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
 
     // Greeks / POP / P50
     // Displayed in per-contract terms (×100): tastytrade convention
+    // If stored greeks are absent, estimate via Black-Scholes across all legs.
     {
         let mut gs: Vec<Span> = vec![Span::styled("  ", Style::default())];
-        if let Some(d)  = trade.delta {
-            gs.push(Span::styled(format!("Δ{:<.1}  ", d * 100.0), Style::default().fg(C_BLUE)));
+
+        let (disp_delta, disp_theta, disp_gamma, disp_vega, greeks_est) =
+            if trade.delta.is_some() || trade.theta.is_some() {
+                (trade.delta, trade.theta, trade.gamma, trade.vega, false)
+            } else {
+                let spot = trade.underlying_price
+                    .or_else(|| live_prices.get(&trade.ticker).copied());
+                let iv_raw = trade.implied_volatility.unwrap_or(0.0);
+                let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else { 0.0 };
+                // When IV is not stored, back-solve from the most expensive leg's entry premium.
+                // Prefers spot-at-entry for accuracy; falls back to live spot when not stored
+                // (e.g. Schwab-imported trades that don't populate underlying_price).
+                let iv = if iv > 0.0 {
+                    iv
+                } else if let Some(es) = trade.underlying_price
+                    .or_else(|| live_prices.get(&trade.ticker).copied())
+                    .filter(|&p| p > 0.0)
+                {
+                    let entry_dte = trade.entry_dte.unwrap_or(dte as i32).max(1);
+                    trade.legs.iter()
+                        .filter(|l| l.premium > 0.0)
+                        .max_by(|a, b| a.premium.partial_cmp(&b.premium).unwrap_or(std::cmp::Ordering::Equal))
+                        .and_then(|leg| {
+                            let is_call = matches!(leg.leg_type, LegType::ShortCall | LegType::LongCall);
+                            estimate_iv_from_premium(es, leg.strike, entry_dte, 0.045, leg.premium, is_call)
+                        })
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+
+                if iv > 0.0 {
+                    if let Some(s) = spot.filter(|&p| p > 0.0) {
+                        let t_days = dte.max(1);
+                        let qty = trade.quantity as f64;
+                        let (mut nd, mut nth, mut ng, mut nv) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+                        for leg in &trade.legs {
+                            let lq = leg.quantity.unwrap_or(1) as f64;
+                            let is_call  = matches!(leg.leg_type, LegType::ShortCall | LegType::LongCall);
+                            let is_short = matches!(leg.leg_type, LegType::ShortCall | LegType::ShortPut);
+                            let (d, th, g, v) = estimate_greeks(s, leg.strike, t_days as i32, 0.045, iv, is_call, is_short);
+                            nd += d * lq; nth += th * lq; ng += g * lq; nv += v * lq;
+                        }
+                        (Some(nd * qty), Some(nth * qty), Some(ng * qty), Some(nv * qty), true)
+                    } else {
+                        (None, None, None, None, false)
+                    }
+                } else {
+                    (None, None, None, None, false)
+                }
+            };
+
+        if let Some(d) = disp_delta {
+            let lbl = if greeks_est { "~Δ" } else { "Δ" };
+            gs.push(Span::styled(format!("{}{:<.1}  ", lbl, d * 100.0), Style::default().fg(C_BLUE)));
         }
-        if let Some(th) = trade.theta {
-            gs.push(Span::styled(format!("Θ{:<.2}  ", th * 100.0), Style::default().fg(C_GREEN)));
+        if let Some(th) = disp_theta {
+            let lbl = if greeks_est { "~Θ" } else { "Θ" };
+            gs.push(Span::styled(format!("{}{:<.2}  ", lbl, th * 100.0), Style::default().fg(C_GREEN)));
         }
-        if let Some(g)  = trade.gamma {
-            gs.push(Span::styled(format!("Γ{:<.4}  ", g * 100.0), Style::default().fg(C_WHITE)));
+        if let Some(g) = disp_gamma {
+            let lbl = if greeks_est { "~Γ" } else { "Γ" };
+            gs.push(Span::styled(format!("{}{:<.4}  ", lbl, g * 100.0), Style::default().fg(C_WHITE)));
         }
-        if let Some(v)  = trade.vega  {
-            gs.push(Span::styled(format!("V{:<.3}  ", v * 100.0), Style::default().fg(C_YELLOW)));
+        if let Some(v) = disp_vega {
+            let lbl = if greeks_est { "~V" } else { "V" };
+            gs.push(Span::styled(format!("{}{:<.3}  ", lbl, v * 100.0), Style::default().fg(C_YELLOW)));
         }
         if let Some(pop) = trade.pop {
             let pc = if pop >= 70.0 { C_GREEN } else if pop >= 50.0 { C_YELLOW } else { C_RED };
@@ -2836,8 +2943,9 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
         let mut r2: Vec<Span> = Vec::new();
         if let Some(b) = trade.bpr {
             let pct = if account_size > 0.0 { b / account_size * 100.0 } else { 0.0 };
-            let pct_color = if pct > max_pos_bpr_pct { C_RED }
-                            else if pct > max_pos_bpr_pct * 0.75 { C_YELLOW }
+            let (bpr_w, bpr_a) = if trade.strategy.is_defined_risk() { (2.0, 3.0) } else { (5.0, 7.0) };
+            let pct_color = if pct > bpr_a { C_RED }
+                            else if pct > bpr_w { C_YELLOW }
                             else { C_GREEN };
             r2.push(Span::styled("  BPR: ", Style::default().fg(C_GRAY)));
             r2.push(Span::styled(format!("${:.0}", b), Style::default().fg(C_YELLOW)));
@@ -2863,21 +2971,24 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
 
         if let Some(b) = trade.bpr {
             let pct = if account_size > 0.0 { b / account_size * 100.0 } else { 0.0 };
-            let lo_dollar = account_size * 0.01;
-            let hi_dollar = account_size * (max_pos_bpr_pct / 100.0);
-            let near_max_threshold = max_pos_bpr_pct * 0.75;
-            let status = if pct > max_pos_bpr_pct        { "✗ OVER" }
-                         else if pct > near_max_threshold { "⚠ NEAR MAX" }
-                         else if pct >= 1.0               { "✓ OK" }
-                         else                             { "↑ SMALL" };
-            let status_color = if pct > max_pos_bpr_pct        { C_RED }
-                               else if pct > near_max_threshold { C_YELLOW }
-                               else if pct >= 1.0               { C_GREEN }
-                               else                             { C_GRAY };
+            // Tastylive position sizing by risk type
+            let defined = trade.strategy.is_defined_risk();
+            let (lo_pct, hi_pct) = if defined { (0.05, 2.0) } else { (3.0, 7.0) };
+            let lo_dollar = account_size * (lo_pct / 100.0);
+            let hi_dollar = account_size * (hi_pct / 100.0);
+            let risk_label = if defined { "Defined" } else { "Undef" };
+            let status = if pct > hi_pct             { "✗ OVER" }
+                         else if pct > hi_pct * 0.75 { "⚠ NEAR MAX" }
+                         else if pct >= lo_pct        { "✓ OK" }
+                         else                         { "↑ SMALL" };
+            let status_color = if pct > hi_pct             { C_RED }
+                               else if pct > hi_pct * 0.75 { C_YELLOW }
+                               else if pct >= lo_pct        { C_GREEN }
+                               else                         { C_GRAY };
             let mut sz: Vec<Span> = vec![Span::styled("  Size: ", Style::default().fg(C_GRAY))];
             sz.push(Span::styled(status, Style::default().fg(status_color)));
             sz.push(Span::styled(
-                format!("   Target: 1–{:.0}%  ${:.0}–${:.0}/trade", max_pos_bpr_pct, lo_dollar, hi_dollar),
+                format!("   {} {:.2}–{:.0}%  ${:.0}–${:.0}/trade", risk_label, lo_pct, hi_pct, lo_dollar, hi_dollar),
                 Style::default().fg(C_WHITE),
             ));
             left_lines.push(Line::from(sz));
@@ -3297,7 +3408,7 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                     sep_style,
                 )]));
                 if let Some(ec) = &pb.entry_criteria {
-                    let violations = crate::calculations::check_playbook_compliance(trade, ec);
+                    let violations = crate::calculations::check_playbook_compliance(trade, ec, account_size);
                     if violations.is_empty() {
                         right_lines.push(Line::from(vec![
                             Span::styled(" Compliance: ", Style::default().fg(C_GRAY)),
@@ -3534,6 +3645,7 @@ pub fn count_detail_lines_right(
     trade:     &crate::models::Trade,
     chain:     &[crate::models::Trade],
     playbooks: &[crate::models::PlaybookStrategy],
+    account_size: f64,
 ) -> usize {
     let mut n = 0usize;
 
@@ -3626,7 +3738,7 @@ pub fn count_detail_lines_right(
             n += 1; // blank
             n += 1; // PLAYBOOK separator
             if let Some(ec) = &pb.entry_criteria {
-                let violations = crate::calculations::check_playbook_compliance(trade, ec);
+                let violations = crate::calculations::check_playbook_compliance(trade, ec, account_size);
                 n += 1; // compliance status line
                 n += violations.len();
                 // Exit ladder sub-block
@@ -4297,6 +4409,9 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
         calculate_calendar_payoff_at_price(
             &trade.legs, trade.credit_received, strike, rem_dte, iv,
         ) * trade.quantity as f64
+    } else if matches!(spread_type, "long_diagonal_spread" | "short_diagonal_spread") {
+        let (rem_dte, iv) = calendar_params();
+        calculate_diagonal_max_profit(&trade.legs, trade.credit_received, trade.quantity, rem_dte, iv)
     } else {
         crate::calculations::calculate_max_profit_from_legs(&trade.legs, trade.credit_received, trade.quantity, spread_type)
     };
@@ -4654,6 +4769,8 @@ fn badge_color(spread_type: &str) -> Color {
         "long_call_vertical" | "long_put_vertical"    => C_CYAN,
         "pzbr" | "czbr"                                => Color::Rgb(168, 85, 247),  // purple
         "put_broken_wing_butterfly"                    => Color::Rgb(251, 146, 60),  // warm orange
+        "call_broken_wing_butterfly"                   => Color::Rgb(251, 191, 36),  // amber
+        "jade_lizard"                                  => Color::Rgb(52, 211, 153),  // jade green
         _                                              => C_GRAY,
     }
 }
@@ -7299,6 +7416,8 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("PZBR",         "Put ZEBRA — long 2 puts, short 1 put (ratio spread)"),
             def("CZBR",         "Call ZEBRA — long 2 calls, short 1 call (ratio spread)"),
             def("PBWB",         "Put Broken Wing Butterfly — unbalanced put fly"),
+            def("CBWB",         "Call Broken Wing Butterfly — unbalanced call fly"),
+            def("JL",           "Jade Lizard — short put + short call spread; no upside risk"),
             def("CUST",         "Custom / Ratio Spread — user-defined structure"),
             Line::from(""),
             Line::from(vec![Span::styled("  i/Esc:Close  Tab:Shortcuts ←", Style::default().fg(C_GRAY))]),

@@ -236,7 +236,7 @@ impl AppState {
         let live_prices = std::collections::HashMap::new();
         let stats = calculations::build_portfolio_stats(&trades, account_size, current_vix, &beta_map, spy_price, spx_price, target_undefined_pct, monthly_pnl_target);
         let perf_stats = calculations::build_performance_stats(&trades, account_size, risk_free_rate_pct, rolling_window);
-        let playbook_analytics = calculations::build_playbook_analytics(&trades, &playbooks);
+        let playbook_analytics = calculations::build_playbook_analytics(&trades, &playbooks, account_size);
 
         let mut table_state = TableState::default();
         if !trades.is_empty() {
@@ -391,7 +391,7 @@ impl AppState {
         self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
         self.stats              = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.spx_price, self.target_undefined_pct, self.monthly_pnl_target);
         self.perf_stats         = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
-        self.playbook_analytics = calculations::build_playbook_analytics(&self.trades, &self.playbooks);
+        self.playbook_analytics = calculations::build_playbook_analytics(&self.trades, &self.playbooks, self.account_size);
         self.alerts = theta_vault_rust::actions::compute_alerts(
             &self.trades, &self.live_prices, self.account_size, self.current_vix,
             self.stats.net_beta_weighted_delta, self.stats.drift, self.stats.target_undefined_pct,
@@ -1038,10 +1038,12 @@ impl AppState {
         }
     }
 
-    /// Ctrl+A: add a blank leg (Custom and PBWB strategies).
+    /// Ctrl+A: add a blank leg (Custom, PBWB, and CBWB strategies).
     pub fn add_leg_to_edit_fields(&mut self) {
         let strat = get_strategy_from_fields(&self.edit_fields);
-        if strat != models::StrategyType::Custom && strat != models::StrategyType::PutBrokenWingButterfly { return; }
+        if strat != models::StrategyType::Custom
+            && strat != models::StrategyType::PutBrokenWingButterfly
+            && strat != models::StrategyType::CallBrokenWingButterfly { return; }
 
         let new_n = count_legs_in_fields(&self.edit_fields) + 1;
 
@@ -1069,10 +1071,12 @@ impl AppState {
         self.sync_edit_scroll();
     }
 
-    /// Ctrl+D: delete the leg whose field is currently focused (Custom and PBWB).
+    /// Ctrl+D: delete the leg whose field is currently focused (Custom, PBWB, and CBWB).
     pub fn delete_focused_leg_from_edit_fields(&mut self) {
         let strat = get_strategy_from_fields(&self.edit_fields);
-        if strat != models::StrategyType::Custom && strat != models::StrategyType::PutBrokenWingButterfly { return; }
+        if strat != models::StrategyType::Custom
+            && strat != models::StrategyType::PutBrokenWingButterfly
+            && strat != models::StrategyType::CallBrokenWingButterfly { return; }
 
         let focused_label = self.edit_fields.get(self.edit_field_idx)
             .map(|f| f.label.clone())
@@ -1380,6 +1384,8 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::CallZebra,
         models::StrategyType::Custom,
         models::StrategyType::PutBrokenWingButterfly,
+        models::StrategyType::CallBrokenWingButterfly,
+        models::StrategyType::JadeLizard,
     ]
 }
 
@@ -1395,13 +1401,14 @@ fn strategy_shows_per_leg_expiry(strategy: &models::StrategyType) -> bool {
         models::StrategyType::Custom)
 }
 
-/// True for custom / zebra / PBWB — per-leg quantity fields.
+/// True for custom / zebra / PBWB / CBWB — per-leg quantity fields.
 fn strategy_shows_per_leg_qty(strategy: &models::StrategyType) -> bool {
     matches!(strategy,
         models::StrategyType::PutZebra |
         models::StrategyType::CallZebra |
         models::StrategyType::Custom |
-        models::StrategyType::PutBrokenWingButterfly)
+        models::StrategyType::PutBrokenWingButterfly |
+        models::StrategyType::CallBrokenWingButterfly)
 }
 
 /// Read the Strategy SELECT field and return the StrategyType.
@@ -1500,6 +1507,7 @@ fn build_leg_fields_for_strategy(legs: &[models::TradeLeg], strategy: &models::S
 
     if *strategy == models::StrategyType::Custom
         || *strategy == models::StrategyType::PutBrokenWingButterfly
+        || *strategy == models::StrategyType::CallBrokenWingButterfly
     {
         let mut btn = EditField {
             label:          "+ Add Leg".to_string(),
@@ -2239,7 +2247,6 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 
 fn parse_col_visibility(s: &str) -> [bool; 23] {
     let mut vis = [true; 23];
-    vis[22] = false; // IVP col defaults OFF
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -2255,13 +2262,10 @@ fn parse_col_visibility(s: &str) -> [bool; 23] {
     } else {
         chars
     };
-    // Pad to 23 with IVP (col 22) defaulting to OFF
+    // Pad to 23 with IVP (col 22) defaulting to ON (now auto-populated via Yahoo Finance)
     let mut padded = padded;
-    while padded.len() < 22 {
+    while padded.len() < 23 {
         padded.push('1');
-    }
-    if padded.len() < 23 {
-        padded.push('0'); // IVP defaults OFF
     }
     for (i, ch) in padded.iter().take(23).enumerate() {
         vis[i] = *ch != '0';
@@ -2352,18 +2356,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 async {
                     tokio::join!(
                         yahoo::fetch_earnings_dates(&open_tickers),
-                        yahoo::fetch_vix(),
+                        async {
+                            // Small stagger so VIX request doesn't fire simultaneously with 6+
+                            // other CNBC requests — reduces Akamai rate-limit false-positives.
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            yahoo::fetch_vix().await
+                        },
                         yahoo::fetch_betas(&open_tickers),
                         yahoo::fetch_spy_price(),
                         yahoo::fetch_spx_price(),
                         yahoo::fetch_underlying_prices(&open_tickers),
                         yahoo::fetch_sectors(&sector_tickers),
+                        yahoo::fetch_atm_ivs(&open_tickers),
                     )
                 },
             )
             .await;
 
-            if let Ok((earnings_map, vix_val, beta_map, spy_val, spx_val, prices, sector_map)) = fetch {
+            if let Ok((earnings_map, vix_val, beta_map, spy_val, spx_val, prices, sector_map, atm_ivs)) = fetch {
                 // Collect trades that need updating
                 let updates: Vec<(i32, chrono::NaiveDate)> = app.trades.iter()
                     .filter(|t| t.is_open())
@@ -2387,6 +2397,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let _ = storage.update_trade(id, &*trade);
                     }
                 }
+                // Store today's ATM IV snapshots; recalculate IVP + IVR for open trades
+                let today_str = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+                storage.prune_iv_snapshots();
+                let iv_updates: Vec<(i32, Option<f64>, Option<f64>)> = app.trades.iter()
+                    .filter(|t| t.is_open())
+                    .filter_map(|t| {
+                        let iv = *atm_ivs.get(&t.ticker)?;
+                        let _ = storage.upsert_iv_snapshot(&t.ticker, &today_str, iv);
+                        let history = storage.get_iv_history(&t.ticker, 365);
+                        let ivp = storage::Storage::calculate_ivp(iv, &history);
+                        let ivr = storage::Storage::calculate_ivr(iv, &history);
+                        Some((t.id, ivp, ivr))
+                    })
+                    .collect();
+                for (id, ivp, ivr) in iv_updates {
+                    if let Some(trade) = app.trades.iter_mut().find(|t| t.id == id) {
+                        if ivp.is_some() { trade.iv_percentile = ivp; }
+                        if ivr.is_some() { trade.iv_rank = ivr; }
+                        let _ = storage.update_trade(id, &*trade);
+                    }
+                }
+
                 app.current_vix = vix_val;
                 app.beta_map    = beta_map;
                 app.spy_price   = spy_val;
@@ -2508,7 +2540,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(i) = app.table_state.selected() {
                 if let Some(VisualRowKind::Trade(ti)) = app.visual_rows.get(i) {
                     let left_n  = theta_vault_rust::ui::count_detail_lines_left(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks);
-                    let right_n = theta_vault_rust::ui::count_detail_lines_right(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks);
+                    let right_n = theta_vault_rust::ui::count_detail_lines_right(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks, app.account_size);
                     app.detail_total_lines = left_n.max(right_n);
                     if let Ok(size) = term.size() {
                         // Detail panel = 45% of content area (tabs+footer = 4 rows), minus 2 borders
@@ -2778,6 +2810,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 // New trade (from roll shortcut): use template as base
                                 if let Some(tmpl) = app.new_trade_template.take() {
                                     let mut updated = app.build_updated_trade(&tmpl);
+                                    // Auto-populate live data fields at entry if not already set
+                                    if updated.vix_at_entry.is_none() {
+                                        updated.vix_at_entry = app.current_vix;
+                                    }
+                                    if updated.underlying_price.is_none() {
+                                        updated.underlying_price = app.live_prices.get(&updated.ticker).copied();
+                                    }
+                                    if updated.implied_volatility.is_none() {
+                                        if let Some(spot) = updated.underlying_price.filter(|&p| p > 0.0) {
+                                            let dte = updated.entry_dte.unwrap_or(45).max(1);
+                                            let iv_est = updated.legs.iter()
+                                                .filter(|l| l.premium > 0.0)
+                                                .max_by(|a, b| a.premium.partial_cmp(&b.premium).unwrap_or(std::cmp::Ordering::Equal))
+                                                .and_then(|leg| {
+                                                    let is_call = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::LongCall);
+                                                    calculations::estimate_iv_from_premium(spot, leg.strike, dte, 0.045, leg.premium, is_call)
+                                                });
+                                            if let Some(iv) = iv_est {
+                                                updated.implied_volatility = Some(iv * 100.0); // store as %
+                                            }
+                                        }
+                                    }
                                     if updated.iv_rank.is_none() {
                                         if let Some(iv) = updated.implied_volatility {
                                             if let Ok(Some(ivr)) = storage.compute_ivr_for_ticker(&updated.ticker, iv) {
@@ -2791,6 +2845,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             } else if let Some(orig) = app.trades.iter().find(|t| t.id == tid).cloned() {
                                 let mut updated = app.build_updated_trade(&orig);
+                                // Auto-populate live data at entry if fields are still blank
+                                if updated.vix_at_entry.is_none() {
+                                    updated.vix_at_entry = app.current_vix;
+                                }
+                                if updated.underlying_price.is_none() {
+                                    updated.underlying_price = app.live_prices.get(&updated.ticker).copied();
+                                }
+                                if updated.implied_volatility.is_none() {
+                                    if let Some(spot) = updated.underlying_price.filter(|&p| p > 0.0) {
+                                        let dte = updated.entry_dte.unwrap_or(45).max(1);
+                                        let iv_est = updated.legs.iter()
+                                            .filter(|l| l.premium > 0.0)
+                                            .max_by(|a, b| a.premium.partial_cmp(&b.premium).unwrap_or(std::cmp::Ordering::Equal))
+                                            .and_then(|leg| {
+                                                let is_call = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::LongCall);
+                                                calculations::estimate_iv_from_premium(spot, leg.strike, dte, 0.045, leg.premium, is_call)
+                                            });
+                                        if let Some(iv) = iv_est {
+                                            updated.implied_volatility = Some(iv * 100.0);
+                                        }
+                                    }
+                                }
                                 // Auto-compute IVR if implied_volatility is set and iv_rank is blank
                                 if updated.iv_rank.is_none() {
                                     if let Some(iv) = updated.implied_volatility {

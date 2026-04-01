@@ -28,6 +28,8 @@ pub enum StrategyType {
     CallZebra,
     Custom,
     PutBrokenWingButterfly,
+    CallBrokenWingButterfly,
+    JadeLizard,
 }
 
 impl StrategyType {
@@ -51,7 +53,9 @@ impl StrategyType {
             StrategyType::PutZebra            => "Put ZEBRA",
             StrategyType::CallZebra           => "Call ZEBRA",
             StrategyType::Custom              => "Custom / Ratio Spread",
-            StrategyType::PutBrokenWingButterfly => "Put Broken Wing Butterfly",
+            StrategyType::PutBrokenWingButterfly  => "Put Broken Wing Butterfly",
+            StrategyType::CallBrokenWingButterfly => "Call Broken Wing Butterfly",
+            StrategyType::JadeLizard              => "Jade Lizard",
         }
     }
 
@@ -75,7 +79,9 @@ impl StrategyType {
             StrategyType::PutZebra            => "PZBR",
             StrategyType::CallZebra           => "CZBR",
             StrategyType::Custom              => "CUST",
-            StrategyType::PutBrokenWingButterfly => "PBWB",
+            StrategyType::PutBrokenWingButterfly  => "PBWB",
+            StrategyType::CallBrokenWingButterfly => "CBWB",
+            StrategyType::JadeLizard              => "JL",
         }
     }
 
@@ -101,8 +107,10 @@ impl StrategyType {
             "long_call"             => StrategyType::LongCallVertical,
             "pzbr"                           => StrategyType::PutZebra,
             "czbr"                           => StrategyType::CallZebra,
-            "put_broken_wing_butterfly"      => StrategyType::PutBrokenWingButterfly,
-            _                                => StrategyType::Custom,
+            "put_broken_wing_butterfly"       => StrategyType::PutBrokenWingButterfly,
+            "call_broken_wing_butterfly"      => StrategyType::CallBrokenWingButterfly,
+            "jade_lizard"                     => StrategyType::JadeLizard,
+            _                                 => StrategyType::Custom,
         }
     }
 
@@ -126,8 +134,37 @@ impl StrategyType {
             StrategyType::PutZebra            => "pzbr",
             StrategyType::CallZebra           => "czbr",
             StrategyType::Custom              => "custom",
-            StrategyType::PutBrokenWingButterfly => "put_broken_wing_butterfly",
+            StrategyType::PutBrokenWingButterfly  => "put_broken_wing_butterfly",
+            StrategyType::CallBrokenWingButterfly => "call_broken_wing_butterfly",
+            StrategyType::JadeLizard              => "jade_lizard",
         }
+    }
+
+    /// Whether this strategy has defined (capped) risk.
+    /// Tastylive sizing: defined risk = 0.05-2% of net liq; undefined = 3-7%.
+    pub fn is_defined_risk(&self) -> bool {
+        matches!(self,
+            StrategyType::IronCondor
+            | StrategyType::IronButterfly
+            | StrategyType::ShortPutVertical
+            | StrategyType::ShortCallVertical
+            | StrategyType::LongPutVertical
+            | StrategyType::LongCallVertical
+            | StrategyType::CashSecuredPut
+            // CC: risk capped at stock purchase price; tastytrade treats as defined/low-risk
+            | StrategyType::CoveredCall
+            | StrategyType::CalendarSpread
+            | StrategyType::Pmcc
+            | StrategyType::LongDiagonalSpread
+            | StrategyType::ShortDiagonalSpread
+            | StrategyType::PutBrokenWingButterfly
+            | StrategyType::CallBrokenWingButterfly
+            // ZEBRA = synthetic long/short with defined downside via put spread
+            | StrategyType::PutZebra
+            | StrategyType::CallZebra
+            // Jade Lizard: call side is spread-defined; put side = CSP; overall defined when credit > call width
+            | StrategyType::JadeLizard
+        )
     }
 
     /// Default profit-take target (%) when no per-trade override is set.
@@ -150,6 +187,8 @@ impl StrategyType {
             StrategyType::Strangle | StrategyType::Straddle => Some((25, 45)),
             StrategyType::CalendarSpread | StrategyType::Pmcc => Some((30, 60)),
             StrategyType::LongCallVertical | StrategyType::LongPutVertical => Some((21, 45)),
+            StrategyType::JadeLizard => Some((21, 45)),
+            StrategyType::PutBrokenWingButterfly | StrategyType::CallBrokenWingButterfly => Some((30, 45)),
             _ => None,
         }
     }
@@ -259,6 +298,10 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::Custom              => vec![],
         // ShortPut = ATM anchor short; two LongPuts = ATM long (higher) + wing (lower)
         StrategyType::PutBrokenWingButterfly => vec![LegType::ShortPut, LegType::LongPut, LegType::LongPut],
+        // CBWB mirrors PBWB on the call side: LongCall (anchor) + ShortCall + LongCall (outer wing)
+        StrategyType::CallBrokenWingButterfly => vec![LegType::LongCall, LegType::ShortCall, LegType::LongCall],
+        // Jade Lizard: short put (OTM) + short call (OTM) + long call (higher strike)
+        StrategyType::JadeLizard => vec![LegType::ShortPut, LegType::ShortCall, LegType::LongCall],
     }
 }
 
@@ -270,7 +313,10 @@ pub fn merge_legs_for_strategy_change(
     existing_legs: &[TradeLeg],
     new_strategy: &StrategyType,
 ) -> (Vec<TradeLeg>, Vec<TradeLeg>) {
-    if *new_strategy == StrategyType::Custom || *new_strategy == StrategyType::PutZebra || *new_strategy == StrategyType::CallZebra {
+    if *new_strategy == StrategyType::Custom
+        || *new_strategy == StrategyType::PutZebra
+        || *new_strategy == StrategyType::CallZebra
+    {
         return (existing_legs.to_vec(), vec![]);
     }
 

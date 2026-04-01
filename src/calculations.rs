@@ -75,8 +75,67 @@ pub fn calculate_max_profit(credit_received: f64, quantity: i32) -> f64 {
     credit_received * 100.0 * quantity as f64
 }
 
-/// Max profit accounting for PBWB structure.
+/// Per-share payoff of all legs at a given underlying price at expiration.
+/// Each leg's contribution is multiplied by its own quantity (default 1).
+fn legs_payoff_at(legs: &[TradeLeg], price: f64) -> f64 {
+    let mut payoff = 0.0;
+    for leg in legs {
+        let leg_qty = leg.quantity.unwrap_or(1) as f64;
+        let intrinsic = match leg.leg_type {
+            LegType::ShortCall => leg.premium - (price - leg.strike).max(0.0),
+            LegType::LongCall  => (price - leg.strike).max(0.0) - leg.premium,
+            LegType::ShortPut  => leg.premium - (leg.strike - price).max(0.0),
+            LegType::LongPut   => (leg.strike - price).max(0.0) - leg.premium,
+        };
+        payoff += intrinsic * leg_qty;
+    }
+    payoff
+}
+
+/// For custom/complex structures: sweep key price points and return (max_profit, max_loss) in dollars.
+/// Returns (credit×100×qty, 0.0) if a naked call component is detected (uncapped upside risk).
+fn custom_max_profit_and_loss(legs: &[TradeLeg], credit: f64, quantity: i32) -> (f64, f64) {
+    if legs.is_empty() {
+        return (calculate_max_profit(credit, quantity), 0.0);
+    }
+    let qty = quantity as f64;
+
+    // Key price points: 0, all unique strikes (±small delta), and a high ceiling
+    let mut prices: Vec<f64> = vec![0.0];
+    for leg in legs {
+        prices.push((leg.strike - 0.01).max(0.0));
+        prices.push(leg.strike);
+        prices.push(leg.strike + 0.01);
+    }
+    let max_strike = legs.iter().map(|l| l.strike).fold(f64::NEG_INFINITY, f64::max);
+    let high       = max_strike * 4.0;
+    let very_high  = max_strike * 8.0;
+    prices.push(high);
+    prices.push(very_high);
+
+    // Detect naked call risk: payoff still decreasing at very high prices
+    let p_high      = legs_payoff_at(legs, high);
+    let p_very_high = legs_payoff_at(legs, very_high);
+    if p_very_high < p_high - 0.001 {
+        // Uncapped upside → max loss is undefined; max profit from sweep excluding ceiling
+        let max_profit = prices.iter()
+            .filter(|&&p| p <= max_strike * 2.0)
+            .map(|&p| legs_payoff_at(legs, p))
+            .fold(f64::NEG_INFINITY, f64::max)
+            .max(0.0) * 100.0 * qty;
+        return (max_profit, 0.0);
+    }
+
+    let payoffs: Vec<f64> = prices.iter().map(|&p| legs_payoff_at(legs, p)).collect();
+    let max_payoff = payoffs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_payoff = payoffs.iter().cloned().fold(f64::INFINITY,     f64::min);
+
+    (max_payoff.max(0.0) * 100.0 * qty, (-min_payoff).max(0.0) * 100.0 * qty)
+}
+
+/// Max profit accounting for PBWB structure and custom/ratio spreads.
 /// For "put_broken_wing_butterfly": (long_width + credit) × 100 × qty
+/// For "custom": payoff sweep across key price points.
 /// For all other strategies: falls through to credit × 100 × qty.
 pub fn calculate_max_profit_from_legs(
     legs: &[TradeLeg],
@@ -94,6 +153,28 @@ pub fn calculate_max_profit_from_legs(
             let long_width = atm.strike - sp.strike;
             return (long_width + credit) * 100.0 * quantity as f64;
         }
+    }
+    // CBWB: mirrors PBWB on the call side — (long_width + credit) × 100 × qty
+    if spread_type == "call_broken_wing_butterfly" {
+        let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
+        let mut long_calls: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongCall)
+            .collect();
+        long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sc), Some(inner)) = (short_call, long_calls.first()) {
+            let long_width = sc.strike - inner.strike;
+            return (long_width + credit) * 100.0 * quantity as f64;
+        }
+    }
+
+    // Jade Lizard: max profit = total credit (no upside risk when credit > call spread width)
+    if spread_type == "jade_lizard" {
+        return calculate_max_profit(credit, quantity);
+    }
+
+    if spread_type == "custom" {
+        let (mp, _) = custom_max_profit_and_loss(legs, credit, quantity);
+        return mp;
     }
     calculate_max_profit(credit, quantity)
 }
@@ -167,6 +248,39 @@ pub fn calculate_max_loss_from_legs(
             if ml > 0.0 { return ml; }
         }
         return 0.0;
+    }
+
+    // CBWB (Call Broken Wing Butterfly): (short_width - long_width - credit) × 100 × qty
+    // long_calls sorted ascending: [0]=inner anchor, [1]=outer wing
+    if spread_type == "call_broken_wing_butterfly" {
+        let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
+        let mut long_calls: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongCall)
+            .collect();
+        long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sc), [inner, wing, ..]) = (short_call, long_calls.as_slice()) {
+            let long_width  = sc.strike - inner.strike;  // short − inner long
+            let short_width = wing.strike - sc.strike;   // wing long − short
+            let ml = (short_width - long_width - credit) * 100.0 * qty;
+            if ml > 0.0 { return ml; }
+        }
+        return 0.0;
+    }
+
+    // Jade Lizard: max loss on put side = (short_put - credit) × 100 × qty
+    // (stock goes to zero; call spread is hedged so no upside max loss when credit > call width)
+    if spread_type == "jade_lizard" {
+        if let Some(sp) = legs.iter().find(|l| l.leg_type == LegType::ShortPut) {
+            let ml = (sp.strike - credit) * 100.0 * qty;
+            if ml > 0.0 { return ml; }
+        }
+        return 0.0;
+    }
+
+    // Custom / ratio spread: use payoff sweep (returns 0.0 if naked call risk detected)
+    if spread_type == "custom" {
+        let (_, ml) = custom_max_profit_and_loss(legs, credit, quantity);
+        return ml;
     }
 
     // Strangle / Straddle: undefined risk → 0 (signal undefined)
@@ -255,6 +369,33 @@ pub fn calculate_bpr(
         }
         // Fallback: 2x credit
         return credit * 2.0 * 100.0 * qty;
+    }
+
+    // Jade Lizard: BPR = put side CSP margin (call spread is hedged by long call)
+    if spread_type == "jade_lizard" {
+        if let Some(sp) = legs.iter().find(|l| l.leg_type == LegType::ShortPut) {
+            if let Some(up) = underlying_price.filter(|&p| p > 0.0) {
+                let put_otm = (up - sp.strike).max(0.0);
+                let margin = (0.20 * up - put_otm + sp.premium)
+                    .max(0.10 * up + sp.premium);
+                return margin * 100.0 * qty;
+            }
+            return sp.strike * 0.20 * 100.0 * qty;
+        }
+    }
+
+    // CBWB: BPR = (short_width - long_width - credit) × 100 × qty (same as max loss)
+    if spread_type == "call_broken_wing_butterfly" {
+        let sc = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
+        let mut lcs: Vec<&TradeLeg> = legs.iter().filter(|l| l.leg_type == LegType::LongCall).collect();
+        lcs.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sc), [inner, wing, ..]) = (sc, lcs.as_slice()) {
+            let long_width  = sc.strike - inner.strike;
+            let short_width = wing.strike - sc.strike;
+            let bpr = (short_width - long_width - credit) * 100.0 * qty;
+            if bpr > 0.0 { return bpr; }
+        }
+        return 0.0;
     }
 
     0.0
@@ -472,6 +613,26 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
                 }
             }
         }
+        "call_broken_wing_butterfly" => {
+            if let Some(sc) = short_call {
+                let mut long_calls: Vec<&TradeLeg> = legs.iter()
+                    .filter(|l| l.leg_type == LegType::LongCall)
+                    .collect();
+                long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+                if let Some(inner) = long_calls.first() {
+                    let long_width = sc.strike - inner.strike;
+                    let be = sc.strike + (long_width + credit);
+                    return vec![be];
+                }
+            }
+        }
+        "jade_lizard" => {
+            // Downside BE: short_put - credit (same as CSP)
+            // No upside BE when credit > call spread width (that's the "lizard" advantage)
+            if let Some(sp) = short_put {
+                return vec![sp.strike - credit];
+            }
+        }
         _ => {}
     }
 
@@ -536,6 +697,53 @@ pub fn calculate_calendar_payoff_at_price(
     };
 
     (credit_received + long_leg_bs - short_intrinsic) * 100.0
+}
+
+/// Max profit for a diagonal spread via price sweep with Black-Scholes on the back-month leg.
+/// Uses the long leg's strike for BS, the short leg's strike for intrinsic (expired front leg).
+pub fn calculate_diagonal_max_profit(
+    legs: &[TradeLeg],
+    credit_received: f64,
+    quantity: i32,
+    remaining_dte: f64,
+    iv: f64,
+) -> f64 {
+    let long_leg  = legs.iter().find(|l| matches!(l.leg_type, LegType::LongCall | LegType::LongPut));
+    let short_leg = legs.iter().find(|l| matches!(l.leg_type, LegType::ShortCall | LegType::ShortPut));
+    let (ll, sl) = match (long_leg, short_leg) {
+        (Some(ll), Some(sl)) => (ll, sl),
+        _ => return calculate_max_profit(credit_received, quantity),
+    };
+    let is_call    = ll.leg_type == LegType::LongCall;
+    let long_k     = ll.strike;
+    let short_k    = sl.strike;
+    let max_k      = long_k.max(short_k);
+    let r          = 0.045_f64;
+    let t          = remaining_dte.max(1.0 / 365.25);
+    let sigma      = iv.max(0.001);
+
+    // Sweep 200 price points from 0 to 2× the higher strike
+    let max_payoff = (0..=200)
+        .map(|i| max_k * 2.0 * i as f64 / 200.0)
+        .map(|p| {
+            let p = p.max(0.01);
+            let d1 = bs_d1(p, long_k, t, r, sigma);
+            let d2 = d1 - sigma * t.sqrt();
+            let long_bs = if is_call {
+                p * normal_cdf(d1) - long_k * (-r * t).exp() * normal_cdf(d2)
+            } else {
+                long_k * (-r * t).exp() * normal_cdf(-d2) - p * normal_cdf(-d1)
+            };
+            let short_intrinsic = if is_call {
+                (p - short_k).max(0.0)
+            } else {
+                (short_k - p).max(0.0)
+            };
+            credit_received + long_bs - short_intrinsic
+        })
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    max_payoff.max(0.0) * 100.0 * quantity as f64
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -667,7 +875,12 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
                 return format!("{:.0}/{:.0}{} {}", sl.strike, ll.strike, leg_char, badge);
             }
         }
-        "custom" | "put_broken_wing_butterfly" => {
+        "jade_lizard" => {
+            if let (Some(sp), Some(sc), Some(lc)) = (short_put, short_call, long_call) {
+                return format!("{:.0}P / {:.0}/{:.0}C JL", sp.strike, sc.strike, lc.strike);
+            }
+        }
+        "custom" | "put_broken_wing_butterfly" | "call_broken_wing_butterfly" => {
             return legs.iter().map(|l| {
                 let sign    = if l.leg_type.is_short() { "-" } else { "+" };
                 let qty     = l.quantity.unwrap_or(1);
@@ -1196,6 +1409,61 @@ pub fn estimate_greeks(
     (delta, theta, gamma, vega)
 }
 
+/// Estimate implied volatility from an option's entry premium via Newton-Raphson,
+/// falling back to bisection if N-R diverges.
+/// Returns None if the inputs are invalid or convergence fails.
+///
+/// Uses the leg with the highest premium (most time value) for best accuracy.
+/// The result is IV at entry — not current IV — and should be used as such.
+pub fn estimate_iv_from_premium(
+    s: f64,       // spot price at entry
+    k: f64,       // strike
+    t_days: i32,  // DTE at entry
+    r: f64,       // risk-free rate
+    premium: f64, // entry mid-price of the option
+    is_call: bool,
+) -> Option<f64> {
+    if s <= 0.0 || k <= 0.0 || premium <= 0.0 || t_days <= 0 { return None; }
+    let t = (t_days as f64 / 365.25).max(1.0 / 365.25);
+
+    // Premium must exceed intrinsic (below-intrinsic means no vol solution)
+    let intrinsic = if is_call { (s - k * (-r * t).exp()).max(0.0) }
+                    else        { (k * (-r * t).exp() - s).max(0.0) };
+    if premium < intrinsic - 0.001 { return None; }
+
+    let bs_price = |sigma: f64| -> f64 {
+        let d1 = bs_d1(s, k, t, r, sigma);
+        let d2 = d1 - sigma * t.sqrt();
+        if is_call { s * normal_cdf(d1) - k * (-r * t).exp() * normal_cdf(d2) }
+        else       { k * (-r * t).exp() * normal_cdf(-d2) - s * normal_cdf(-d1) }
+    };
+    let bs_vega = |sigma: f64| -> f64 {
+        let d1 = bs_d1(s, k, t, r, sigma);
+        s * normal_pdf(d1) * t.sqrt()
+    };
+
+    // Newton-Raphson (50 iterations, start at σ=0.30)
+    let mut sigma = 0.30_f64;
+    for _ in 0..50 {
+        let vega = bs_vega(sigma);
+        if vega.abs() < 1e-10 { break; }
+        let diff = bs_price(sigma) - premium;
+        if diff.abs() < 1e-6 { return Some(sigma.clamp(0.001, 20.0)); }
+        sigma = (sigma - diff / vega).clamp(0.001, 20.0);
+    }
+    if (bs_price(sigma) - premium).abs() < 0.01 { return Some(sigma); }
+
+    // Bisection fallback
+    let (mut lo, mut hi) = (0.001_f64, 10.0_f64);
+    if bs_price(lo) > premium || bs_price(hi) < premium { return None; }
+    for _ in 0..100 {
+        let mid = (lo + hi) / 2.0;
+        if (bs_price(mid) - premium).abs() < 1e-6 { return Some(mid); }
+        if bs_price(mid) < premium { lo = mid; } else { hi = mid; }
+    }
+    Some((lo + hi) / 2.0)
+}
+
 /// POP (Probability of Profit) estimation using Black-Scholes d2.
 /// For short puts/verticals: POP = N(d2) = P(S_T > K).
 /// For short calls/verticals: POP = N(-d2) = P(S_T < K).
@@ -1220,7 +1488,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
     let r = 0.045_f64;
 
     let pop = match trade.strategy {
-        StrategyType::CashSecuredPut | StrategyType::ShortPutVertical => {
+        StrategyType::CashSecuredPut => {
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortPut)
                 .map(|l| l.strike)
@@ -1229,7 +1497,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
-        StrategyType::CoveredCall | StrategyType::ShortCallVertical => {
+        StrategyType::CoveredCall => {
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortCall)
                 .map(|l| l.strike)
@@ -1237,6 +1505,28 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
             if k <= 0.0 { return 60.0; }
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(-d2) * 100.0
+        }
+        // Tastytrade formula: POP = max_loss / width = (width − credit) / width
+        // Uses market-implied pricing rather than theoretical BS probability.
+        StrategyType::ShortPutVertical | StrategyType::ShortCallVertical => {
+            let width = trade.spread_width
+                .filter(|&w| w > 0.0)
+                .unwrap_or_else(|| (trade.short_strike - trade.long_strike).abs());
+            if width <= 0.0 || trade.credit_received <= 0.0 { return 60.0; }
+            let max_loss = width - trade.credit_received;
+            if max_loss <= 0.0 { return 95.0; }
+            (max_loss / width * 100.0).clamp(10.0, 95.0)
+        }
+        // Jade Lizard: POP from BS at short put strike (put side dominates; call side is hedged)
+        // When credit > call spread width, no upside risk → use N(d2) at short put like CSP.
+        StrategyType::JadeLizard => {
+            let k = trade.legs.iter()
+                .find(|l| l.leg_type == LegType::ShortPut)
+                .map(|l| l.strike)
+                .unwrap_or(trade.short_strike);
+            if k <= 0.0 { return 60.0; }
+            let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
+            normal_cdf(d2) * 100.0
         }
         StrategyType::IronCondor | StrategyType::IronButterfly
         | StrategyType::Strangle | StrategyType::Straddle => {
@@ -1358,6 +1648,7 @@ pub struct ComplianceViolation {
 pub fn check_playbook_compliance(
     trade: &Trade,
     criteria: &crate::models::EntryCriteria,
+    account_size: f64,
 ) -> Vec<ComplianceViolation> {
     let mut violations = Vec::new();
 
@@ -1498,6 +1789,23 @@ pub fn check_playbook_compliance(
                     field: "POP".to_string(),
                     rule: format!("≥ {:.0}%", min),
                     actual: format!("{:.0}%", pop),
+                });
+            }
+        }
+    }
+
+    // BPR% check — playbook max_bpr_pct overrides; fallback to tastylive defaults
+    if let Some(bpr) = trade.bpr {
+        if account_size > 0.0 {
+            let pct = bpr / account_size * 100.0;
+            let max = criteria.max_bpr_pct.unwrap_or_else(|| {
+                if trade.strategy.is_defined_risk() { 2.0 } else { 7.0 }
+            });
+            if pct > max {
+                violations.push(ComplianceViolation {
+                    field: "BPR%".to_string(),
+                    rule: format!("≤ {:.1}%", max),
+                    actual: format!("{:.1}%", pct),
                 });
             }
         }
@@ -2317,6 +2625,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 pub fn build_playbook_analytics(
     trades: &[Trade],
     playbooks: &[crate::models::PlaybookStrategy],
+    account_size: f64,
 ) -> Vec<crate::models::PlaybookAnalytics> {
     use std::collections::HashMap;
 
@@ -2343,7 +2652,7 @@ pub fn build_playbook_analytics(
         if let Some(ec) = &pb.entry_criteria {
             for t in &closed {
                 if t.playbook_id != Some(pb.id) { continue; }
-                for v in check_playbook_compliance(t, ec) {
+                for v in check_playbook_compliance(t, ec, account_size) {
                     let key = format!("{} {}", v.field, v.rule);
                     *viol_counts.entry(key).or_insert(0) += 1;
                 }
