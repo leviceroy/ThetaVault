@@ -3183,7 +3183,11 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
     // For closed trades only: partition legs into active vs closed legs.
     // For open trades: always show all legs as active — close_premium on a leg of an open trade
     // records a partial BTC price, not that the leg is gone from the position.
-    let some_legs_closed = !trade_is_open && trade.legs.iter().any(|l| l.close_premium.is_some());
+    // Only partition when this is a roll (some legs open, some closed).
+    // For fully-closed trades (all legs have close_premium) or open trades: show all legs as active.
+    let some_legs_closed = !trade_is_open
+        && trade.legs.iter().any(|l| l.close_premium.is_some())
+        && trade.legs.iter().any(|l| l.close_premium.is_none());
     let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if some_legs_closed {
         trade.legs.iter().partition(|l| l.close_premium.is_none())
     } else {
@@ -3542,7 +3546,11 @@ pub fn count_detail_lines_right(
     // For closed trades only: partition legs into active vs closed legs.
     // For open trades: always show all legs as active — close_premium on a leg of an open trade
     // records a partial BTC price, not that the leg is gone from the position.
-    let some_legs_closed = !trade_is_open && trade.legs.iter().any(|l| l.close_premium.is_some());
+    // Only partition when this is a roll (some legs open, some closed).
+    // For fully-closed trades (all legs have close_premium) or open trades: show all legs as active.
+    let some_legs_closed = !trade_is_open
+        && trade.legs.iter().any(|l| l.close_premium.is_some())
+        && trade.legs.iter().any(|l| l.close_premium.is_none());
     let (active_legs, rolled_legs): (Vec<_>, Vec<_>) = if some_legs_closed {
         trade.legs.iter().partition(|l| l.close_premium.is_none())
     } else {
