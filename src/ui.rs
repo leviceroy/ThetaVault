@@ -2170,6 +2170,7 @@ fn draw_trade_table(
     )
     .highlight_symbol("▶ ");
 
+    f.render_widget(ratatui::widgets::Clear, area);
     f.render_stateful_widget(table, area, state);
 }
 

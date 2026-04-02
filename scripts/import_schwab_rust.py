@@ -85,9 +85,19 @@ def fetch_historical_prices(ticker: str, start_date: str, end_date: str) -> Dict
     if cache_key in _price_cache:
         return _price_cache[cache_key]
 
+    # Map option-chain tickers to their Yahoo Finance equivalents (indexes don't trade directly)
+    YAHOO_TICKER_MAP = {
+        'SPX':  '^SPX',
+        'SPXW': '^SPX',
+        'NDX':  '^NDX',
+        'NDXW': '^NDX',
+        'RUT':  '^RUT',
+        'VIX':  '^VIX',
+    }
+    yfin_ticker = YAHOO_TICKER_MAP.get(ticker, ticker)
+
     # Yahoo Finance chart API (v8) — no auth needed
-    # Convert ^VIX to %5EVIX for URL encoding
-    url_ticker = ticker.replace('^', '%5E')
+    url_ticker = yfin_ticker.replace('^', '%5E')
     start_ts = int(datetime.strptime(start_date, '%Y-%m-%d').timestamp())
     end_ts = int((datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)).timestamp())
 
@@ -99,6 +109,10 @@ def fetch_historical_prices(ticker: str, start_date: str, end_date: str) -> Dict
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
                 result = data['chart']['result'][0]
+                if 'timestamp' not in result:
+                    if host == 'query2.finance.yahoo.com':
+                        print(f"  WARNING: Failed to fetch {ticker} prices: no timestamp in response")
+                    continue
                 timestamps = result['timestamp']
                 closes = result['indicators']['quote'][0]['close']
                 for ts, close in zip(timestamps, closes):
@@ -518,6 +532,35 @@ def process_same_exp_legs(legs: List[Dict], trade_date: str, ticker: str,
             trades.append(trade)
             # All consumed
             return trades, []
+
+    # Put Butterfly / Put BWB: 1 short_put qty=2k + 2 long_puts each qty=k (same expiration)
+    if (len(short_puts) == 1 and len(long_puts) == 2
+            and short_puts[0]['qty'] == long_puts[0]['qty'] + long_puts[1]['qty']):
+        sp = short_puts[0]
+        lps = sorted(long_puts, key=lambda x: x['strike'])  # ascending: [lower, upper]
+        lp_lower, lp_upper = lps[0], lps[1]
+        base_qty = lp_lower['qty']  # number of butterfly units
+        credit = round(sp['price'] * 2 - lp_lower['price'] - lp_upper['price'], 4)
+        sp_close,  sp_date,  sp_reason,  sp_cfee  = find_close(closes, expirations, sp,       used_closes, used_expirations)
+        ll_close,  ll_date,  ll_reason,  ll_cfee  = find_close(closes, expirations, lp_lower, used_closes, used_expirations)
+        lu_close,  lu_date,  lu_reason,  lu_cfee  = find_close(closes, expirations, lp_upper, used_closes, used_expirations)
+        close_date  = sp_date  or ll_date  or lu_date
+        exit_reason = sp_reason or ll_reason or lu_reason
+        close_comm  = sp_cfee + ll_cfee + lu_cfee
+        api_legs = [
+            {'type': 'long_put',  'strike': lp_lower['strike'], 'premium': lp_lower['price'], 'closePremium': ll_close, 'quantity': base_qty},
+            {'type': 'short_put', 'strike': sp['strike'],       'premium': sp['price'],       'closePremium': sp_close, 'quantity': sp['qty']},
+            {'type': 'long_put',  'strike': lp_upper['strike'], 'premium': lp_upper['price'], 'closePremium': lu_close, 'quantity': base_qty},
+        ]
+        print(f"  Detected put_broken_wing_butterfly: {ticker} {lp_lower['strike']}/{sp['strike']}/{lp_upper['strike']} cr={credit:+.2f}")
+        trade = build_trade_dict(ticker, 'put_broken_wing_butterfly', base_qty,
+                                 sp['strike'], lp_lower['strike'],
+                                 sp['price'], lp_lower['price'], credit, trade_date,
+                                 sp['expiration'], sp['fees'] + lp_lower['fees'] + lp_upper['fees'],
+                                 api_legs, close_date, exit_reason, close_comm)
+        trades.append(trade)
+        short_puts.clear()
+        long_puts.clear()
 
     # Put verticals (pair adjacent strikes)
     while short_puts and long_puts:

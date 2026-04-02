@@ -165,12 +165,18 @@ async fn fetch_beta_single(client: reqwest::Client, ticker: String) -> Option<f6
 }
 
 /// Fetch current VIX price from CNBC's public quote API.
+/// Sends browser-like headers (Accept + Referer) to avoid Akamai bot detection,
+/// which can block automated requests to index symbols like .VIX.
 pub async fn fetch_vix() -> Option<f64> {
     let client = build_client()?;
     let url =
         "https://quote.cnbc.com/quote-html-webservice/quote.htm?symbols=.VIX&noform=1&output=json";
 
-    let resp = client.get(url).send().await.ok()?;
+    let resp = client
+        .get(url)
+        .header("Accept", "application/json, text/javascript, */*; q=0.01")
+        .header("Referer", "https://www.cnbc.com/quotes/.VIX")
+        .send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
     // Path: /QuickQuoteResult/QuickQuote/0/last
@@ -211,6 +217,76 @@ async fn fetch_price_single(client: reqwest::Client, ticker: String) -> Option<f
     json.pointer("/QuickQuoteResult/QuickQuote/0/last")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<f64>().ok())
+}
+
+/// Fetch current ATM implied volatility for each ticker using Yahoo Finance v7 options chain.
+/// Looks at the first (nearest) expiry, finds the strike closest to spot, averages call+put IV.
+/// Returns a map of ticker → IV (as a fraction, e.g. 0.30 = 30%). Fails silently per ticker.
+pub async fn fetch_atm_ivs(tickers: &[String]) -> HashMap<String, f64> {
+    if tickers.is_empty() { return HashMap::new(); }
+    let client = match build_client() { Some(c) => c, None => return HashMap::new() };
+
+    let mut handles = Vec::new();
+    for ticker in tickers {
+        let c = client.clone();
+        let t = ticker.clone();
+        handles.push(tokio::spawn(async move { fetch_atm_iv_single(c, t).await }));
+    }
+
+    let mut result = HashMap::new();
+    for (ticker, handle) in tickers.iter().zip(handles) {
+        if let Some(iv) = handle.await.ok().flatten() {
+            if iv > 0.0 {
+                result.insert(ticker.clone(), iv);
+            }
+        }
+    }
+    result
+}
+
+async fn fetch_atm_iv_single(client: reqwest::Client, ticker: String) -> Option<f64> {
+    let url = format!(
+        "https://query2.finance.yahoo.com/v7/finance/options/{}",
+        ticker
+    );
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+
+    let result = json.pointer("/optionChain/result/0")?;
+    let spot = result.pointer("/quote/regularMarketPrice")
+        .and_then(|v| v.as_f64())
+        .filter(|&p| p > 0.0)?;
+
+    let options = result.pointer("/options/0")?;
+
+    // Collect all strikes with (call_iv, put_iv) from first expiry
+    let calls = options["calls"].as_array()?;
+    let puts  = options["puts"].as_array()?;
+
+    // Build put IV map by strike for quick lookup
+    let put_iv: HashMap<u64, f64> = puts.iter().filter_map(|p| {
+        let k = p["strike"].as_f64()?;
+        let iv = p["impliedVolatility"].as_f64()?;
+        Some(((k * 100.0) as u64, iv))
+    }).collect();
+
+    // Find call with strike closest to spot; use paired put IV
+    let best = calls.iter()
+        .filter_map(|c| {
+            let k  = c["strike"].as_f64()?;
+            let iv = c["impliedVolatility"].as_f64()?;
+            Some((k, iv))
+        })
+        .min_by(|(ka, _), (kb, _)| {
+            (ka - spot).abs().partial_cmp(&(kb - spot).abs()).unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+
+    let call_iv = best.1;
+    let put_iv_val = put_iv.get(&((best.0 * 100.0) as u64)).copied().unwrap_or(call_iv);
+    Some((call_iv + put_iv_val) / 2.0)
 }
 
 /// Fetch GICS sector for a list of tickers via Yahoo Finance search API.
