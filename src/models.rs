@@ -30,6 +30,7 @@ pub enum StrategyType {
     PutBrokenWingButterfly,
     CallBrokenWingButterfly,
     JadeLizard,
+    PutButterfly,
 }
 
 impl StrategyType {
@@ -56,6 +57,7 @@ impl StrategyType {
             StrategyType::PutBrokenWingButterfly  => "Put Broken Wing Butterfly",
             StrategyType::CallBrokenWingButterfly => "Call Broken Wing Butterfly",
             StrategyType::JadeLizard              => "Jade Lizard",
+            StrategyType::PutButterfly            => "Put Butterfly",
         }
     }
 
@@ -82,6 +84,7 @@ impl StrategyType {
             StrategyType::PutBrokenWingButterfly  => "PBWB",
             StrategyType::CallBrokenWingButterfly => "CBWB",
             StrategyType::JadeLizard              => "JL",
+            StrategyType::PutButterfly            => "PBF",
         }
     }
 
@@ -110,6 +113,7 @@ impl StrategyType {
             "put_broken_wing_butterfly"       => StrategyType::PutBrokenWingButterfly,
             "call_broken_wing_butterfly"      => StrategyType::CallBrokenWingButterfly,
             "jade_lizard"                     => StrategyType::JadeLizard,
+            "put_butterfly"                   => StrategyType::PutButterfly,
             _                                 => StrategyType::Custom,
         }
     }
@@ -137,6 +141,7 @@ impl StrategyType {
             StrategyType::PutBrokenWingButterfly  => "put_broken_wing_butterfly",
             StrategyType::CallBrokenWingButterfly => "call_broken_wing_butterfly",
             StrategyType::JadeLizard              => "jade_lizard",
+            StrategyType::PutButterfly            => "put_butterfly",
         }
     }
 
@@ -164,6 +169,8 @@ impl StrategyType {
             | StrategyType::CallZebra
             // Jade Lizard: call side is spread-defined; put side = CSP; overall defined when credit > call width
             | StrategyType::JadeLizard
+            // Put Butterfly: debit spread with defined loss = debit paid
+            | StrategyType::PutButterfly
         )
     }
 
@@ -173,6 +180,7 @@ impl StrategyType {
         match self {
             StrategyType::CashSecuredPut | StrategyType::CoveredCall => 85.0,
             StrategyType::CalendarSpread | StrategyType::IronButterfly => 25.0,
+            StrategyType::PutButterfly => 25.0,
             _ => 50.0,
         }
     }
@@ -189,6 +197,7 @@ impl StrategyType {
             StrategyType::LongCallVertical | StrategyType::LongPutVertical => Some((21, 45)),
             StrategyType::JadeLizard => Some((21, 45)),
             StrategyType::PutBrokenWingButterfly | StrategyType::CallBrokenWingButterfly => Some((30, 45)),
+            StrategyType::PutButterfly => Some((15, 45)),
             _ => None,
         }
     }
@@ -302,6 +311,8 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::CallBrokenWingButterfly => vec![LegType::LongCall, LegType::ShortCall, LegType::LongCall],
         // Jade Lizard: short put (OTM) + short call (OTM) + long call (higher strike)
         StrategyType::JadeLizard => vec![LegType::ShortPut, LegType::ShortCall, LegType::LongCall],
+        // Put Butterfly: symmetrical — upper long put + 2 short puts + lower long put
+        StrategyType::PutButterfly => vec![LegType::LongPut, LegType::ShortPut, LegType::LongPut],
     }
 }
 

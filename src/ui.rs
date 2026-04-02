@@ -192,7 +192,7 @@ pub fn draw_ui(
         (0, _) => " Q:Quit  Tab:Switch  ←→:Focus  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
+        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/PBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, AppMode::JournalNote)  => " Type note  Enter:Save  Esc:Cancel ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  N:Add Note  R:Refresh ",
@@ -4795,6 +4795,7 @@ fn badge_color(spread_type: &str) -> Color {
         "put_broken_wing_butterfly"                    => Color::Rgb(251, 146, 60),  // warm orange
         "call_broken_wing_butterfly"                   => Color::Rgb(251, 191, 36),  // amber
         "jade_lizard"                                  => Color::Rgb(52, 211, 153),  // jade green
+        "put_butterfly"                                => Color::Rgb(192, 132, 252),  // light purple (distinct from PBWB orange)
         _                                              => C_GRAY,
     }
 }
@@ -7451,8 +7452,13 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("Status",       "OPEN / CLOSED / ROLLED / SCRTCH / EXPIRED"),
             def("Mgmt",         "Management date = entry + (entry DTE − 21d); RED if past"),
             Line::from(""),
+            Line::from(vec![Span::styled("  ── Probability & Greeks ────────────────────────────────", Style::default().fg(C_GRAY))]),
+            def("P50",          "Prob. of reaching 50% max profit — target ≥70% (GREEN), ≥50% (YELLOW)"),
+            def("θ/d",          "Daily theta decay in $ for this trade — GREEN = collecting, RED = paying"),
+            def("IVP",          "IV Percentile: how high current IV ranks vs past year — ≥50% = elevated"),
+            Line::from(""),
             Line::from(vec![Span::styled("  ── Market Context ──────────────────────────────────────", Style::default().fg(C_GRAY))]),
-            def("OTM%",         "How far the short strike is Out-of-The-Money"),
+            def("OTM%",         "How far the short strike is Out-of-The-Money from current spot"),
             def("EM",           "Expected Move ±1SD: underlying × (IV/100) × √(DTE/365)"),
             Line::from(""),
             Line::from(vec![Span::styled("  ── Strategy Abbreviations ──────────────────────────────", Style::default().fg(C_GRAY))]),
@@ -7472,8 +7478,9 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("SDS",          "Short Diagonal Spread"),
             def("PZBR",         "Put ZEBRA — long 2 puts, short 1 put (ratio spread)"),
             def("CZBR",         "Call ZEBRA — long 2 calls, short 1 call (ratio spread)"),
-            def("PBWB",         "Put Broken Wing Butterfly — unbalanced put fly"),
+            def("PBWB",         "Put Broken Wing Butterfly — unbalanced put fly (credit, omnidir)"),
             def("CBWB",         "Call Broken Wing Butterfly — unbalanced call fly"),
+            def("PBF",          "Put Butterfly — symmetrical debit fly, bearish, POP 20-40%"),
             def("JL",           "Jade Lizard — short put + short call spread; no upside risk"),
             def("CUST",         "Custom / Ratio Spread — user-defined structure"),
             Line::from(""),

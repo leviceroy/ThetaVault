@@ -143,6 +143,18 @@ pub fn calculate_max_profit_from_legs(
     quantity: i32,
     spread_type: &str,
 ) -> f64 {
+    // Put Butterfly: (upper_long_width + credit) × 100 × qty; credit is negative (debit)
+    if spread_type == "put_butterfly" {
+        let short_put = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
+        let mut long_puts: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongPut)
+            .collect();
+        long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sp), Some(atm)) = (short_put, long_puts.first()) {
+            let long_width = atm.strike - sp.strike;
+            return (long_width + credit) * 100.0 * quantity as f64;
+        }
+    }
     if spread_type == "put_broken_wing_butterfly" {
         let short_put = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
         let mut long_puts: Vec<&TradeLeg> = legs.iter()
@@ -188,10 +200,10 @@ pub fn calculate_max_loss_from_legs(
 ) -> f64 {
     let qty = quantity as f64;
 
-    // Calendar/diagonal: max loss = net debit paid = abs(credit) * 100 * qty
+    // Calendar/diagonal/put_butterfly: max loss = net debit paid = abs(credit) * 100 * qty
     if matches!(
         spread_type,
-        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
+        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" | "put_butterfly"
     ) {
         return credit.abs() * 100.0 * qty;
     }
@@ -599,6 +611,19 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
         // Calendar/diagonal: IV-dependent, cannot compute statically
         "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" => {
             return vec![];
+        }
+        "put_butterfly" => {
+            // Two breakevens: upper = upper_long + credit (= upper_long - debit)
+            //                 lower = lower_long - credit (= lower_long + debit)
+            let mut long_puts: Vec<&TradeLeg> = legs.iter()
+                .filter(|l| l.leg_type == LegType::LongPut)
+                .collect();
+            long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+            if long_puts.len() >= 2 {
+                let upper_be = long_puts[0].strike + credit; // upper_long - debit
+                let lower_be = long_puts[1].strike - credit; // lower_long + debit
+                return vec![lower_be, upper_be];
+            }
         }
         "put_broken_wing_butterfly" => {
             if let Some(sp) = short_put {

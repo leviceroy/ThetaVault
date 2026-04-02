@@ -2100,6 +2100,266 @@
       </div>
     </div>
 
+  {:else if strategy === "put_butterfly"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">PUT BUTTERFLY</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          Symmetrical long put spread and short put spread that share the same short strikes.
+          This is a low probability trade because we pay for it up front and need the stock
+          to be within our strikes at expiration.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">✦</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Bearish</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">Any</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">15 to 45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">20% to 40%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge green-badge">P</div>
+          <div class="step-label">Buy an ATM/OTM put</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 2 -->
+        <div class="step-row">
+          <div class="step-num">2</div>
+          <div class="step-badge red-badge">P</div>
+          <div class="step-badge red-badge">P</div>
+          <div class="step-label">Sell 2 further OTM puts</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 3 -->
+        <div class="step-row">
+          <div class="step-num">3</div>
+          <div class="step-badge green-badge">P</div>
+          <div class="step-label">Buy further OTM put for equidistant spreads</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Width of Long Spread − Debit Paid</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Debit Paid</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">25% of Long Spread Width</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Long Put Strike ± Debit Paid (two BEs)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we may buy the 100 put, sell two of the 95 puts,
+            and buy one 90 put for a small debit (~$0.60).
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <div class="chain-badge green-badge">P</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end; gap:4px;">
+              <span class="chain-price">95</span>
+              <div class="chain-badge red-badge">P</div>
+              <div class="chain-badge red-badge">P</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">90</span>
+              <div class="chain-badge green-badge">P</div>
+            </div>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Short / Dynamic</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Dynamic</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      Example: buy 100P, sell 2×95P, buy 90P, debit $0.60
+      Max profit = (100-95) - 0.60 = $4.40/share = $440 at $95
+      Max loss = $0.60/share = $60 above $100 or below $90
+      Upper BE = 100 - 0.60 = 99.40
+      Lower BE = 90 + 0.60 = 90.60
+
+      X range $83–$107 = 24 pts, 600px → 25px/pt
+      x(p) = (p - 83) * 25
+      x(83)=0  x(90)=175  x(90.6)=190  x(95)=300  x(99.4)=410  x(100)=425  x(107)=600
+
+      Y: range -100 to 540 = 640 total, height 160
+      y(pnl) = (540 - pnl) / 640 * 160
+      y(+440) = 100/640*160 = 25
+      y(0)    = 540/640*160 = 135
+      y(-60)  = 600/640*160 = 150
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Payoff at Expiration — buy 100P, sell 2×95P, buy 90P @ $0.60 debit (defined risk)</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Left red loss zone: price ≤ lower BE $90.60 -->
+        <polygon
+          points="0,160 0,150 175,150 190,135 190,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+        <!-- Right red loss zone: price ≥ upper BE $99.40 -->
+        <polygon
+          points="410,160 410,135 425,150 600,150 600,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+        <!-- Green profit zone: between the two BEs -->
+        <polygon
+          points="190,160 190,135 300,25 410,135 410,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="135" x2="600" y2="135" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed verticals at key strikes -->
+        <line x1="175" y1="0" x2="175" y2="160" stroke="#22c55e" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="300" y1="0" x2="300" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="425" y1="0" x2="425" y2="160" stroke="#22c55e" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Payoff line: flat loss → lower BE → peak → upper BE → flat loss -->
+        <polyline
+          points="0,150 175,150 190,135 300,25 410,135 425,150 600,150"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="247" y="20" fill="#22c55e" font-size="10" font-family="monospace">Max Profit $440</text>
+        <text x="2" y="147" fill="#dc2626" font-size="9" font-family="monospace">Loss $60</text>
+        <text x="488" y="147" fill="#dc2626" font-size="9" font-family="monospace">Loss $60</text>
+        <text x="303" y="155" fill="#dc2626" font-size="8" font-family="monospace">$95P×2</text>
+        <text x="178" y="155" fill="#22c55e" font-size="8" font-family="monospace">$90P</text>
+        <text x="428" y="155" fill="#22c55e" font-size="8" font-family="monospace">$100P</text>
+        <text x="148" y="132" fill="#f59e0b" font-size="8" font-family="monospace">BE $90.60</text>
+        <text x="412" y="132" fill="#f59e0b" font-size="8" font-family="monospace">BE $99.40</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="section-title">TASTYLIVE APPROACH</div>
+
+    <div class="approach-section">
+      <div class="approach-title">HOW THE TRADE WORKS</div>
+      <div class="approach-grid">
+        <div class="approach-card green-border">
+          <div class="approach-card-title">IDEAL</div>
+          <p>The stock is between our strikes at expiration and we sell out of the butterfly for a higher amount than we bought it for.</p>
+        </div>
+        <div class="approach-card red-border">
+          <div class="approach-card-title">NOT IDEAL</div>
+          <p>The spread is completely ITM or OTM and we realize max loss of the debit paid up front.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="approach-section">
+      <div class="approach-title">EXPIRATION</div>
+      <div class="approach-grid">
+        <div class="approach-card red-border">
+          <div class="approach-card-title">IF ITM AT EXPIRATION</div>
+          <p>We close the trade for max loss to avoid assignment.</p>
+        </div>
+        <div class="approach-card gray-border">
+          <div class="approach-card-title">IF OTM AT EXPIRATION</div>
+          <p>We close the trade for max loss to avoid assignment.</p>
+        </div>
+        <div class="approach-card green-border">
+          <div class="approach-card-title">IF PARTIALLY ITM AT EXPIRATION</div>
+          <p>We look to sell the butterfly for a profit. Avoid holding through expiration as this can result in unwanted shares.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="approach-section">
+      <div class="approach-title">TAKEAWAYS</div>
+      <div class="takeaway-list">
+        <div class="takeaway-item">
+          <div class="takeaway-num">1</div>
+          <p>These trades are low probability because the range of success is so small relative to normal stock price movement for the cycle. We like to roll into equidistant butterflies from broken wing butterflies for this reason, as opposed to starting with them.</p>
+        </div>
+        <div class="takeaway-item">
+          <div class="takeaway-num">2</div>
+          <p>The less time we have to expiration, the more we can expect to get out of a butterfly if the stock price moves through it. Too much extrinsic value will prevent the trade from moving much at all.</p>
+        </div>
+      </div>
+    </div>
+
   {:else if strategy === "iron_butterfly"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">

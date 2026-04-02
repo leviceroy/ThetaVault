@@ -552,8 +552,11 @@ def process_same_exp_legs(legs: List[Dict], trade_date: str, ticker: str,
             {'type': 'short_put', 'strike': sp['strike'],       'premium': sp['price'],       'closePremium': sp_close, 'quantity': sp['qty']},
             {'type': 'long_put',  'strike': lp_upper['strike'], 'premium': lp_upper['price'], 'closePremium': lu_close, 'quantity': base_qty},
         ]
-        print(f"  Detected put_broken_wing_butterfly: {ticker} {lp_lower['strike']}/{sp['strike']}/{lp_upper['strike']} cr={credit:+.2f}")
-        trade = build_trade_dict(ticker, 'put_broken_wing_butterfly', base_qty,
+        lower_width = sp['strike'] - lp_lower['strike']
+        upper_width = lp_upper['strike'] - sp['strike']
+        strategy_name = 'put_butterfly' if abs(lower_width - upper_width) < 0.01 else 'put_broken_wing_butterfly'
+        print(f"  Detected {strategy_name}: {ticker} {lp_lower['strike']}/{sp['strike']}/{lp_upper['strike']} cr={credit:+.2f}")
+        trade = build_trade_dict(ticker, strategy_name, base_qty,
                                  sp['strike'], lp_lower['strike'],
                                  sp['price'], lp_lower['price'], credit, trade_date,
                                  sp['expiration'], sp['fees'] + lp_lower['fees'] + lp_upper['fees'],
