@@ -1345,6 +1345,19 @@ impl Storage {
                 }),
             },
             Def {
+                name: "Jade Lizard",
+                spread_type: "jade_lizard",
+                desc: build_jade_lizard_thesis(),
+                ec: Some(EntryCriteria {
+                    min_dte: Some(30),
+                    max_dte: Some(60),
+                    max_allocation_pct: Some(3.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("dte_exit_21".to_string()),
+                    ..Default::default()
+                }),
+            },
+            Def {
                 name: "Put Butterfly",
                 spread_type: "put_butterfly",
                 desc: build_put_butterfly_thesis(),
@@ -2100,6 +2113,51 @@ VI. EXPIRATION:
 VII. TASTYLIVE TAKEAWAYS:
 \u{2022} 1. These trades are low probability because the range of success is small relative to normal stock price movement for the cycle. We like to roll into equidistant butterflies from broken wing butterflies, as opposed to starting with them.
 \u{2022} 2. The less time we have to expiration, the more we can expect to get out of a butterfly if the stock moves through it. Too much extrinsic value will prevent the trade from moving much at all."
+}
+
+fn build_jade_lizard_thesis() -> &'static str {
+    "A bullish position constructed by selling an OTM short put combined with an OTM short call spread, where the total credit received is greater than the width of the call spread to remove upside risk entirely.
+
+I. CORE MECHANICS:
+\u{2022} Directional Assumption: Neutral-Bullish
+\u{2022} IV Environment: High
+\u{2022} Days to Expiration: 45
+\u{2022} Probability of Profit: 60% to 80%
+
+II. SETUP:
+\u{2022} 1. Sell an OTM put
+\u{2022} 2. Sell an OTM vertical call spread (short call + long call at higher strike)
+\u{2022} KEY RULE: Total credit received must be > width of the call spread (removes upside risk)
+\u{2022} Max Profit: Credit Received (all options expire OTM)
+\u{2022} Max Loss: Short Put Strike \u{00d7} 100 \u{2212} Credit Received (stock goes to zero)
+\u{2022} Profit Target: 50% of Max Profit
+\u{2022} Breakeven: Short Put Strike \u{2212} Credit Received
+\u{2022} Example: XYZ at $100 \u{2014} Sell 95P, sell 105/110 call spread for credit >$5.00.
+  Max profit = $550 flat. No upside risk (credit $5.50 > call spread width $5). BE at $89.50.
+
+III. GREEKS:
+\u{2022} Delta: Long
+\u{2022} Vega: Short (benefits from IV contraction)
+\u{2022} Theta: Long (time decay works in our favor)
+\u{2022} Gamma: Short
+
+IV. HOW THE TRADE WORKS:
+\u{2022} IDEAL: Stock stays between short put and short call strikes. All options expire OTM \u{2014} keep full credit.
+\u{2022} NOT IDEAL: Stock drops below short put strike. Naked put exposure \u{2014} losses equivalent to 100 shares minus credit received.
+\u{2022} DEFENSIVE TACTIC: If short put goes ITM, roll out in time for a credit or roll call spread down to defend. Maintain net credit > call spread width to preserve no-upside-risk structure.
+
+V. VOLATILITY:
+\u{2022} IF VOLATILITY EXPANDS: May hold \u{2014} extrinsic value loss possible, but extrinsic always decays to zero at expiration.
+\u{2022} IF VOLATILITY CONTRACTS: Look to close position for a profit if strikes are still OTM.
+
+VI. EXPIRATION:
+\u{2022} IF OTM AT EXPIRATION: All options expire worthless. Keep full credit as profit.
+\u{2022} IF PARTIALLY ITM: Close for a profit to avoid short shares in next trading session.
+\u{2022} IF ITM AT EXPIRATION: Roll short put out in time if still bullish. Can roll call spread out as well.
+
+VII. TASTYLIVE TAKEAWAYS:
+\u{2022} 1. The most important aspect of the jade lizard is to ensure the net credit received is greater than the width of the call spread. This removes upside risk entirely and increases POP substantially.
+\u{2022} 2. Ensure the premium collected on the call spread is around 1/3 of the spread width. No reason to take on call-side risk if not collecting a fair amount of premium to justify it."
 }
 
 fn build_call_broken_wing_butterfly_thesis() -> &'static str {

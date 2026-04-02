@@ -2411,6 +2411,308 @@
       </div>
     </div>
 
+  {:else if strategy === "jade_lizard"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">JADE LIZARD</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          A bullish position that is constructed by selling an OTM short put combined with an OTM short
+          call spread, where the total credit received is greater than the width of the call spread to
+          remove upside risk entirely.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">✦</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Neutral-Bullish</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">High</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">60% to 80%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge red-badge">P</div>
+          <div class="step-label">Sell an OTM put</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 2 -->
+        <div class="step-row">
+          <div class="step-num">2</div>
+          <div class="step-badge red-badge">C</div>
+          <div class="step-label">Sell an OTM vertical call spread</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Short Put Strike × 100 − Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">50% of Max Profit</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Short Put Strike − Credit Received</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we may sell the 95 put and sell the 105/110 call spread for a credit
+            over $5.00.
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">110</span>
+              <div class="chain-badge green-badge">C</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">105</span>
+              <div class="chain-badge red-badge">C</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <span class="chain-price" style="color:#94a3b8;">○ stock</span>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">95</span>
+              <div class="chain-badge red-badge">P</div>
+            </div>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Short</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      Example: sell 95P, sell 105/110 call spread, credit $5.50
+      BE = 95 - 5.50 = $89.50
+      Max profit = $550 (stock stays between 95 and 105)
+      No upside risk (credit $5.50 > spread width $5)
+      Above 110: flat +$50
+
+      X range $84–$118 (34 pts), 600px → scale 17.65px/$
+      x(84)=0, x(89.5)=97, x(95)=194, x(105)=371, x(110)=459, x(118)=600
+      Y range -700 to +700 (1400 total), height 160
+      y(pnl)=(700-pnl)/1400*160
+      y(+550)=17, y(+50)=74, y(0)=80, y(-550)=143
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Payoff at Expiration — sell 95P, sell 105/110C spread @ $5.50 credit (no upside risk)</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Red loss zone: price below BE $89.50 -->
+        <polygon
+          points="0,160 0,143 97,80 97,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+        <!-- Green profit zone: price above BE -->
+        <polygon
+          points="97,160 97,80 194,17 371,17 459,74 600,74 600,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="80" x2="600" y2="80" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed verticals: short put $95, short call $105, long call $110 -->
+        <line x1="194" y1="0" x2="194" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="371" y1="0" x2="371" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="459" y1="0" x2="459" y2="160" stroke="#22c55e" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Payoff line -->
+        <polyline
+          points="0,143 97,80 194,17 371,17 459,74 600,74"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="220" y="13" fill="#22c55e" font-size="10" font-family="monospace">Max Profit $550</text>
+        <text x="2" y="140" fill="#dc2626" font-size="9" font-family="monospace">Downside risk</text>
+        <text x="462" y="71" fill="#22c55e" font-size="9" font-family="monospace">No upside risk →</text>
+        <text x="97" y="77" fill="#f59e0b" font-size="8" font-family="monospace">BE $89.50</text>
+        <text x="197" y="155" fill="#dc2626" font-size="8" font-family="monospace">$95P</text>
+        <text x="374" y="155" fill="#dc2626" font-size="8" font-family="monospace">$105C</text>
+        <text x="462" y="155" fill="#22c55e" font-size="8" font-family="monospace">$110C</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="dark-section">
+      <div class="section-title-amber">TASTYLIVE APPROACH</div>
+      <div class="subsection-title-amber">HOW THE TRADE WORKS</div>
+
+      <div class="approach-grid">
+        <!-- Ideal -->
+        <div class="approach-card">
+          <div class="approach-card-title">IDEAL</div>
+          <p>
+            The stock stays between our short strikes. There is no risk to the upside if our net credit
+            is greater than the width of the call credit spread, but max profit is realized if all
+            options expire OTM.
+          </p>
+        </div>
+
+        <!-- Not Ideal -->
+        <div class="approach-card not-ideal">
+          <div class="approach-card-title red-text">NOT IDEAL</div>
+          <p>
+            The stock goes down. We have a naked short put, so if the stock drops below our short put
+            strike, we take on intrinsic value losses equivalent to 100 shares of stock, less the credit
+            received from selling the jade lizard up front.
+          </p>
+        </div>
+
+        <!-- Defensive Tactics -->
+        <div class="approach-card defensive">
+          <div class="approach-card-title">DEFENSIVE TACTICS</div>
+          <p>
+            If the short put is ITM, we can either roll that out in time, or roll the call spread down
+            to defend the short put. We just ensure that there is no risk to the upside by keeping the
+            net credit higher than the width of the call spread we roll to.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── VOLATILITY ───────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">VOLATILITY</div>
+      <div class="vol-grid">
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY EXPANDS</div>
+          <p>
+            We may hold — this may result in an extrinsic value loss, but extrinsic value will always go
+            to zero by expiration.
+          </p>
+        </div>
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY CONTRACTS</div>
+          <p>
+            We look to close the position for a profit if our strikes are still OTM.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── EXPIRATION ────────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">EXPIRATION</div>
+      <div class="exp-grid-spv">
+        <div class="exp-card">
+          <div class="exp-card-title">IF OTM AT EXPIRATION</div>
+          <p>
+            All options will expire worthless and we'll keep the credit received up front as profit.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF PARTIALLY ITM AT EXPIRATION</div>
+          <p>
+            We typically close the trade for a profit to ensure we do not end up with short shares in
+            the next trading session.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF ITM AT EXPIRATION</div>
+          <p>
+            The short put can be rolled out in time if we don't mind being bullish on the product for
+            another cycle, and we can roll the call spread out in time as well if we want to keep that
+            portion of the trade on.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TAKEAWAYS ────────────────────────────────────────────────────── -->
+    <div class="takeaways-section">
+      <div class="section-title-amber">TAKEAWAYS</div>
+      <div class="takeaways-grid">
+        <div class="takeaway-card">
+          <div class="takeaway-num">1</div>
+          <p>
+            The most important aspect of the jade lizard is to ensure the net credit received is greater
+            than the width of the call spread — this ensures we have no risk to the upside, and increases
+            our probability of profit substantially.
+          </p>
+        </div>
+        <div class="takeaway-card">
+          <div class="takeaway-num">2</div>
+          <p>
+            Because we are taking risk on the call side in this trade, ensure that the premium we are
+            collecting on the call spread is around 1/3rd the width. There is no reason to take risk on
+            that side or reduce our potential max profit if we're not collecting a fair amount to do so.
+          </p>
+        </div>
+      </div>
+    </div>
+
   {:else if strategy === "put_butterfly"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">
