@@ -192,7 +192,7 @@ pub fn draw_ui(
         (0, _) => " Q:Quit  Tab:Switch  ←→:Focus  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/PBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
+        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/PBF/CBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, AppMode::JournalNote)  => " Type note  Enter:Save  Esc:Cancel ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  N:Add Note  R:Refresh ",
@@ -4795,7 +4795,8 @@ fn badge_color(spread_type: &str) -> Color {
         "put_broken_wing_butterfly"                    => Color::Rgb(251, 146, 60),  // warm orange
         "call_broken_wing_butterfly"                   => Color::Rgb(251, 191, 36),  // amber
         "jade_lizard"                                  => Color::Rgb(52, 211, 153),  // jade green
-        "put_butterfly"                                => Color::Rgb(192, 132, 252),  // light purple (distinct from PBWB orange)
+        "put_butterfly"                                => Color::Rgb(192, 132, 252),  // light purple
+        "call_butterfly"                               => Color::Rgb(129, 216, 207),  // light teal (distinct from PBF purple)
         _                                              => C_GRAY,
     }
 }
@@ -7481,6 +7482,7 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("PBWB",         "Put Broken Wing Butterfly — unbalanced put fly (credit, omnidir)"),
             def("CBWB",         "Call Broken Wing Butterfly — unbalanced call fly"),
             def("PBF",          "Put Butterfly — symmetrical debit fly, bearish, POP 20-40%"),
+            def("CBF",          "Call Butterfly — symmetrical debit fly, bullish, POP 20-40%"),
             def("JL",           "Jade Lizard — short put + short call spread; no upside risk"),
             def("CUST",         "Custom / Ratio Spread — user-defined structure"),
             Line::from(""),

@@ -166,6 +166,18 @@ pub fn calculate_max_profit_from_legs(
             return (long_width + credit) * 100.0 * quantity as f64;
         }
     }
+    // Call Butterfly: (short_strike - lower_long_width + credit) × 100 × qty; credit < 0
+    if spread_type == "call_butterfly" {
+        let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
+        let mut long_calls: Vec<&TradeLeg> = legs.iter()
+            .filter(|l| l.leg_type == LegType::LongCall)
+            .collect();
+        long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sc), Some(lower)) = (short_call, long_calls.first()) {
+            let long_width = sc.strike - lower.strike;
+            return (long_width + credit) * 100.0 * quantity as f64;
+        }
+    }
     // CBWB: mirrors PBWB on the call side — (long_width + credit) × 100 × qty
     if spread_type == "call_broken_wing_butterfly" {
         let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
@@ -200,10 +212,11 @@ pub fn calculate_max_loss_from_legs(
 ) -> f64 {
     let qty = quantity as f64;
 
-    // Calendar/diagonal/put_butterfly: max loss = net debit paid = abs(credit) * 100 * qty
+    // Calendar/diagonal/butterfly: max loss = net debit paid = abs(credit) * 100 * qty
     if matches!(
         spread_type,
-        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" | "put_butterfly"
+        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
+        | "put_butterfly" | "call_butterfly"
     ) {
         return credit.abs() * 100.0 * qty;
     }
@@ -636,6 +649,19 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
                     let be = sp.strike - (long_width + credit);
                     if be > 0.0 { return vec![be]; }
                 }
+            }
+        }
+        "call_butterfly" => {
+            // Two BEs: lower = lower_long - credit (= lower_long + debit)
+            //          upper = upper_long + credit  (= upper_long - debit)
+            let mut long_calls: Vec<&TradeLeg> = legs.iter()
+                .filter(|l| l.leg_type == LegType::LongCall)
+                .collect();
+            long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+            if long_calls.len() >= 2 {
+                let lower_be = long_calls[0].strike - credit; // lower_long + debit
+                let upper_be = long_calls[1].strike + credit; // upper_long - debit
+                return vec![lower_be, upper_be];
             }
         }
         "call_broken_wing_butterfly" => {

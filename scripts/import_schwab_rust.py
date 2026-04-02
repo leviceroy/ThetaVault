@@ -606,6 +606,38 @@ def process_same_exp_legs(legs: List[Dict], trade_date: str, ticker: str,
         if not matched:
             break
 
+    # Call Butterfly / Call BWB: 1 short_call qty=2k + 2 long_calls each qty=k (same expiration)
+    if (len(short_calls) == 1 and len(long_calls) == 2
+            and short_calls[0]['qty'] == long_calls[0]['qty'] + long_calls[1]['qty']):
+        sc = short_calls[0]
+        lcs = sorted(long_calls, key=lambda x: x['strike'])  # ascending: [lower, upper]
+        lc_lower, lc_upper = lcs[0], lcs[1]
+        base_qty = lc_lower['qty']  # number of butterfly units
+        credit = round(sc['price'] * 2 - lc_lower['price'] - lc_upper['price'], 4)
+        sc_close,  sc_date,  sc_reason,  sc_cfee  = find_close(closes, expirations, sc,       used_closes, used_expirations)
+        ll_close,  ll_date,  ll_reason,  ll_cfee  = find_close(closes, expirations, lc_lower, used_closes, used_expirations)
+        lu_close,  lu_date,  lu_reason,  lu_cfee  = find_close(closes, expirations, lc_upper, used_closes, used_expirations)
+        close_date  = sc_date  or ll_date  or lu_date
+        exit_reason = sc_reason or ll_reason or lu_reason
+        close_comm  = sc_cfee + ll_cfee + lu_cfee
+        api_legs = [
+            {'type': 'long_call',  'strike': lc_lower['strike'], 'premium': lc_lower['price'], 'closePremium': ll_close, 'quantity': base_qty},
+            {'type': 'short_call', 'strike': sc['strike'],       'premium': sc['price'],       'closePremium': sc_close, 'quantity': sc['qty']},
+            {'type': 'long_call',  'strike': lc_upper['strike'], 'premium': lc_upper['price'], 'closePremium': lu_close, 'quantity': base_qty},
+        ]
+        lower_width = sc['strike'] - lc_lower['strike']
+        upper_width = lc_upper['strike'] - sc['strike']
+        strategy_name = 'call_butterfly' if abs(lower_width - upper_width) < 0.01 else 'call_broken_wing_butterfly'
+        print(f"  Detected {strategy_name}: {ticker} {lc_lower['strike']}/{sc['strike']}/{lc_upper['strike']} cr={credit:+.2f}")
+        trade = build_trade_dict(ticker, strategy_name, base_qty,
+                                 sc['strike'], lc_lower['strike'],
+                                 sc['price'], lc_lower['price'], credit, trade_date,
+                                 sc['expiration'], sc['fees'] + lc_lower['fees'] + lc_upper['fees'],
+                                 api_legs, close_date, exit_reason, close_comm)
+        trades.append(trade)
+        short_calls.clear()
+        long_calls.clear()
+
     # Call verticals (pair adjacent strikes)
     while short_calls and long_calls:
         short_calls.sort(key=lambda x: x['strike'])
