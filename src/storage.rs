@@ -1344,6 +1344,19 @@ impl Storage {
                     ..Default::default()
                 }),
             },
+            Def {
+                name: "Put Butterfly",
+                spread_type: "put_butterfly",
+                desc: build_put_butterfly_thesis(),
+                ec: Some(EntryCriteria {
+                    min_dte: Some(15),
+                    max_dte: Some(45),
+                    max_allocation_pct: Some(1.0),
+                    target_profit_pct: Some(25.0),
+                    management_rule: Some("profit_target_25".to_string()),
+                    ..Default::default()
+                }),
+            },
         ];
 
         for def in defs {
@@ -2017,6 +2030,50 @@ VI. EXPIRATION
 VII. TAKEAWAYS
 \u{2022} 1. Vertical spreads have a less volatile P/L because of the long option that defines our risk. For this reason, we should expect to be in spread trades longer than naked options to reach profit targets.
 \u{2022} 2. Options will be exercised if they are ITM and held through expiration. If one strike is ITM and the other moves OTM, close the trade prior to expiration to avoid unwanted shares."
+}
+
+fn build_put_butterfly_thesis() -> &'static str {
+    "Symmetrical long put spread and short put spread that share the same short strikes. Low probability trade — we pay for it up front and need the stock to be within our strikes at expiration.
+
+I. CORE MECHANICS:
+\u{2022} Directional Assumption: Bearish
+\u{2022} IV Environment: Any
+\u{2022} Days to Expiration: 15 to 45
+\u{2022} Probability of Profit: 20% to 40%
+
+II. SETUP:
+\u{2022} 1. Buy an ATM/OTM put (upper long anchor)
+\u{2022} 2. Sell two further OTM puts (short middle strikes)
+\u{2022} 3. Buy further OTM put at equidistant spacing (lower long wing)
+\u{2022} Max Profit: Width of Long Spread \u{2212} Debit Paid (achieved when stock pins at short strikes)
+\u{2022} Max Loss: Debit Paid (stock moves fully ITM or OTM)
+\u{2022} Profit Target: 25% of Long Spread Width
+\u{2022} Breakeven: Two BEs \u{2014} Upper: Long Put Strike \u{2212} Debit; Lower: Lower Long Strike + Debit
+\u{2022} Example: XYZ at $100 \u{2014} Buy 100P, Sell two 95P, Buy 90P for ~$0.60 debit.
+  Max profit = $4.40 at $95. Max loss = $0.60. BEs at $90.60 and $99.40.
+
+III. GREEKS:
+\u{2022} Delta: Short / Dynamic
+\u{2022} Vega: Long (benefits from IV expansion)
+\u{2022} Theta: Short (time decay works against us)
+\u{2022} Gamma: Dynamic
+
+IV. HOW THE TRADE WORKS:
+\u{2022} IDEAL: The stock is between our strikes at expiration and we sell out of the butterfly for more than we paid.
+\u{2022} NOT IDEAL: The spread is completely ITM or OTM and we realize max loss of the debit paid.
+\u{2022} DEFENSIVE TACTIC: If the long spread is ITM and near max value, sell out of it to retain that value and either hold the credit spread, or manipulate the trade into something else (e.g. iron condor).
+
+V. VOLATILITY:
+\u{2022} Narrow defined-risk trades have limited vega exposure. IV expansion or contraction will likely not significantly affect the position in either direction.
+
+VI. EXPIRATION:
+\u{2022} IF ITM AT EXPIRATION: Close the trade for max loss to avoid assignment.
+\u{2022} IF OTM AT EXPIRATION: Close the trade for max loss to avoid assignment.
+\u{2022} IF PARTIALLY ITM: Look to sell for a profit. Avoid holding through expiration as this can result in unwanted shares.
+
+VII. TASTYLIVE TAKEAWAYS:
+\u{2022} 1. These trades are low probability because the range of success is small relative to normal stock price movement for the cycle. We like to roll into equidistant butterflies from broken wing butterflies, as opposed to starting with them.
+\u{2022} 2. The less time we have to expiration, the more we can expect to get out of a butterfly if the stock moves through it. Too much extrinsic value will prevent the trade from moving much at all."
 }
 
 fn parse_dt(s: String) -> Option<DateTime<Utc>> {
