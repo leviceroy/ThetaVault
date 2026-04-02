@@ -175,6 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             close_notes: None,
             sector: None,
             closed_at_target: false,
+            ex_dividend_date: None,
         };
         storage.insert_trade(&trade)?;
     }

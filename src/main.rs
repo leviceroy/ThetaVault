@@ -81,7 +81,7 @@ pub struct AppState {
     pub journal_chain_view: bool,
 
     // Column visibility for trade table (21 columns — last is EM)
-    pub col_visibility:  [bool; 23],
+    pub col_visibility:  [bool; 25],
     pub show_col_picker: bool,
 
     // Strategy guide (Tauri right panel — OSC 9997)
@@ -1637,6 +1637,8 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
     f.push(EditField::text("Exit Reason (notes)",  &t.exit_reason.clone().unwrap_or_default()));
     f.push(EditField::date("Earnings Date",
         &t.next_earnings.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()));
+    f.push(EditField::date("Ex-Div Date",
+        &t.ex_dividend_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()));
     f.push(EditField::text("Tags (comma)",         &t.tags.join(",")));
     f.push(EditField::text("Notes",                &t.notes.clone().unwrap_or_default()));
     f.push(EditField::bool_field("Earnings Play",  t.is_earnings_play));
@@ -1814,6 +1816,10 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     }
     t.next_earnings = {
         let s = field_str(fields, "Earnings Date");
+        if s.is_empty() { None } else { chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok() }
+    };
+    t.ex_dividend_date = {
+        let s = field_str(fields, "Ex-Div Date");
         if s.is_empty() { None } else { chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok() }
     };
 
@@ -2042,6 +2048,15 @@ fn build_playbook_edit_fields(pb: &models::PlaybookStrategy) -> Vec<EditField> {
     f.push(EditField::number("DTE Exit",
         &ec.and_then(|e| e.dte_exit).map(|v| v.to_string()).unwrap_or_default()));
 
+    // Credit quality filters
+    f.push(EditField::number("Min Credit $",
+        &ec.and_then(|e| e.min_credit).map(|v| format!("{:.2}", v)).unwrap_or_default())
+        .with_section("── Credit Quality ───────────────────────────────────────────────"));
+    f.push(EditField::number("Min Credit/Width %",
+        &ec.and_then(|e| e.min_credit_width_ratio).map(|v| format!("{:.0}", v)).unwrap_or_default()));
+    f.push(EditField::number("Earnings Blackout d",
+        &ec.and_then(|e| e.earnings_blackout_days).map(|v| v.to_string()).unwrap_or_default()));
+
     // Avoidance conditions
     f.push(EditField::text("When to Avoid",
         &ec.and_then(|e| e.when_to_avoid.clone()).unwrap_or_default())
@@ -2093,6 +2108,10 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
         .and_then(|f| if f.value.is_empty() { None } else { f.value.parse::<i32>().ok() });
     let when_to_avoid        = field_opt_str(fields, "When to Avoid");
     let ec_notes             = field_opt_str(fields, "Notes");
+    let min_credit           = field_opt_f64(fields, "Min Credit $");
+    let min_credit_width_ratio = field_opt_f64(fields, "Min Credit/Width %");
+    let earnings_blackout_days = fields.iter().find(|f| f.label == "Earnings Blackout d")
+        .and_then(|f| if f.value.is_empty() { None } else { f.value.parse::<i32>().ok() });
 
     let has_criteria = min_ivr.is_some() || max_ivr.is_some()
         || min_delta.is_some() || max_delta.is_some()
@@ -2101,7 +2120,8 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
         || management_rule.is_some() || min_pop.is_some()
         || vix_min.is_some() || vix_max.is_some() || max_bpr_pct.is_some()
         || stop_loss_pct.is_some() || profit_target_pct.is_some() || dte_exit.is_some()
-        || when_to_avoid.is_some() || ec_notes.is_some();
+        || when_to_avoid.is_some() || ec_notes.is_some()
+        || min_credit.is_some() || min_credit_width_ratio.is_some() || earnings_blackout_days.is_some();
 
     let entry_criteria = if has_criteria {
         Some(models::EntryCriteria {
@@ -2123,6 +2143,9 @@ fn build_playbook_from_edit_fields_fn(fields: &[EditField]) -> models::PlaybookS
             dte_exit,
             when_to_avoid,
             notes: ec_notes,
+            min_credit,
+            min_credit_width_ratio,
+            earnings_blackout_days,
         })
     } else {
         None
@@ -2245,8 +2268,8 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 23] {
-    let mut vis = [true; 23];
+fn parse_col_visibility(s: &str) -> [bool; 25] {
+    let mut vis = [true; 25];
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -2262,18 +2285,18 @@ fn parse_col_visibility(s: &str) -> [bool; 23] {
     } else {
         chars
     };
-    // Pad to 23 with IVP (col 22) defaulting to ON (now auto-populated via Yahoo Finance)
+    // Pad to 25: IVP (22) ON, P50 (23) ON, θ/d (24) ON
     let mut padded = padded;
-    while padded.len() < 23 {
+    while padded.len() < 25 {
         padded.push('1');
     }
-    for (i, ch) in padded.iter().take(23).enumerate() {
+    for (i, ch) in padded.iter().take(25).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 23]) -> String {
+fn col_visibility_to_string(vis: &[bool; 25]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
@@ -3339,6 +3362,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     'l' => Some(20), // EM
                                     'm' => Some(21), // Mgmt
                                     'n' => Some(22), // IVP
+                                    'o' => Some(23), // P50
+                                    'p' => Some(24), // θ/d
                                     _ => None,
                                 };
                                 if let Some(i) = idx {

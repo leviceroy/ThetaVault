@@ -21,56 +21,62 @@ pub enum AlertSeverity {
 /// The action category shown to the user.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AlertKind {
-    Defense,        // Tested / expires today
-    MaxLoss,        // Down 2× max profit — tastytrade hard stop
-    GammaRisk,      // Short gamma blowup risk in final week (DTE ≤ 7)
-    Warning,        // Earnings risk while short premium
-    DeltaExtreme,   // Portfolio BWD > ±500 — heavy directional bias
-    UndefinedDrift, // Undefined risk % drifted from target
-    Drawdown,       // Account down X% from peak — circuit breaker
-    RollChain,      // Rolled 3+ times — consider closing
-    Manage,         // 21 DTE management / IVR crush
-    Close,          // Profit target hit
-    Roll,           // Roll for credit at 21 DTE
-    Sizing,         // BPR oversized (per ticker or sector)
-    Ok,             // All clear
+    Defense,         // Tested / expires today
+    MaxLoss,         // Down 2× max profit — tastytrade hard stop
+    GammaRisk,       // Short gamma blowup risk in final week (DTE ≤ 7)
+    PinRisk,         // Short strike within 0.5% of spot at expiry
+    Warning,         // Earnings risk while short premium
+    DividendApproach,// CC ex-dividend within 5 days — risk of early assignment
+    DeltaExtreme,    // Portfolio BWD > ±500 — heavy directional bias
+    UndefinedDrift,  // Undefined risk % drifted from target
+    Drawdown,        // Account down X% from peak — circuit breaker
+    RollChain,       // Rolled 3+ times — consider closing
+    Manage,          // 21 DTE management / IVR crush
+    Close,           // Profit target hit
+    Roll,            // Roll for credit at 21 DTE
+    Sizing,          // BPR oversized (per ticker or sector)
+    Ok,              // All clear
 }
 
 impl AlertKind {
     pub fn badge(&self) -> &'static str {
         match self {
-            AlertKind::Defense        => "DEFENSE",
-            AlertKind::MaxLoss        => "MAXLOSS",
-            AlertKind::GammaRisk      => "GAMMA  ",
-            AlertKind::Warning        => "WARNING",
-            AlertKind::DeltaExtreme   => "ΔEXTREM",
-            AlertKind::UndefinedDrift => "DRIFT  ",
-            AlertKind::Drawdown       => "DRAWDWN",
-            AlertKind::RollChain      => "ROLLS  ",
-            AlertKind::Manage         => "MANAGE ",
-            AlertKind::Close          => "CLOSE  ",
-            AlertKind::Roll           => "ROLL   ",
-            AlertKind::Sizing         => "SIZING ",
-            AlertKind::Ok             => "OK     ",
+            AlertKind::Defense          => "DEFENSE",
+            AlertKind::MaxLoss          => "MAXLOSS",
+            AlertKind::GammaRisk        => "GAMMA  ",
+            AlertKind::PinRisk          => "PINRISK",
+            AlertKind::Warning          => "WARNING",
+            AlertKind::DividendApproach => "DIVDATE",
+            AlertKind::DeltaExtreme     => "ΔEXTREM",
+            AlertKind::UndefinedDrift   => "DRIFT  ",
+            AlertKind::Drawdown         => "DRAWDWN",
+            AlertKind::RollChain        => "ROLLS  ",
+            AlertKind::Manage           => "MANAGE ",
+            AlertKind::Close            => "CLOSE  ",
+            AlertKind::Roll             => "ROLL   ",
+            AlertKind::Sizing           => "SIZING ",
+            AlertKind::Ok               => "OK     ",
         }
     }
 
     /// Canonical display order for grouping.
     pub fn order(&self) -> u8 {
         match self {
-            AlertKind::Defense        => 0,
-            AlertKind::MaxLoss        => 1,
-            AlertKind::GammaRisk      => 2,
-            AlertKind::Warning        => 3,
-            AlertKind::DeltaExtreme   => 4,
-            AlertKind::UndefinedDrift => 5,
-            AlertKind::Drawdown       => 6,
-            AlertKind::RollChain      => 7,
-            AlertKind::Manage         => 8,
-            AlertKind::Close          => 9,
-            AlertKind::Roll           => 10,
-            AlertKind::Sizing         => 11,
-            AlertKind::Ok             => 12,
+            AlertKind::Defense          => 0,
+            AlertKind::MaxLoss          => 1,
+            AlertKind::GammaRisk        => 2,
+            AlertKind::PinRisk          => 3,
+            AlertKind::Warning          => 4,
+            AlertKind::DividendApproach => 5,
+            AlertKind::DeltaExtreme     => 6,
+            AlertKind::UndefinedDrift   => 7,
+            AlertKind::Drawdown         => 8,
+            AlertKind::RollChain        => 9,
+            AlertKind::Manage           => 10,
+            AlertKind::Close            => 11,
+            AlertKind::Roll             => 12,
+            AlertKind::Sizing           => 13,
+            AlertKind::Ok               => 14,
         }
     }
 }
@@ -108,7 +114,9 @@ pub fn build_action_rows(
         AlertKind::Defense,
         AlertKind::MaxLoss,
         AlertKind::GammaRisk,
+        AlertKind::PinRisk,
         AlertKind::Warning,
+        AlertKind::DividendApproach,
         AlertKind::DeltaExtreme,
         AlertKind::UndefinedDrift,
         AlertKind::Drawdown,
@@ -395,7 +403,41 @@ pub fn compute_alerts(
             }
         }
 
-        // ── 5. WARNING: Earnings within 48h with short premium ────────────────
+        // ── 5a. PIN RISK: Short strike within 0.5% of spot on expiry day ─────
+        if dte <= 1 {
+            if let Some(spot) = trade.underlying_price
+                .or_else(|| live_prices.get(&trade.ticker).copied())
+            {
+                let short_strike = trade.legs.iter()
+                    .find(|l| l.leg_type.is_short())
+                    .map(|l| l.strike)
+                    .filter(|&k| k > 0.0)
+                    .unwrap_or(trade.short_strike);
+                if short_strike > 0.0 {
+                    let dist_pct = (spot - short_strike).abs() / spot * 100.0;
+                    if dist_pct <= 0.5 {
+                        alerts.push(TradeAlert {
+                            trade_id:       trade.id,
+                            ticker:         trade.ticker.clone(),
+                            strategy_badge: badge.clone(),
+                            kind:           AlertKind::PinRisk,
+                            severity:       AlertSeverity::Critical,
+                            headline: format!(
+                                "${} {} — short {:.0} is {:.2}% from spot {:.2}. Pin risk!",
+                                trade.ticker, badge, short_strike, dist_pct, spot
+                            ),
+                            detail: Some(
+                                "Within 0.5% of spot at expiry: gamma spikes, pin risk is real. \
+                                 Close or let expire — don't hold through uncertainty.".to_string()
+                            ),
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // ── 5b. WARNING: Earnings within 48h with short premium ──────────────
         if is_short_premium(strategy) {
             if let Some(earnings) = trade.next_earnings {
                 let days_to_earnings = (earnings - today).num_days();
@@ -434,6 +476,33 @@ pub fn compute_alerts(
                             trade.ticker, badge, days_to_earnings
                         ),
                         detail: Some("Close or roll before earnings if you're short premium.".to_string()),
+                    });
+                }
+            }
+        }
+
+        // ── 5c. DIVIDEND: CC ex-div within 5 days — early assignment risk ────
+        if trade.strategy == StrategyType::CoveredCall {
+            if let Some(ex_div) = trade.ex_dividend_date {
+                let days_to_div = (ex_div - today).num_days();
+                if days_to_div >= 0 && days_to_div <= 5 {
+                    let urgency = if days_to_div <= 1 { "TODAY" }
+                        else if days_to_div <= 2 { "tomorrow" }
+                        else { &format!("in {}d", days_to_div) };
+                    alerts.push(TradeAlert {
+                        trade_id:       trade.id,
+                        ticker:         trade.ticker.clone(),
+                        strategy_badge: badge.clone(),
+                        kind:           AlertKind::DividendApproach,
+                        severity:       AlertSeverity::High,
+                        headline: format!(
+                            "${} CC — ex-dividend {} ({}). Early assignment risk.",
+                            trade.ticker, ex_div.format("%m/%d"), urgency
+                        ),
+                        detail: Some(
+                            "Deep ITM covered calls are frequently assigned early before ex-div. \
+                             Consider buying back or rolling the short call above the ex-div amount.".to_string()
+                        ),
                     });
                 }
             }
@@ -520,24 +589,25 @@ pub fn compute_alerts(
             continue;
         }
 
-        // ── 7. SIZING: Per-ticker BPR > 10% of account ───────────────────────
+        // ── 7. SIZING: Per-ticker BPR — tastylive 15-20% per underlying ────
         if !sizing_emitted.contains(&trade.ticker) {
             if let Some(&total_bpr) = ticker_bpr.get(&trade.ticker) {
                 let pct = total_bpr / account_size * 100.0;
-                if pct > 10.0 {
+                if pct > 15.0 {
                     sizing_emitted.insert(trade.ticker.clone());
+                    let severity = if pct > 20.0 { AlertSeverity::High } else { AlertSeverity::Info };
                     alerts.push(TradeAlert {
                         trade_id:       trade.id,
                         ticker:         trade.ticker.clone(),
-                        strategy_badge: "—".to_string(),
+                        strategy_badge: "\u{2014}".to_string(),
                         kind:           AlertKind::Sizing,
-                        severity:       AlertSeverity::Info,
+                        severity,
                         headline: format!(
-                            "${} total position is {:.1}% of account (${:.0} BPR). Oversized.",
+                            "${} total position is {:.1}% of account (${:.0} BPR). Tastylive max 15\u{2013}20%.",
                             trade.ticker, pct, total_bpr
                         ),
                         detail: Some(
-                            "Stay under 10% single-name BPR to avoid concentrated losses.".to_string()
+                            "Tastylive guideline: max 15\u{2013}20% of net liq per underlying across all positions.".to_string()
                         ),
                     });
                 }

@@ -1811,6 +1811,49 @@ pub fn check_playbook_compliance(
         }
     }
 
+    // Min credit check — playbook min credit per contract
+    if let Some(min_credit) = criteria.min_credit {
+        let credit_per_contract = trade.credit_received * 100.0;
+        if credit_per_contract < min_credit * 100.0 {
+            violations.push(ComplianceViolation {
+                field: "Credit".to_string(),
+                rule: format!("≥ ${:.2}", min_credit),
+                actual: format!("${:.2}", trade.credit_received),
+            });
+        }
+    }
+
+    // Min credit/width ratio — tastytrade target 25–33% of spread width
+    if let Some(min_ratio) = criteria.min_credit_width_ratio {
+        if let Some(width) = trade.spread_width {
+            if width > 0.0 {
+                let ratio = (trade.credit_received / width) * 100.0;
+                if ratio < min_ratio {
+                    violations.push(ComplianceViolation {
+                        field: "Credit/Width".to_string(),
+                        rule: format!("≥ {:.0}%", min_ratio),
+                        actual: format!("{:.0}%", ratio),
+                    });
+                }
+            }
+        }
+    }
+
+    // Earnings blackout — don't enter within N days of earnings
+    if let Some(blackout_days) = criteria.earnings_blackout_days {
+        if let Some(earnings) = trade.next_earnings {
+            let trade_date = trade.trade_date.date_naive();
+            let days_to_earnings = (earnings - trade_date).num_days();
+            if days_to_earnings >= 0 && days_to_earnings <= blackout_days as i64 {
+                violations.push(ComplianceViolation {
+                    field: "Earnings".to_string(),
+                    rule: format!("≥ {}d to ER", blackout_days),
+                    actual: format!("{}d to ER", days_to_earnings),
+                });
+            }
+        }
+    }
+
     violations
 }
 
@@ -1895,6 +1938,8 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     let mut monthly_map: HashMap<(i32, u32), (f64, usize, usize)> = HashMap::new();
     // 0DTE-only monthly map
     let mut monthly_0dte_map: HashMap<(i32, u32), (f64, usize, usize)> = HashMap::new();
+    // 0DTE weekday map: weekday_num (Mon=0..Fri=4) -> (pnl, count, wins)
+    let mut weekday_0dte_map: [( f64, usize, usize); 5] = [(0.0, 0, 0); 5];
 
     // strategy_map: StrategyType -> (trades, wins, scratches, total_pnl, roc_sum, roc_count)
     let mut strategy_map: HashMap<String, (usize, usize, usize, f64, f64, u32)> = HashMap::new();
@@ -1996,12 +2041,19 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         entry.1 += 1;
         if pnl > 0.0 { entry.2 += 1; }
 
-        // 0DTE monthly P&L
+        // 0DTE monthly P&L + weekday breakdown
         if t.is_0dte() {
             let e0 = monthly_0dte_map.entry(month_key).or_insert((0.0, 0, 0));
             e0.0 += pnl;
             e0.1 += 1;
             if pnl > 0.0 { e0.2 += 1; }
+            // weekday: use expiration date weekday (Mon=0..Fri=4)
+            let wd = t.expiration_date.date_naive().weekday().num_days_from_monday() as usize;
+            if wd < 5 {
+                weekday_0dte_map[wd].0 += pnl;
+                weekday_0dte_map[wd].1 += 1;
+                if pnl > 0.0 { weekday_0dte_map[wd].2 += 1; }
+            }
         }
 
         // Strategy breakdown
@@ -2289,6 +2341,20 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         MonthlyPnl { year, month, pnl, trade_count, win_count }
     }).collect();
     monthly_0dte_pnl.sort_by(|a, b| (a.year, a.month).cmp(&(b.year, b.month)));
+
+    const WEEKDAY_LABELS: [&str; 5] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    let dte_weekday_stats: Vec<crate::models::WeekdayStats> = weekday_0dte_map.iter().enumerate()
+        .map(|(i, &(total_pnl, trade_count, win_count))| {
+            let avg_pnl = if trade_count > 0 { total_pnl / trade_count as f64 } else { 0.0 };
+            crate::models::WeekdayStats {
+                label: WEEKDAY_LABELS[i],
+                trade_count,
+                win_count,
+                total_pnl,
+                avg_pnl,
+            }
+        })
+        .collect();
 
     let avg_annualized_roc = if ann_roc_count > 0 { ann_roc_sum / ann_roc_count as f64 } else { 0.0 };
     let sortino_ratio = calculate_sortino_ratio(&daily_returns, risk_free_rate_pct / 100.0);
@@ -2612,6 +2678,7 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         bpr_history,
         sector_trends,
         monthly_0dte_pnl,
+        dte_weekday_stats,
     }
 }
 

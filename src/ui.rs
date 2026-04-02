@@ -100,7 +100,7 @@ pub fn draw_ui(
     live_prices:             &std::collections::HashMap<String, f64>,
     perf_collapsed:          &[bool; 15],
     perf_section_cursor:     usize,
-    col_visibility:          &[bool; 23],
+    col_visibility:          &[bool; 25],
     show_col_picker:         bool,
     journal_chain_view:      bool,
     default_profit_target_pct: f64,
@@ -1476,7 +1476,7 @@ fn draw_journal(
     live_prices:      &std::collections::HashMap<String, f64>,
     under_tauri:      bool,
     playbooks:        &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 23],
+    col_visibility:     &[bool; 25],
     show_col_picker:    bool,
     journal_chain_view: bool,
     account_size:       f64,
@@ -1665,13 +1665,13 @@ fn draw_trade_table(
     state:              &mut TableState,
     live_prices:        &std::collections::HashMap<String, f64>,
     playbooks:          &[crate::models::PlaybookStrategy],
-    col_visibility:     &[bool; 23],
+    col_visibility:     &[bool; 25],
     journal_chain_view: bool,
     account_size:       f64,
     _max_pos_bpr_pct:   f64,
     default_profit_target_pct: f64,
 ) {
-    const COL_NAMES: [&str; 23] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt", "IVP"];
+    const COL_NAMES: [&str; 25] = ["Date", "Ticker", "Spot", "ER", "Str", "Qty", "Credit", "GTC", "BE", "BPR", "BPR%", "MaxPft", "P&L", "ROC%", "$V/d", "DTE", "Exit", "Held", "Status", "OTM%", "EM", "Mgmt", "IVP", "P50", "θ/d"];
 
     let header = Row::new(
         COL_NAMES.iter().enumerate()
@@ -2103,6 +2103,29 @@ fn draw_trade_table(
                             None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
                         }
                     },
+                    // Col 23: P50 — Probability of 50% profit
+                    {
+                        match crate::calculations::calculate_p50(t) {
+                            Some(p50) => {
+                                let color = if p50 >= 70.0 { C_GREEN } else if p50 >= 50.0 { C_YELLOW } else { C_RED };
+                                Cell::from(format!("{:.0}%", p50)).style(Style::default().fg(color))
+                            }
+                            None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                        }
+                    },
+                    // Col 24: θ/d — Daily theta in dollars (theta × 100 × qty)
+                    {
+                        match t.theta {
+                            Some(theta) => {
+                                let qty = t.quantity.max(1) as f64;
+                                let theta_raw = if theta.abs() > 10.0 { theta / 100.0 } else { theta };
+                                let daily_theta_dollars = theta_raw * 100.0 * qty;
+                                let color = if daily_theta_dollars > 0.0 { C_GREEN } else { C_RED };
+                                Cell::from(format!("${:.0}", daily_theta_dollars)).style(Style::default().fg(color))
+                            }
+                            None => Cell::from("\u{2014}").style(Style::default().fg(C_GRAY)),
+                        }
+                    },
                 ];
                 let visible_cells: Vec<Cell> = all_cells.into_iter().enumerate()
                     .filter(|(i, _)| col_visibility[*i])
@@ -2113,7 +2136,7 @@ fn draw_trade_table(
         }
     }).collect();
 
-    const COL_WIDTHS: [u16; 23] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7, 6, 5];
+    const COL_WIDTHS: [u16; 25] = [11, 7, 8, 7, 5, 4, 7, 9, 10, 7, 6, 7, 9, 7, 7, 5, 9, 6, 7, 6, 7, 6, 5, 5, 6];
     let visible_widths: Vec<Constraint> = COL_WIDTHS.iter().enumerate()
         .filter(|(i, _)| col_visibility[*i])
         .map(|(_, &w)| Constraint::Length(w))
@@ -4286,19 +4309,19 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 
 // ── Column visibility picker popup (L9) ──────────────────────────────────────
 
-fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 23]) {
-    const COL_NAMES: [&str; 23] = [
+fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 25]) {
+    const COL_NAMES: [&str; 25] = [
         "Date","Ticker","Spot","ER","Str","Qty","Credit","GTC","BE",
-        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM","Mgmt","IVP",
+        "BPR","BPR%","MaxPft","P&L","ROC%","$V/d","DTE","Exit","Held","Status","OTM%","EM","Mgmt","IVP","P50","θ/d",
     ];
-    // Keys: 1-9 for columns 0-8, a-m for columns 9-21, n for IVP (22)
-    const KEY_LABELS: [&str; 23] = [
+    // Keys: 1-9 for columns 0-8, a-n for columns 9-22, o=P50 (23), p=θ/d (24)
+    const KEY_LABELS: [&str; 25] = [
         "1","2","3","4","5","6","7","8","9",
-        "a","b","c","d","e","f","g","h","i","j","k","l","m","n",
+        "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p",
     ];
 
     let popup_w = 36u16;
-    let popup_h = 28u16;
+    let popup_h = 30u16;
     let x = area.x + area.width.saturating_sub(popup_w) / 2;
     let y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
@@ -4311,7 +4334,7 @@ fn draw_col_picker_popup(f: &mut Frame, area: Rect, col_visibility: &[bool; 23])
         Line::from(""),
     ];
 
-    for i in 0..23 {
+    for i in 0..25 {
         let check = if col_visibility[i] { "✓" } else { "✗" };
         let check_style = if col_visibility[i] {
             Style::default().fg(Color::Green)
@@ -5817,6 +5840,35 @@ fn perf_0dte_monthly_lines(perf: &PerformanceStats, width: usize, collapsed: boo
         Span::styled(format!("W{:.0}%", overall_wr), Style::default().fg(wr_color)),
     ]));
 
+    // Weekday breakdown (Mon/Wed/Fri for 0DTE expirations)
+    let has_weekday = perf.dte_weekday_stats.iter().any(|w| w.trade_count > 0);
+    if has_weekday {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "  By Expiry Day:",
+            Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "  Day   Trades  Win%   Avg P&L   Total P&L",
+            Style::default().fg(C_GRAY),
+        )]));
+        for w in &perf.dte_weekday_stats {
+            if w.trade_count == 0 { continue; }
+            let win_rate = w.win_count as f64 / w.trade_count as f64 * 100.0;
+            let wr_c = if win_rate >= 60.0 { C_GREEN } else if win_rate >= 50.0 { C_YELLOW } else { C_RED };
+            let pnl_c = if w.avg_pnl >= 0.0 { C_GREEN } else { C_RED };
+            let tot_c = if w.total_pnl >= 0.0 { C_GREEN } else { C_RED };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{:<5}", w.label), Style::default().fg(c_amber)),
+                Span::styled(format!("{:>5}   ", w.trade_count), Style::default().fg(C_WHITE)),
+                Span::styled(format!("{:>4.0}%  ", win_rate), Style::default().fg(wr_c)),
+                Span::styled(format!("{:>+8.0}  ", w.avg_pnl), Style::default().fg(pnl_c)),
+                Span::styled(format!("{:>+8.0}", w.total_pnl), Style::default().fg(tot_c)),
+            ]));
+        }
+    }
+
     lines
 }
 
@@ -7244,6 +7296,8 @@ fn draw_daily_actions(
                     AlertKind::Close          => (C_GREEN,         "CLOSE"),
                     AlertKind::Roll           => (C_BLUE,          "ROLL"),
                     AlertKind::Sizing         => (Color::Magenta,  "SIZING"),
+                    AlertKind::PinRisk        => (C_RED,           "PINRISK"),
+                    AlertKind::DividendApproach => (C_YELLOW,      "DIVDATE"),
                     AlertKind::Ok             => (C_GRAY,          "OK"),
                 };
                 let suffix = if *count == 1 { "alert" } else { "alerts" };
@@ -7267,6 +7321,8 @@ fn draw_daily_actions(
                     AlertKind::Close          => C_GREEN,
                     AlertKind::Roll           => C_BLUE,
                     AlertKind::Sizing         => Color::Magenta,
+                    AlertKind::PinRisk        => C_RED,
+                    AlertKind::DividendApproach => C_YELLOW,
                     AlertKind::Ok             => C_GRAY,
                 };
                 let badge_style = if matches!(alert.kind, AlertKind::Defense | AlertKind::MaxLoss | AlertKind::GammaRisk | AlertKind::Drawdown) {

@@ -440,6 +440,9 @@ pub struct Trade {
     pub gamma_at_close: Option<f64>,    // Gamma at close
     pub vega_at_close: Option<f64>,     // Vega at close
 
+    // Ex-dividend date (for CC early assignment risk alert)
+    pub ex_dividend_date: Option<NaiveDate>,
+
     // Roll tracking
     pub roll_count: i32,                // Number of times this position has been rolled
 
@@ -545,6 +548,14 @@ pub struct EntryCriteria {
     // Avoidance conditions (ISC-33)
     #[serde(rename = "whenToAvoid")]
     pub when_to_avoid: Option<String>,   // conditions under which NOT to trade this setup
+
+    // Tier 4: credit quality filters
+    #[serde(rename = "minCredit")]
+    pub min_credit: Option<f64>,              // minimum credit to collect per contract (e.g. 0.30)
+    #[serde(rename = "minCreditWidthRatio")]
+    pub min_credit_width_ratio: Option<f64>,  // min credit as % of spread width (target 25–33%)
+    #[serde(rename = "earningsBlackoutDays")]
+    pub earnings_blackout_days: Option<i32>,  // don't enter within N days of earnings
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -713,6 +724,16 @@ pub struct MonthlyPnl {
     pub pnl: f64,
     pub trade_count: usize,
     pub win_count: usize,
+}
+
+/// 0DTE performance by expiry day of week
+#[derive(Debug, Clone)]
+pub struct WeekdayStats {
+    pub label: &'static str,   // "Mon", "Tue", "Wed", "Thu", "Fri"
+    pub trade_count: usize,
+    pub win_count: usize,
+    pub total_pnl: f64,
+    pub avg_pnl: f64,
 }
 
 /// Item 4: Time-in-Trade histogram bucket
@@ -912,6 +933,8 @@ pub struct PerformanceStats {
 
     // 0DTE: monthly P&L for same-day expiry trades only
     pub monthly_0dte_pnl: Vec<MonthlyPnl>,
+    // 0DTE: P&L breakdown by expiry day of week (Mon/Wed/Fri)
+    pub dte_weekday_stats: Vec<WeekdayStats>,
 }
 
 impl Default for PerformanceStats {
@@ -942,6 +965,7 @@ impl Default for PerformanceStats {
             bpr_history: vec![],
             sector_trends: vec![],
             monthly_0dte_pnl: vec![],
+            dte_weekday_stats: vec![],
         }
     }
 }

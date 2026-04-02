@@ -142,6 +142,16 @@ impl Storage {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS iv_snapshots (
+                ticker TEXT NOT NULL,
+                date   TEXT NOT NULL,
+                iv     REAL NOT NULL,
+                PRIMARY KEY (ticker, date)
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -207,6 +217,7 @@ impl Storage {
             ("sector",                   "ALTER TABLE trades ADD COLUMN sector TEXT"),
             ("closed_at_target",         "ALTER TABLE trades ADD COLUMN closed_at_target INTEGER NOT NULL DEFAULT 0"),
             ("iv_percentile",            "ALTER TABLE trades ADD COLUMN iv_percentile REAL"),
+            ("ex_dividend_date",         "ALTER TABLE trades ADD COLUMN ex_dividend_date TEXT"),
         ];
 
         for (col_name, sql) in migrations {
@@ -260,8 +271,8 @@ impl Storage {
                 bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
                 was_assigned=?53, assigned_shares=?54, cost_basis=?55,
                 close_notes=?56, sector=?57, closed_at_target=?58,
-                iv_percentile=?59
-             WHERE id=?60",
+                iv_percentile=?59, ex_dividend_date=?60
+             WHERE id=?61",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -322,7 +333,8 @@ impl Storage {
                 t.sector.as_deref(),                    // 57
                 t.closed_at_target as i32,              // 58
                 t.iv_percentile,                        // 59
-                id,                                     // 60
+                t.ex_dividend_date.map(|d| d.format("%Y-%m-%d").to_string()), // 60
+                id,                                     // 61
             ],
         )?;
         Ok(())
@@ -362,7 +374,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -382,7 +394,7 @@ impl Storage {
                 ?48, ?49, ?50,
                 ?51, ?52,
                 ?53, ?54, ?55,
-                ?56, ?57, ?58, ?59
+                ?56, ?57, ?58, ?59, ?60
             )",
             params![
                 trade.ticker,               // 1
@@ -444,6 +456,7 @@ impl Storage {
                 trade.sector.as_deref(),            // 57
                 trade.closed_at_target as i32,      // 58
                 trade.iv_percentile,                // 59
+                trade.ex_dividend_date.map(|d| d.format("%Y-%m-%d").to_string()), // 60
             ],
         )?;
 
@@ -541,7 +554,7 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -582,139 +595,8 @@ impl Storage {
             let next_earnings: Option<NaiveDate> = row.get::<_, Option<String>>(44)?
                 .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
 
-            Ok(Trade {
-                id:                        row.get(0)?,
-                ticker:                    row.get(1)?,
-                strategy,
-                quantity:                  row.get(3)?,
-                short_strike:              row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                long_strike:               row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-                short_premium:             row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
-                long_premium:              row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
-                credit_received:           row.get(8)?,
-                entry_date,
-                exit_date,
-                expiration_date:           exp_date,
-                trade_date,
-                back_month_expiration:     back_month,
-                pnl:                       row.get(14)?,
-                debit_paid:                row.get(15)?,
-                delta:                     row.get(16)?,
-                theta:                     row.get(17)?,
-                gamma:                     row.get(18)?,
-                vega:                      row.get(19)?,
-                pop:                       row.get(20)?,
-                underlying_price:          row.get(21)?,
-                underlying_price_at_close: row.get(22)?,
-                iv_rank:                   row.get(23)?,
-                vix_at_entry:              row.get(24)?,
-                implied_volatility:        row.get(25)?,
-                commission:                row.get(26)?,
-                entry_reason:              row.get(27)?,
-                exit_reason:               row.get(28)?,
-                management_rule:           row.get(29)?,
-                target_profit_pct:         row.get(30)?,
-                spread_width:              row.get(31)?,
-                bpr:                       row.get(32)?,
-                entry_dte:                 row.get(33)?,
-                dte_at_close:              row.get(34)?,
-                playbook_id:               row.get(35)?,
-                rolled_from_id:            row.get(36)?,
-                is_earnings_play:          row.get::<_, Option<i32>>(37)?.unwrap_or(0) != 0,
-                is_tested:                 row.get::<_, Option<i32>>(38)?.unwrap_or(0) != 0,
-                trade_grade:               row.get(39)?,
-                grade_notes:               row.get(40)?,
-                legs,
-                tags,
-                notes:                     row.get(43)?,
-                next_earnings,
-                iv_at_close:               row.get(45)?,
-                delta_at_close:            row.get(46)?,
-                roll_count:                row.get::<_, Option<i32>>(47)?.unwrap_or(0),
-                theta_at_close:            row.get(48)?,
-                gamma_at_close:            row.get(49)?,
-                vega_at_close:             row.get(50)?,
-                bid_ask_spread_at_entry:   row.get(51)?,
-                fill_vs_mid:               row.get(52)?,
-                was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
-                assigned_shares:           row.get(54)?,
-                cost_basis:                row.get(55)?,
-                close_notes:               row.get(56)?,
-                sector:                    row.get(57)?,
-                closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
-                iv_percentile:             row.get(59)?,
-            })
-        })?;
-
-        let mut trades = Vec::new();
-        for trade in trade_iter {
-            match trade {
-                Ok(t)  => trades.push(t),
-                Err(e) => eprintln!("Error loading trade: {}", e),
-            }
-        }
-        Ok(trades)
-    }
-
-    pub fn get_trade(&self, id: i32) -> Result<Option<Trade>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT
-                id, ticker, strategy, quantity,
-                short_strike, long_strike, short_premium, long_premium,
-                credit_received,
-                entry_date, exit_date, expiration_date, trade_date, back_month_expiration,
-                pnl, debit_paid,
-                delta, theta, gamma, vega, pop,
-                underlying_price, underlying_price_at_close,
-                iv_rank, vix_at_entry, implied_volatility,
-                commission, entry_reason, exit_reason, management_rule, target_profit_pct,
-                spread_width, bpr, entry_dte, dte_at_close,
-                playbook_id, rolled_from_id,
-                is_earnings_play, is_tested,
-                trade_grade, grade_notes,
-                legs_json, tags, notes, next_earnings,
-                iv_at_close, delta_at_close, roll_count,
-                theta_at_close, gamma_at_close, vega_at_close,
-                bid_ask_spread_at_entry, fill_vs_mid,
-                was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile
-            FROM trades WHERE id = ?1"
-        )?;
-
-        let rows = stmt.query_map(params![id], |row| {
-            // Parse strategy
-            let strategy_str: String = row.get(2)?;
-            let strategy = StrategyType::from_str(&strategy_str);
-
-            // Parse timestamps
-            let entry_date  = parse_dt(row.get::<_, String>(9)?)
-                .unwrap_or_else(Utc::now);
-            let exit_date   = row.get::<_, Option<String>>(10)?
-                .and_then(|s| parse_dt(s));
-            let exp_date    = parse_dt(row.get::<_, String>(11)?)
-                .unwrap_or_else(Utc::now);
-            let trade_date_str: String = row.get(12)?;
-            let trade_date  = if trade_date_str.is_empty() {
-                entry_date
-            } else {
-                parse_dt(trade_date_str).unwrap_or(entry_date)
-            };
-            let back_month  = row.get::<_, Option<String>>(13)?
-                .and_then(|s| parse_dt(s));
-
-            // Parse legs
-            let legs_json: String = row.get(41)?;
-            let legs: Vec<TradeLeg> = serde_json::from_str(&legs_json)
-                .unwrap_or_default();
-
-            // Parse tags
-            let tags_str: Option<String> = row.get(42)?;
-            let tags = tags_str
-                .map(|s| s.split(',').filter(|t| !t.is_empty()).map(|t| t.to_string()).collect())
-                .unwrap_or_default();
-
-            // Parse next_earnings
-            let next_earnings: Option<NaiveDate> = row.get::<_, Option<String>>(44)?
+            // Parse ex_dividend_date
+            let ex_dividend_date: Option<NaiveDate> = row.get::<_, Option<String>>(60)?
                 .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
 
             Ok(Trade {
@@ -778,6 +660,147 @@ impl Storage {
                 sector:                    row.get(57)?,
                 closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
                 iv_percentile:             row.get(59)?,
+                ex_dividend_date,
+            })
+        })?;
+
+        let mut trades = Vec::new();
+        for trade in trade_iter {
+            match trade {
+                Ok(t)  => trades.push(t),
+                Err(e) => eprintln!("Error loading trade: {}", e),
+            }
+        }
+        Ok(trades)
+    }
+
+    pub fn get_trade(&self, id: i32) -> Result<Option<Trade>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                id, ticker, strategy, quantity,
+                short_strike, long_strike, short_premium, long_premium,
+                credit_received,
+                entry_date, exit_date, expiration_date, trade_date, back_month_expiration,
+                pnl, debit_paid,
+                delta, theta, gamma, vega, pop,
+                underlying_price, underlying_price_at_close,
+                iv_rank, vix_at_entry, implied_volatility,
+                commission, entry_reason, exit_reason, management_rule, target_profit_pct,
+                spread_width, bpr, entry_dte, dte_at_close,
+                playbook_id, rolled_from_id,
+                is_earnings_play, is_tested,
+                trade_grade, grade_notes,
+                legs_json, tags, notes, next_earnings,
+                iv_at_close, delta_at_close, roll_count,
+                theta_at_close, gamma_at_close, vega_at_close,
+                bid_ask_spread_at_entry, fill_vs_mid,
+                was_assigned, assigned_shares, cost_basis,
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
+            FROM trades WHERE id = ?1"
+        )?;
+
+        let rows = stmt.query_map(params![id], |row| {
+            // Parse strategy
+            let strategy_str: String = row.get(2)?;
+            let strategy = StrategyType::from_str(&strategy_str);
+
+            // Parse timestamps
+            let entry_date  = parse_dt(row.get::<_, String>(9)?)
+                .unwrap_or_else(Utc::now);
+            let exit_date   = row.get::<_, Option<String>>(10)?
+                .and_then(|s| parse_dt(s));
+            let exp_date    = parse_dt(row.get::<_, String>(11)?)
+                .unwrap_or_else(Utc::now);
+            let trade_date_str: String = row.get(12)?;
+            let trade_date  = if trade_date_str.is_empty() {
+                entry_date
+            } else {
+                parse_dt(trade_date_str).unwrap_or(entry_date)
+            };
+            let back_month  = row.get::<_, Option<String>>(13)?
+                .and_then(|s| parse_dt(s));
+
+            // Parse legs
+            let legs_json: String = row.get(41)?;
+            let legs: Vec<TradeLeg> = serde_json::from_str(&legs_json)
+                .unwrap_or_default();
+
+            // Parse tags
+            let tags_str: Option<String> = row.get(42)?;
+            let tags = tags_str
+                .map(|s| s.split(',').filter(|t| !t.is_empty()).map(|t| t.to_string()).collect())
+                .unwrap_or_default();
+
+            // Parse next_earnings
+            let next_earnings: Option<NaiveDate> = row.get::<_, Option<String>>(44)?
+                .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+
+            // Parse ex_dividend_date
+            let ex_dividend_date: Option<NaiveDate> = row.get::<_, Option<String>>(60)?
+                .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+
+            Ok(Trade {
+                id:                        row.get(0)?,
+                ticker:                    row.get(1)?,
+                strategy,
+                quantity:                  row.get(3)?,
+                short_strike:              row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                long_strike:               row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                short_premium:             row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                long_premium:              row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                credit_received:           row.get(8)?,
+                entry_date,
+                exit_date,
+                expiration_date:           exp_date,
+                trade_date,
+                back_month_expiration:     back_month,
+                pnl:                       row.get(14)?,
+                debit_paid:                row.get(15)?,
+                delta:                     row.get(16)?,
+                theta:                     row.get(17)?,
+                gamma:                     row.get(18)?,
+                vega:                      row.get(19)?,
+                pop:                       row.get(20)?,
+                underlying_price:          row.get(21)?,
+                underlying_price_at_close: row.get(22)?,
+                iv_rank:                   row.get(23)?,
+                vix_at_entry:              row.get(24)?,
+                implied_volatility:        row.get(25)?,
+                commission:                row.get(26)?,
+                entry_reason:              row.get(27)?,
+                exit_reason:               row.get(28)?,
+                management_rule:           row.get(29)?,
+                target_profit_pct:         row.get(30)?,
+                spread_width:              row.get(31)?,
+                bpr:                       row.get(32)?,
+                entry_dte:                 row.get(33)?,
+                dte_at_close:              row.get(34)?,
+                playbook_id:               row.get(35)?,
+                rolled_from_id:            row.get(36)?,
+                is_earnings_play:          row.get::<_, Option<i32>>(37)?.unwrap_or(0) != 0,
+                is_tested:                 row.get::<_, Option<i32>>(38)?.unwrap_or(0) != 0,
+                trade_grade:               row.get(39)?,
+                grade_notes:               row.get(40)?,
+                legs,
+                tags,
+                notes:                     row.get(43)?,
+                next_earnings,
+                iv_at_close:               row.get(45)?,
+                delta_at_close:            row.get(46)?,
+                roll_count:                row.get::<_, Option<i32>>(47)?.unwrap_or(0),
+                theta_at_close:            row.get(48)?,
+                gamma_at_close:            row.get(49)?,
+                vega_at_close:             row.get(50)?,
+                bid_ask_spread_at_entry:   row.get(51)?,
+                fill_vs_mid:               row.get(52)?,
+                was_assigned:              row.get::<_, Option<i32>>(53)?.unwrap_or(0) != 0,
+                assigned_shares:           row.get(54)?,
+                cost_basis:                row.get(55)?,
+                close_notes:               row.get(56)?,
+                sector:                    row.get(57)?,
+                closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
+                iv_percentile:             row.get(59)?,
+                ex_dividend_date,
             })
         })?;
 
@@ -924,6 +947,9 @@ impl Storage {
             dte_exit:           None,
             when_to_avoid:      None,
             notes:              None,
+            min_credit:            None,
+            min_credit_width_ratio: None,
+            earnings_blackout_days: None,
         };
         let pb = PlaybookStrategy {
             id:             0,
@@ -954,6 +980,74 @@ impl Storage {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // IV Snapshot store — rolling daily ATM IV per ticker for IVP calculation
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Insert or replace today's ATM IV snapshot for a ticker.
+    pub fn upsert_iv_snapshot(&self, ticker: &str, date: &str, iv: f64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO iv_snapshots (ticker, date, iv) VALUES (?1, ?2, ?3)",
+            params![ticker, date, iv],
+        )?;
+        Ok(())
+    }
+
+    /// Return IV values for a ticker for the past `days` calendar days, oldest first.
+    pub fn get_iv_history(&self, ticker: &str, days: u32) -> Vec<f64> {
+        let cutoff = (chrono::Utc::now().date_naive()
+            - chrono::Duration::days(days as i64))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut stmt = match self.conn.prepare(
+            "SELECT iv FROM iv_snapshots WHERE ticker = ?1 AND date >= ?2 ORDER BY date ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map(params![ticker, cutoff], |row| row.get::<_, f64>(0))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// IV Percentile: fraction of historical days with IV below current_iv, × 100.
+    /// Returns None if fewer than 10 data points.
+    pub fn calculate_ivp(current_iv: f64, history: &[f64]) -> Option<f64> {
+        if history.len() < 10 {
+            return None;
+        }
+        let below = history.iter().filter(|&&v| v < current_iv).count();
+        Some((below as f64 / history.len() as f64) * 100.0)
+    }
+
+    /// IV Rank: (current_iv − 52w_low) / (52w_high − 52w_low) × 100.
+    /// Returns None if fewer than 10 data points or zero range.
+    pub fn calculate_ivr(current_iv: f64, history: &[f64]) -> Option<f64> {
+        if history.len() < 10 {
+            return None;
+        }
+        let lo = history.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = history.iter().cloned().fold(f64::MIN, f64::max);
+        let range = hi - lo;
+        if range <= 0.0 {
+            return None;
+        }
+        Some(((current_iv - lo) / range * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// Prune iv_snapshots older than 400 days to keep the table lean.
+    pub fn prune_iv_snapshots(&self) {
+        let cutoff = (chrono::Utc::now().date_naive()
+            - chrono::Duration::days(400))
+            .format("%Y-%m-%d")
+            .to_string();
+        let _ = self.conn.execute(
+            "DELETE FROM iv_snapshots WHERE date < ?1",
+            params![cutoff],
+        );
     }
 
     pub fn set_bpr(&self, trade_id: i32, bpr: f64) -> Result<()> {
@@ -1075,6 +1169,9 @@ impl Storage {
             dte_exit:           Some(21),
             when_to_avoid:      Some("Low IV environments; stocks without put skew".to_string()),
             notes:              Some("Enter for a net credit. Wider short spread than long spread is required. Check put skew before entry.".to_string()),
+            min_credit:            None,
+            min_credit_width_ratio: None,
+            earnings_blackout_days: None,
         };
         let pb = PlaybookStrategy {
             id:             0,
