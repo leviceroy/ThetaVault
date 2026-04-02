@@ -1358,6 +1358,19 @@ impl Storage {
                 }),
             },
             Def {
+                name: "Call Broken Wing Butterfly",
+                spread_type: "call_broken_wing_butterfly",
+                desc: build_call_broken_wing_butterfly_thesis(),
+                ec: Some(EntryCriteria {
+                    min_dte: Some(15),
+                    max_dte: Some(45),
+                    max_allocation_pct: Some(2.0),
+                    target_profit_pct: Some(50.0),
+                    management_rule: Some("dte_exit_21".to_string()),
+                    ..Default::default()
+                }),
+            },
+            Def {
                 name: "Call Butterfly",
                 spread_type: "call_butterfly",
                 desc: build_call_butterfly_thesis(),
@@ -2087,6 +2100,51 @@ VI. EXPIRATION:
 VII. TASTYLIVE TAKEAWAYS:
 \u{2022} 1. These trades are low probability because the range of success is small relative to normal stock price movement for the cycle. We like to roll into equidistant butterflies from broken wing butterflies, as opposed to starting with them.
 \u{2022} 2. The less time we have to expiration, the more we can expect to get out of a butterfly if the stock moves through it. Too much extrinsic value will prevent the trade from moving much at all."
+}
+
+fn build_call_broken_wing_butterfly_thesis() -> &'static str {
+    "Omnidirectional, defined risk trade consisting of a long call spread with a wider OTM short call spread to finance the trade and receive a net credit overall. No risk to the downside, but max profit at the short strikes.
+
+I. CORE MECHANICS:
+\u{2022} Directional Assumption: Omnidirectional
+\u{2022} IV Environment: High
+\u{2022} Days to Expiration: 15 to 45
+\u{2022} Probability of Profit: 60% to 80%
+
+II. SETUP:
+\u{2022} 1. Buy an ATM/OTM call (lower long anchor)
+\u{2022} 2. Sell two further OTM calls (short middle strikes)
+\u{2022} 3. Buy much further OTM call (outer wing, unequal spacing)
+\u{2022} Max Profit: Width of Long Spread + Credit Received (at short strike at expiration)
+\u{2022} Max Loss: Short Spread \u{2212} Long Spread \u{2212} Credit Received (if fully ITM at expiration)
+\u{2022} Profit Target: 50% of Credit Received or 25% of Long Spread Width
+\u{2022} Breakeven: Short Call Strike + (Long Spread Width + Credit Received)
+\u{2022} Example: XYZ at $100 \u{2014} Buy 100C, Sell two 103C, Buy 109C for small credit.
+  Max profit = $400 at $103. No downside risk. BE at $107.
+
+III. GREEKS:
+\u{2022} Delta: Short / Dynamic
+\u{2022} Vega: Short
+\u{2022} Theta: Long
+\u{2022} Gamma: Dynamic
+
+IV. HOW THE TRADE WORKS:
+\u{2022} IDEAL: Max profit occurs at the short strikes where the long call spread realizes max value and the short call spread is worthless. No downside risk if entered for a credit.
+\u{2022} NOT IDEAL: Spread moves fully ITM at expiration \u{2014} max loss realized. Or stock moves too quickly toward spread creating extrinsic value loss.
+\u{2022} DEFENSIVE TACTIC: If the long spread is ITM and near max value, sell out to retain that value and either hold the credit spread or roll into something else like an iron condor.
+
+V. VOLATILITY:
+\u{2022} IF VOLATILITY EXPANDS: Limited vega exposure (defined risk), but could result in extrinsic value marked loss.
+\u{2022} IF VOLATILITY CONTRACTS: May make it easier to \u{201c}fly off\u{201d} the risk by rolling into a symmetrical butterfly for a debit less than the credit received.
+
+VI. EXPIRATION:
+\u{2022} IF ITM AT EXPIRATION: Max loss if completely ITM. Close to avoid assignment.
+\u{2022} IF OTM AT EXPIRATION: Strikes expire worthless. Keep full credit as profit.
+\u{2022} IF PARTIALLY ITM: Sell out for a profit if in the profit zone.
+
+VII. TASTYLIVE TAKEAWAYS:
+\u{2022} 1. Call Broken Wing Butterflies are frequently used in products that have call skew, because we can make them wider or collect a larger credit up front.
+\u{2022} 2. Broken Wing Butterflies don\u{2019}t appreciate in value too much until closer to expiration when extrinsic value gets closer to zero. Initial goal is to remove risk by rolling into a symmetrical butterfly if the spread moves further OTM for a debit less than the initial credit received."
 }
 
 fn build_call_butterfly_thesis() -> &'static str {

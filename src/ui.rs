@@ -192,7 +192,7 @@ pub fn draw_ui(
         (0, _) => " Q:Quit  Tab:Switch  ←→:Focus  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/PBF/CBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
+        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/CBWB/PBF/CBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, AppMode::JournalNote)  => " Type note  Enter:Save  Esc:Cancel ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  N:Add Note  R:Refresh ",

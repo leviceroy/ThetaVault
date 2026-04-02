@@ -2100,6 +2100,317 @@
       </div>
     </div>
 
+  {:else if strategy === "call_broken_wing_butterfly"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">CALL BROKEN WING<br>BUTTERFLY</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          Omnidirectional, defined risk trade consisting of a long call spread with a wider OTM short call
+          spread to finance the trade and receive a net credit overall. No risk to the downside, but max
+          profit at the short strikes.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">✦</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Omnidirectional</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">High</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">15 to 45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">60% to 80%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge green-badge">C</div>
+          <div class="step-label">Buy ATM/OTM call</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 2 -->
+        <div class="step-row">
+          <div class="step-num">2</div>
+          <div class="step-badge red-badge">C</div>
+          <div class="step-label">Sell two further OTM calls</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 3 -->
+        <div class="step-row">
+          <div class="step-num">3</div>
+          <div class="step-badge green-badge">C</div>
+          <div class="step-label">Buy much further OTM call</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Width of Long Spread + Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Short Spread − Long Spread − Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">50% of Credit Received or 25% of Long Spread Width</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Short Call Strike + (Long Spread Width + Credit Received)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we may buy the 100 call, sell two of the 103 calls, and buy one 109
+            call for a small credit.
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">109</span>
+              <div class="chain-badge green-badge">C</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end; gap:4px;">
+              <span class="chain-price">103</span>
+              <div class="chain-badge red-badge">C</div>
+              <div class="chain-badge red-badge">C</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <div class="chain-badge green-badge">C</div>
+            </div>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Short/Dynamic</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Dynamic</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      Example: buy 100C, sell 2×103C, buy 109C, credit $1.00
+      Max profit = (103-100) + $1 = $4/share = $400 at $103
+      Max loss = (109-103) - (103-100) - $1 = 6-3-1 = $2/share = $200 (upside only)
+      Breakeven = 103 + (3+1) = $107
+      No downside risk: flat +$100 below $100
+
+      X range $82–$118 (36 pts), width 600 → scale 16.667px/$
+      x(82)=0, x(100)=300, x(103)=350, x(107)=417, x(109)=450, x(118)=600
+      Y: range -300 to +500 (800 total), height 160
+      y(pnl)=(500-pnl)/800*160
+      y(+400)=20, y(+100)=80, y(0)=100, y(-200)=140
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Payoff at Expiration — buy 100C, sell 2×103C, buy 109C @ $1.00 credit (defined risk)</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Green zone: flat credit + profit tent (left of BE $107) -->
+        <polygon
+          points="0,160 0,80 300,80 350,20 417,100 417,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+        <!-- Red loss zone: price > BE $107 -->
+        <polygon
+          points="417,160 417,100 450,140 600,140 600,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="100" x2="600" y2="100" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed verticals: long call $100, short calls $103, outer wing $109 -->
+        <line x1="300" y1="0" x2="300" y2="160" stroke="#22c55e" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="350" y1="0" x2="350" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="450" y1="0" x2="450" y2="160" stroke="#22c55e" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Payoff line -->
+        <polyline
+          points="0,80 300,80 350,20 417,100 450,140 600,140"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="260" y="17" fill="#22c55e" font-size="10" font-family="monospace">Max Profit $400</text>
+        <text x="2" y="76" fill="#22c55e" font-size="9" font-family="monospace">← No downside risk</text>
+        <text x="455" y="137" fill="#dc2626" font-size="9" font-family="monospace">Loss $200</text>
+        <text x="303" y="155" fill="#22c55e" font-size="8" font-family="monospace">$100C</text>
+        <text x="353" y="155" fill="#dc2626" font-size="8" font-family="monospace">$103C×2</text>
+        <text x="417" y="97" fill="#f59e0b" font-size="8" font-family="monospace">BE $107</text>
+        <text x="453" y="155" fill="#22c55e" font-size="8" font-family="monospace">$109C</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="dark-section">
+      <div class="section-title-amber">TASTYLIVE APPROACH</div>
+      <div class="subsection-title-amber">HOW THE TRADE WORKS</div>
+
+      <div class="approach-grid">
+        <!-- Ideal -->
+        <div class="approach-card">
+          <div class="approach-card-title">IDEAL</div>
+          <p>
+            Call broken wing butterflies are similar to call ratio spreads, but are defined risk. Max
+            profit occurs at the short strikes, where the long call spread would realize max value and
+            the short call spread would be worthless at expiration. The spread has no risk to the downside
+            if entered for a credit, so the position can also be profitable with a downside move in the
+            stock.
+          </p>
+        </div>
+
+        <!-- Not Ideal -->
+        <div class="approach-card not-ideal">
+          <div class="approach-card-title red-text">NOT IDEAL</div>
+          <p>
+            If the spread moves fully ITM at expiration, you will realize max loss on the trade.
+            Additionally, if the stock price moves too quickly towards the spread, you can see an
+            extrinsic value loss on the trade since the bulk of the potential profit on a trade like
+            this requires extrinsic value to be low. We look to remove risk if the spread moves further
+            OTM by rolling into a symmetrical butterfly for a debit that's less than the credit received
+            upon entry.
+          </p>
+        </div>
+
+        <!-- Defensive Tactics -->
+        <div class="approach-card defensive">
+          <div class="approach-card-title">DEFENSIVE TACTICS</div>
+          <p>
+            If the long spread is ITM and near max value, we sell out of it to retain that value and
+            either hold the credit spread, or manipulate the trade into something else like an iron condor.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── VOLATILITY ───────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">VOLATILITY</div>
+      <div class="vol-grid">
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY EXPANDS</div>
+          <p>
+            This trade doesn't have a ton of exposure to vega since it's defined risk, but this could
+            result in an extrinsic value marked loss.
+          </p>
+        </div>
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY CONTRACTS</div>
+          <p>
+            This trade doesn't have a ton of exposure to vega since it's defined risk, but this may
+            make it easier to "fly off" the risk by rolling into a symmetrical butterfly for a debit
+            that's less than the credit received upon entry.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── EXPIRATION ────────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">EXPIRATION</div>
+      <div class="exp-grid-spv">
+        <div class="exp-card">
+          <div class="exp-card-title">IF ITM AT EXPIRATION</div>
+          <p>
+            The trade would be at max loss if it is completely ITM. Close the trade to avoid assignment
+            and move on.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF PARTIALLY ITM AT EXPIRATION</div>
+          <p>
+            We can sell out of the spread for a profit if we're in our profit zone, since our long spread
+            will increase in value and the short spread will decrease in value if it is OTM.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF OTM AT EXPIRATION</div>
+          <p>
+            The strikes would expire worthless and we can keep our credit collected up front as profit.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TAKEAWAYS ────────────────────────────────────────────────────── -->
+    <div class="takeaways-section">
+      <div class="section-title-amber">TAKEAWAYS</div>
+      <div class="takeaways-grid">
+        <div class="takeaway-card">
+          <div class="takeaway-num">1</div>
+          <p>
+            Call Broken Wing Butterflies are frequently used in products that have call skew, because we
+            can make them wider or collect a larger credit up front.
+          </p>
+        </div>
+        <div class="takeaway-card">
+          <div class="takeaway-num">2</div>
+          <p>
+            Broken Wing Butterflies don't appreciate in value too much until closer to expiration when
+            extrinsic value gets closer to zero, so our initial goal with BWBs is to remove risk by
+            rolling into a symmetrical butterfly if the spread moves further OTM. If we can do this for
+            a debit less than the initial credit received, we lock in a small profit and remove initial
+            risk from the trade.
+          </p>
+        </div>
+      </div>
+    </div>
+
   {:else if strategy === "put_butterfly"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">
