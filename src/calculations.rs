@@ -926,6 +926,46 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
                 return format!("{:.0}/{:.0}{} {}", sl.strike, ll.strike, leg_char, badge);
             }
         }
+        "long_put_vertical" => {
+            if let (Some(sp), Some(lp)) = (short_put, long_put) {
+                return format!("{:.0}/{:.0}P LPV", lp.strike, sp.strike);
+            }
+        }
+        "long_call_vertical" => {
+            if let (Some(sc), Some(lc)) = (short_call, long_call) {
+                return format!("{:.0}/{:.0}C LCV", lc.strike, sc.strike);
+            }
+        }
+        "pzbr" | "put_zebra" => {
+            if let (Some(sp), Some(lp)) = (short_put, long_put) {
+                return format!("{:.0}/{:.0}P PZBR", sp.strike, lp.strike);
+            }
+        }
+        "czbr" | "call_zebra" => {
+            if let (Some(sc), Some(lc)) = (short_call, long_call) {
+                return format!("{:.0}/{:.0}C CZBR", sc.strike, lc.strike);
+            }
+        }
+        "put_butterfly" => {
+            let sp = short_put;
+            let mut lps: Vec<&TradeLeg> = legs.iter()
+                .filter(|l| l.leg_type == LegType::LongPut)
+                .collect();
+            lps.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+            if let (Some(sp), Some(lower), Some(upper)) = (sp, lps.first(), lps.last()) {
+                return format!("{:.0}/{:.0}/{:.0}P PBF", lower.strike, sp.strike, upper.strike);
+            }
+        }
+        "call_butterfly" => {
+            let sc = short_call;
+            let mut lcs: Vec<&TradeLeg> = legs.iter()
+                .filter(|l| l.leg_type == LegType::LongCall)
+                .collect();
+            lcs.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
+            if let (Some(sc), Some(lower), Some(upper)) = (sc, lcs.first(), lcs.last()) {
+                return format!("{:.0}/{:.0}/{:.0}C CBF", lower.strike, sc.strike, upper.strike);
+            }
+        }
         "jade_lizard" => {
             if let (Some(sp), Some(sc), Some(lc)) = (short_put, short_call, long_call) {
                 return format!("{:.0}P / {:.0}/{:.0}C JL", sp.strike, sc.strike, lc.strike);
@@ -939,7 +979,21 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
                 format!("{}{} {:.0}{}", sign, qty, l.strike, opt_char)
             }).collect::<Vec<_>>().join(" / ");
         }
-        _ => {}
+        _ => {
+            // Fallback: render all legs generically so nothing ever shows N/A
+            if !legs.is_empty() {
+                return legs.iter().map(|l| {
+                    let sign     = if l.leg_type.is_short() { "-" } else { "+" };
+                    let qty      = l.quantity.unwrap_or(1);
+                    let opt_char = if l.leg_type.is_call() { "C" } else { "P" };
+                    if qty > 1 {
+                        format!("{}{} {:.0}{}", sign, qty, l.strike, opt_char)
+                    } else {
+                        format!("{}{:.0}{}", sign, l.strike, opt_char)
+                    }
+                }).collect::<Vec<_>>().join(" / ");
+            }
+        }
     }
 
     "N/A".to_string()
