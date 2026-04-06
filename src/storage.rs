@@ -1223,6 +1223,15 @@ impl Storage {
                 }),
             },
             Def {
+                name: "Short Naked Put",
+                spread_type: "short_naked_put",
+                desc: build_short_naked_put_desc(),
+                ec: Some(EntryCriteria {
+                    target_profit_pct: Some(85.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
                 name: "Covered Call",
                 spread_type: "covered_call",
                 desc: build_covered_call_desc(),
@@ -1596,6 +1605,47 @@ V. MANAGEMENT & DEFENSIVE TACTICS
 VI. EXPIRATION OUTCOMES
 \u{2022} If OTM: Put expires worthless. Keep the full premium and deploy another CSP if desired.
 \u{2022} If ITM: Assigned 100 shares of stock at the strike price. Your effective entry price is the Breakeven."
+}
+
+fn build_short_naked_put_desc() -> &'static str {
+    "Neutral-Bullish undefined risk credit trade where we bet against the stock moving below our strike price by expiration. No cash requirement — margin-backed.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral / Bullish
+\u{2022} IV Environment: High (Ideal for maximizing premium)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 OTM Put at ~30 Delta (or lower for more safety).
+2. Margin (not cash) secures the position — no capital set-aside required.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Premium (Credit) Received.
+\u{2022} Max Loss: (Short Strike - Credit Received) x 100 (Stock goes to zero — theoretical).
+\u{2022} Breakeven: Short Strike - Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Long (Profits as stock rises or stays flat)
+\u{2022} Theta: Long (Profits from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Short (Risk accelerates as expiry approaches ITM)
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock stays above the short strike or rises. Put expires OTM; keep full credit.
+\u{2022} Managing Winners: Close at 50% of max profit or 21 DTE to reduce gamma risk.
+\u{2022} Defensive Tactics: If tested, roll out in time for a net credit to buy time. Many traders roll perpetually.
+\u{2022} Assignment Risk: If ITM at expiry, 100 shares assigned at strike. Transition to Covered Call or close.
+
+VI. SNP vs CSP
+\u{2022} CSP: Cash equal to (Strike x 100) held in reserve — lower margin, safer allocation, same structure.
+\u{2022} SNP: Margin-based requirement — capital-efficient but requires active management and margin account.
+\u{2022} Both strategies have identical P&L profiles; the distinction is capital commitment and account type.
+
+VII. EXPIRATION OUTCOMES
+\u{2022} If OTM: Put expires worthless. Keep the full premium.
+\u{2022} If ITM: Assigned 100 shares at the short strike. Effective entry = Breakeven (strike - credit)."
 }
 
 fn build_covered_call_desc() -> &'static str {

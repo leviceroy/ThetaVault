@@ -221,8 +221,8 @@ pub fn calculate_max_loss_from_legs(
         return credit.abs() * 100.0 * qty;
     }
 
-    // Cash Secured Put: (strike - credit) * 100 * qty (stock goes to zero)
-    if spread_type == "cash_secured_put" {
+    // Cash Secured Put / Short Naked Put: (strike - credit) * 100 * qty (stock goes to zero)
+    if spread_type == "cash_secured_put" || spread_type == "short_naked_put" {
         if let Some(sp) = legs.iter().find(|l| l.leg_type == LegType::ShortPut) {
             return (sp.strike - credit) * 100.0 * qty;
         }
@@ -330,8 +330,8 @@ pub fn calculate_bpr(
         return credit.abs() * 100.0 * qty;
     }
 
-    // Cash Secured Put: 20% Naked Put Margin Rule
-    if spread_type == "cash_secured_put" {
+    // Cash Secured Put / Short Naked Put: 20% Naked Put Margin Rule
+    if spread_type == "cash_secured_put" || spread_type == "short_naked_put" {
         if let Some(sp) = legs.iter().find(|l| l.leg_type == LegType::ShortPut) {
             if let Some(up) = underlying_price.filter(|&p| p > 0.0) {
                 let put_otm = (up - sp.strike).max(0.0);
@@ -472,8 +472,8 @@ pub fn calculate_roc(
     let mut capital_at_risk =
         calculate_max_loss_from_legs(legs, credit_received, quantity, spread_type);
 
-    // Cash Secured Put: prefer BPR; fallback to standard Reg-T 20% margin estimate.
-    if spread_type == "cash_secured_put" {
+    // Cash Secured Put / Short Naked Put: prefer BPR; fallback to standard Reg-T 20% margin estimate.
+    if spread_type == "cash_secured_put" || spread_type == "short_naked_put" {
         if let Some(b) = bpr {
             if b > 0.0 { capital_at_risk = b; }
         } else if capital_at_risk <= 0.0 || capital_at_risk > underlying_price.unwrap_or(0.0) * 20.0 * quantity as f64 {
@@ -507,6 +507,7 @@ pub fn calculate_credit_width_ratio(
     if matches!(
         spread_type,
         "cash_secured_put"
+            | "short_naked_put"
             | "covered_call"
             | "call_calendar_spread"
             | "put_calendar_spread"
@@ -607,7 +608,7 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
     let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
 
     match spread_type {
-        "short_put_vertical" | "cash_secured_put" => {
+        "short_put_vertical" | "cash_secured_put" | "short_naked_put" => {
             if let Some(sp) = short_put {
                 return vec![sp.strike - credit];
             }
@@ -898,6 +899,11 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
         "cash_secured_put" => {
             if let Some(sp) = short_put {
                 return format!("{:.0}P CSP", sp.strike);
+            }
+        }
+        "short_naked_put" => {
+            if let Some(sp) = short_put {
+                return format!("{:.0}P SNP", sp.strike);
             }
         }
         "covered_call" => {
@@ -1600,7 +1606,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
     let r = 0.045_f64;
 
     let pop = match trade.strategy {
-        StrategyType::CashSecuredPut => {
+        StrategyType::CashSecuredPut | StrategyType::ShortNakedPut => {
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortPut)
                 .map(|l| l.strike)
@@ -1688,7 +1694,7 @@ pub fn calculate_p50(trade: &Trade) -> Option<f64> {
     let credit = trade.credit_received;
 
     let p50 = match trade.strategy {
-        StrategyType::CashSecuredPut | StrategyType::ShortPutVertical => {
+        StrategyType::CashSecuredPut | StrategyType::ShortNakedPut | StrategyType::ShortPutVertical => {
             // 50% profit when stock stays above: short_strike - credit*0.5
             // Proof: P&L = credit - max(0, k-S). For P&L = credit/2: S = k - credit/2.
             let k = trade.legs.iter()

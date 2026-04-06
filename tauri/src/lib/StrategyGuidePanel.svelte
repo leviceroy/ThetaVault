@@ -290,6 +290,284 @@
       </div>
     </div>
 
+  {:else if strategy === "short_naked_put"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">SHORT NAKED PUT</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          Neutral-Bullish undefined risk credit trade where we are betting against the stock moving below
+          our strike price by the expiration of our contract. No cash set-aside required — margin-backed.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">↗</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Neutral-Bullish</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">High</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">60% to 80%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge red-badge">P</div>
+          <div class="step-label">Sell an OTM put (~30 delta)</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Put Strike × 100 − Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">50% of Max Profit</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Put Strike − Credit Received</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we might sell the 95 put for $1.00 credit.
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <div style="width:20px;height:20px;border-radius:50%;border:2px solid #64748b;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8;">○</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">95</span>
+              <div class="chain-badge red-badge">P</div>
+            </div>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Short</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      X range $80–$105, width 600 → scale 24px/$
+      Y range -$9400 to +$100, height 160
+      Sell 95P for $1.00 credit → max profit $100, max loss $9400 (theoretical $0)
+      Breakeven = $95 - $1.00 = $94 → x=336
+      We clip max loss display at $500 for readability: below $92, we show flat line at bottom
+      y scale: 160/(100+500)=0.2667 → profit $100 → y=26.7, zero → y=26.7+26.7=53.4 (wrong)
+      Simple display: profit cap $100 at top, loss shown to $500:
+        pnl range displayed: +100 to -500 (600 total)
+        y(pnl) = (100 - pnl) / 600 * 160
+        pnl=+100 → y=0, pnl=0 → y=26.7, pnl=-500 → y=160
+      Stock > $95: flat $100 profit
+      Stock = $94 (BE): pnl=0 → y=26.7 → x=(94-80)*24=336
+      Stock = $80: pnl=-1500 → clamped to -500 → y=160
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Payoff at Expiration — XYZ $100 stock, sell 95P @ $1.00 credit</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Red loss zone: left of breakeven -->
+        <polygon
+          points="0,160 0,160 336,26.7 336,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+        <!-- Green profit zone: right of breakeven -->
+        <polygon
+          points="336,26.7 360,0 600,0 600,160 336,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="26.7" x2="600" y2="26.7" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed vertical: short put $95 (x=360) -->
+        <line x1="360" y1="0" x2="360" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <!-- Dashed vertical: stock $100 (x=480) -->
+        <line x1="480" y1="0" x2="480" y2="160" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3" />
+        <!-- Dashed vertical: BE $94 (x=336) -->
+        <line x1="336" y1="0" x2="336" y2="160" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Payoff line: steep downslope left → flat at max profit right of $95 -->
+        <polyline
+          points="0,160 336,26.7 360,0 600,0"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="370" y="12" fill="#22c55e" font-size="10" font-family="monospace">Max Profit $100</text>
+        <text x="339" y="22" fill="#f59e0b" font-size="9" font-family="monospace">BE $94</text>
+        <text x="5" y="155" fill="#dc2626" font-size="9" font-family="monospace">Loss (unlimited↓)</text>
+        <text x="363" y="155" fill="#dc2626" font-size="8" font-family="monospace">$95P</text>
+        <text x="483" y="155" fill="#94a3b8" font-size="8" font-family="monospace">$100</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="dark-section">
+      <div class="section-title-amber">TASTYLIVE APPROACH</div>
+      <div class="subsection-title-amber">HOW THE TRADE WORKS</div>
+
+      <div class="approach-grid">
+        <!-- Ideal -->
+        <div class="approach-card">
+          <div class="approach-card-title">IDEAL</div>
+          <p>
+            The stock stays above the short put strike or rises. The put loses value through theta decay
+            and we close the trade at 50% of max profit, or it expires OTM and we keep the full credit.
+          </p>
+        </div>
+
+        <!-- Not Ideal -->
+        <div class="approach-card not-ideal">
+          <div class="approach-card-title red-text">NOT IDEAL</div>
+          <p>
+            The stock drops below the short put strike. The put moves ITM and increases in value,
+            resulting in an unrealized loss. If the stock continues lower, losses are theoretically
+            unlimited (down to zero).
+          </p>
+        </div>
+
+        <!-- Defensive Tactics -->
+        <div class="approach-card defensive">
+          <div class="approach-card-title">DEFENSIVE TACTICS</div>
+          <p>
+            If the put is tested, roll it out in time for a net credit to buy more time and reduce
+            the effective cost basis. Many traders manage short puts by rolling perpetually rather than
+            taking assignment.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── VOLATILITY ───────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">VOLATILITY</div>
+      <div class="vol-grid">
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY EXPANDS</div>
+          <p>
+            We may hold — extrinsic value increases our unrealized loss but decays to zero by
+            expiration. If IV expansion means the stock is moving, we may roll early.
+          </p>
+        </div>
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY CONTRACTS</div>
+          <p>
+            Extrinsic value collapses quickly. This typically results in a profitable trade, and
+            we should consider closing if we've captured 50% of max profit.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── EXPIRATION ────────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">EXPIRATION</div>
+      <div class="exp-grid-spv">
+        <div class="exp-card">
+          <div class="exp-card-title">IF OTM AT EXPIRATION</div>
+          <p>
+            Put expires worthless. Keep the full credit. Redeploy in the next cycle if desired.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF ITM AT EXPIRATION</div>
+          <p>
+            You are assigned 100 shares of stock at the short put strike. Your effective cost basis
+            is the breakeven (strike − credit). You can then sell a covered call to begin reducing
+            cost basis further — the "Wheel."
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TAKEAWAYS ────────────────────────────────────────────────────── -->
+    <div class="takeaways-section">
+      <div class="section-title-amber">TAKEAWAYS</div>
+      <div class="takeaways-grid">
+        <div class="takeaway-card">
+          <div class="takeaway-num">1</div>
+          <p>
+            Short puts can profit if the stock goes up, stays flat, or moves down slightly. The position
+            wins if the stock stays above the strike at expiration — three of four market directions
+            work in our favor.
+          </p>
+        </div>
+        <div class="takeaway-card">
+          <div class="takeaway-num">2</div>
+          <p>
+            If the stock moves ITM, the short put replicates a covered call risk profile. Many traders
+            roll the put perpetually for a credit rather than taking assignment, effectively managing
+            the position as an ongoing income strategy.
+          </p>
+        </div>
+      </div>
+    </div>
+
   {:else if strategy === "short_put_vertical"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">

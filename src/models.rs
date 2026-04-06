@@ -33,6 +33,7 @@ pub enum StrategyType {
     JadeLizard,
     PutButterfly,
     CallButterfly,
+    ShortNakedPut,
 }
 
 impl StrategyType {
@@ -62,6 +63,7 @@ impl StrategyType {
             StrategyType::JadeLizard              => "Jade Lizard",
             StrategyType::PutButterfly            => "Put Butterfly",
             StrategyType::CallButterfly           => "Call Butterfly",
+            StrategyType::ShortNakedPut           => "Short Naked Put",
         }
     }
 
@@ -91,6 +93,7 @@ impl StrategyType {
             StrategyType::JadeLizard              => "JL",
             StrategyType::PutButterfly            => "PBF",
             StrategyType::CallButterfly           => "CBF",
+            StrategyType::ShortNakedPut           => "SNP",
         }
     }
 
@@ -123,6 +126,7 @@ impl StrategyType {
             "jade_lizard"                     => StrategyType::JadeLizard,
             "put_butterfly"                   => StrategyType::PutButterfly,
             "call_butterfly"                  => StrategyType::CallButterfly,
+            "short_naked_put"                 => StrategyType::ShortNakedPut,
             _                                 => StrategyType::Custom,
         }
     }
@@ -153,6 +157,7 @@ impl StrategyType {
             StrategyType::JadeLizard              => "jade_lizard",
             StrategyType::PutButterfly            => "put_butterfly",
             StrategyType::CallButterfly           => "call_butterfly",
+            StrategyType::ShortNakedPut           => "short_naked_put",
         }
     }
 
@@ -191,7 +196,7 @@ impl StrategyType {
     /// Matches Tom Sosnoff / tastytrade rules per strategy type.
     pub fn default_profit_target_pct(&self) -> f64 {
         match self {
-            StrategyType::CashSecuredPut | StrategyType::CoveredCall => 85.0,
+            StrategyType::CashSecuredPut | StrategyType::CoveredCall | StrategyType::ShortNakedPut => 85.0,
             StrategyType::CallCalendarSpread | StrategyType::PutCalendarSpread | StrategyType::IronButterfly => 25.0,
             StrategyType::PutButterfly | StrategyType::CallButterfly => 25.0,
             _ => 50.0,
@@ -203,7 +208,7 @@ impl StrategyType {
     pub fn recommended_entry_dte(&self) -> Option<(i32, i32)> {
         match self {
             StrategyType::IronCondor | StrategyType::IronButterfly => Some((40, 55)),
-            StrategyType::CashSecuredPut | StrategyType::CoveredCall => Some((30, 45)),
+            StrategyType::CashSecuredPut | StrategyType::CoveredCall | StrategyType::ShortNakedPut => Some((30, 45)),
             StrategyType::ShortPutVertical | StrategyType::ShortCallVertical => Some((21, 45)),
             StrategyType::Strangle | StrategyType::Straddle => Some((25, 45)),
             StrategyType::CallCalendarSpread | StrategyType::PutCalendarSpread | StrategyType::Pmcc => Some((30, 60)),
@@ -310,6 +315,7 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::CallCalendarSpread  => vec![LegType::ShortCall, LegType::LongCall],
         StrategyType::PutCalendarSpread   => vec![LegType::ShortPut,  LegType::LongPut],
         StrategyType::CashSecuredPut      => vec![LegType::ShortPut],
+        StrategyType::ShortNakedPut       => vec![LegType::ShortPut],
         StrategyType::CoveredCall         => vec![LegType::ShortCall],
         StrategyType::Pmcc                => vec![LegType::LongCall,  LegType::ShortCall],
         StrategyType::LongDiagonalSpread  => vec![LegType::LongCall,  LegType::ShortCall],
