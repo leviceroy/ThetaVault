@@ -1187,7 +1187,7 @@
       </div>
     </div>
 
-  {:else if strategy === "calendar_spread"}
+  {:else if strategy === "call_calendar_spread"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">
       <div class="header-left">
@@ -1483,6 +1483,305 @@
             This is a short-term, vol expansion trade where we are purely trading the extrinsic value and
             IV spread between the short front-month option and the long back-month option. For this reason,
             we look for a quick exit if we see profitability and a move towards our spread.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  {:else if strategy === "put_calendar_spread"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">PUT CALENDAR<br>SPREAD</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          A neutral, defined risk trade where we are betting on an increase in IV while the stock stays
+          near our strikes, or for the stock to stay stagnant and our short premium to decay faster than
+          our long premium.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">↙</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Bearish</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">Low</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">N/A</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge green-badge">P</div>
+          <div class="step-label">Buy put in a long-term expiration cycle</div>
+        </div>
+        <div class="step-connector"></div>
+        <!-- Step 2 -->
+        <div class="step-row">
+          <div class="step-num">2</div>
+          <div class="step-badge red-badge">P</div>
+          <div class="step-label">Sell put in a near-term expiration cycle</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Variable</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Debit Paid</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">10–25% of Debit Paid</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Variable</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we may buy the 95 put in a long-term expiration and sell the 95
+            put in a near-term expiration.
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <div style="width:20px;height:20px;border-radius:50%;border:2px solid #64748b;display:flex;align-items:center;justify-content:center;font-size:9px;color:#94a3b8;">○</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end; gap:4px;">
+              <span class="chain-price">95</span>
+              <div class="chain-badge red-badge" style="font-size:9px;">P</div>
+              <div class="chain-badge green-badge" style="font-size:9px;">P</div>
+            </div>
+          </div>
+          <div class="cal-time-labels">
+            <span class="cal-time-label red-text">Short — Near-term</span>
+            <span class="cal-time-label" style="color:#22c55e;">Long — Far-term</span>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Dynamic</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      Put calendar: tent/hill centered at put strike ($95) — mirror of call calendar
+      X range $75–$115, 40 pts → scale 15px/$; x(price) = (price-75)*15
+      x(75)=0, x(83)=120, x(87)=180, x(95)=300, x(103)=420, x(107)=480, x(115)=600
+      Y: range -$250 to +$350 (600 total), height 160
+      y(pnl)=(350-pnl)/600*160
+      y(+300)=13.3, y(0)=93.3, y(-200)=146.7
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Approximate Payoff at Front Expiration — XYZ $100, buy/sell 95 put (variable, IV-dependent)</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Red left loss zone -->
+        <polygon
+          points="0,160 0,146.7 75,141.3 150,114.7 180,93.3 180,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+        <!-- Green profit zone -->
+        <polygon
+          points="180,160 180,93.3 225,66.7 300,13.3 375,66.7 420,93.3 420,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+        <!-- Red right loss zone -->
+        <polygon
+          points="420,160 420,93.3 450,114.7 525,141.3 600,146.7 600,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="93.3" x2="600" y2="93.3" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed verticals: stock $100, put strike $95 -->
+        <line x1="375" y1="0" x2="375" y2="160" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3" />
+        <line x1="300" y1="0" x2="300" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Smooth hill payoff line -->
+        <polyline
+          points="0,146.7 75,141.3 150,114.7 180,93.3 225,66.7 300,13.3 375,66.7 420,93.3 450,114.7 525,141.3 600,146.7"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="252" y="10" fill="#22c55e" font-size="10" font-family="monospace">Max Profit (Variable)</text>
+        <text x="2" y="144" fill="#dc2626" font-size="9" font-family="monospace">Loss ↓</text>
+        <text x="490" y="144" fill="#dc2626" font-size="9" font-family="monospace">Loss ↓</text>
+        <text x="303" y="155" fill="#dc2626" font-size="8" font-family="monospace">$95P</text>
+        <text x="378" y="155" fill="#94a3b8" font-size="8" font-family="monospace">$100</text>
+        <text x="140" y="90" fill="#f59e0b" font-size="8" font-family="monospace">BE≈$87</text>
+        <text x="423" y="90" fill="#f59e0b" font-size="8" font-family="monospace">BE≈$103</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="dark-section">
+      <div class="section-title-amber">TASTYLIVE APPROACH</div>
+      <div class="subsection-title-amber">HOW THE TRADE WORKS</div>
+
+      <div class="approach-grid">
+        <!-- Ideal -->
+        <div class="approach-card">
+          <div class="approach-card-title">IDEAL</div>
+          <p>
+            The stock trickles down to the put calendar strikes over time. This will result in an
+            expansion in the value of the long put option with a contraction in value of the near-term
+            short put option, resulting in a net profit.
+          </p>
+        </div>
+
+        <!-- Not Ideal -->
+        <div class="approach-card not-ideal">
+          <div class="approach-card-title red-text">NOT IDEAL</div>
+          <p>
+            The stock goes well beyond the put calendar strikes in either direction. This will result
+            in the options losing their extrinsic value, which is what you paid for the trade. Intrinsic
+            value is completely offset, resulting in a loss. This is an extrinsic value trade.
+          </p>
+        </div>
+
+        <!-- Defensive Tactics -->
+        <div class="approach-card defensive">
+          <div class="approach-card-title">DEFENSIVE TACTICS</div>
+          <p>
+            If the short put option loses a lot of value, we can roll it out in time closer to the long
+            put option's expiration. This will result in a reduction in our net debit and max loss, but
+            it will desensitize the trade's ability to appreciate in value with the short option now
+            closer to the long option's expiration.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── VOLATILITY ───────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">VOLATILITY</div>
+      <div class="vol-grid">
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY EXPANDS</div>
+          <p>
+            The put calendar will likely see a profit, especially if this is paired with a bearish
+            move in the stock price.
+          </p>
+        </div>
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY CONTRACTS</div>
+          <p>
+            The put calendar will likely see losses, especially if this is paired with a bullish move
+            moving the strikes further OTM.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── EXPIRATION ────────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">EXPIRATION</div>
+      <div class="exp-grid-spv">
+        <div class="exp-card">
+          <div class="exp-card-title">IF OTM AT EXPIRATION</div>
+          <p>
+            The short put will expire worthless, and you can hold the long put or roll the short put
+            into a new expiration to reduce cost basis further.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF ATM AT EXPIRATION</div>
+          <p>
+            As time passes, the short option will decay faster than the long option, and ultimately
+            expire worthless. This is the ideal spot — the value of the spread is the decay in the
+            short put option plus the remaining extrinsic value in the long put.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF ITM AT EXPIRATION</div>
+          <p>
+            The short put will convert to 100 shares of stock. Your long put still protects your risk
+            on the shares, but buying power will increase dramatically. Close or roll the short put
+            to avoid this.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TAKEAWAYS ────────────────────────────────────────────────────── -->
+    <div class="takeaways-section">
+      <div class="section-title-amber">TAKEAWAYS</div>
+      <div class="takeaways-grid">
+        <div class="takeaway-card">
+          <div class="takeaway-num">1</div>
+          <p>
+            This strategy is typically not one we will hold to expiration, and we temper our profit
+            target because the spread cannot go too far ITM or OTM.
+          </p>
+        </div>
+        <div class="takeaway-card">
+          <div class="takeaway-num">2</div>
+          <p>
+            This is a short-term, vol expansion trade where we are purely trading the extrinsic value
+            and IV spread between the short front-month put and the long back-month put. For this
+            reason, we look for a quick exit if we see profitability and a move towards our spread.
           </p>
         </div>
       </div>

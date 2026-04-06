@@ -1263,15 +1263,28 @@ impl Storage {
                 }),
             },
             Def {
-                name: "Calendar Spread",
-                spread_type: "calendar_spread",
-                desc: build_calendar_spread_desc(),
+                name: "Call Calendar Spread",
+                spread_type: "call_calendar_spread",
+                desc: build_call_calendar_spread_desc(),
                 ec: Some(EntryCriteria {
                     min_ivr: Some(25.0), max_ivr: Some(45.0),
                     min_delta: Some(10.0), max_delta: Some(20.0),
                     max_allocation_pct: Some(1.0),
                     target_profit_pct: Some(25.0),
                     management_rule: Some("Before Expiry".to_string()),
+                    ..Default::default()
+                }),
+            },
+            Def {
+                name: "Put Calendar Spread",
+                spread_type: "put_calendar_spread",
+                desc: build_put_calendar_spread_desc(),
+                ec: Some(EntryCriteria {
+                    min_dte: Some(30),
+                    max_dte: Some(60),
+                    max_allocation_pct: Some(2.0),
+                    target_profit_pct: Some(25.0),
+                    management_rule: Some("profit_target_25".to_string()),
                     ..Default::default()
                 }),
             },
@@ -1696,7 +1709,7 @@ VI. EXPIRATION OUTCOMES
 \u{2022} If Partially ITM: (Between strikes) Either close the trade or roll out in time. Never let a tested spread go through expiration to avoid unwanted short stock position."
 }
 
-fn build_calendar_spread_desc() -> &'static str {
+fn build_call_calendar_spread_desc() -> &'static str {
     "Neutral, defined risk trade where we bet on an increase in IV or the stock staying stagnant near our strikes so the short premium decays faster than the long premium.
 
 I. CORE MECHANICS
@@ -1706,8 +1719,8 @@ I. CORE MECHANICS
 \u{2022} Probability of Profit (POP): N/A
 
 II. SETUP
-1. Buy a Call/Put in a long-term expiration cycle.
-2. Sell a Call/Put in a near-term expiration cycle at the SAME strike.
+1. Buy a Call in a long-term expiration cycle.
+2. Sell a Call in a near-term expiration cycle at the SAME strike.
 \u{2022} Goal: Enter for a net debit.
 
 III. FINANCIAL PROFILE
@@ -1730,7 +1743,49 @@ V. MANAGEMENT & DEFENSIVE TACTICS
 VI. EXPIRATION OUTCOMES
 \u{2022} If OTM: Short option expires worthless. Hold long option or roll short option to a new cycle to reduce cost basis.
 \u{2022} If ATM: Highest potential profit spot. Short option decays completely leaving remaining extrinsic in the long option.
-\u{2022} If ITM: Risk of assignment. Short call converts to 100 short shares (Short put to long shares). Close or roll to avoid buying power spikes."
+\u{2022} If ITM: Risk of assignment. Short call converts to 100 short shares. Close or roll to avoid buying power spikes."
+}
+
+fn build_put_calendar_spread_desc() -> &'static str {
+    "A neutral, defined risk trade where we are betting on an increase in IV while the stock stays near our strikes, or for the stock to stay stagnant and our short premium to decay faster than our long premium.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Bearish
+\u{2022} IV Environment: Low
+\u{2022} Days to Expiration: 45 (near-term short)
+\u{2022} Probability of Profit: N/A (variable)
+
+II. SETUP
+\u{2022} 1. Buy a put in a long-term expiration cycle (back month)
+\u{2022} 2. Sell a put in a near-term expiration cycle (front month), same strike
+\u{2022} Max Profit: Variable (spread widens as near-term decays faster)
+\u{2022} Max Loss: Debit Paid
+\u{2022} Profit Target: 10-25% of Debit Paid
+\u{2022} Breakeven: Variable
+
+III. GREEKS
+\u{2022} Delta: Short
+\u{2022} Vega: Long (benefits from IV expansion)
+\u{2022} Theta: Short (near-term decays faster than back month)
+\u{2022} Gamma: Dynamic
+
+IV. HOW THE TRADE WORKS
+\u{2022} IDEAL: Stock trickles down toward the put calendar strikes over time. Near-term short put decays faster than the long put, resulting in a net profit.
+\u{2022} NOT IDEAL: Stock moves well beyond the put calendar strikes in either direction. Options lose extrinsic value \u{2014} this is an extrinsic value trade.
+\u{2022} DEFENSIVE TACTIC: If short put loses a lot of value, roll it out in time closer to the long put\u{2019}s expiration. Reduces net debit and desensitizes the trade\u{2019}s ability to appreciate in value.
+
+V. VOLATILITY
+\u{2022} IF VOLATILITY EXPANDS: Put calendar will likely see a profit, especially if paired with a bearish move in the stock price.
+\u{2022} IF VOLATILITY CONTRACTS: Put calendar will likely see losses, especially if paired with a bullish move moving the strikes further OTM.
+
+VI. EXPIRATION
+\u{2022} IF OTM AT EXPIRATION: Short put expires worthless. Hold the long put or roll the short put into a new expiration to reduce cost basis further.
+\u{2022} IF ATM AT EXPIRATION: Ideal spot. Short option decays to worthless while long put retains extrinsic value. Highest potential profit point.
+\u{2022} IF ITM AT EXPIRATION: Short put converts to 100 shares. Long put protects risk but buying power increases. Close or roll the short put to avoid this.
+
+VII. TASTYLIVE TAKEAWAYS
+\u{2022} 1. This strategy is typically not one we hold to expiration. Temper profit target because the spread cannot go too far ITM or OTM.
+\u{2022} 2. This is a short-term, vol expansion trade \u{2014} purely trading the extrinsic value and IV spread between the short front-month put and the long back-month put. Look for a quick exit if we see profitability and a move towards our spread."
 }
 
 fn build_short_strangle_desc() -> &'static str {

@@ -16,7 +16,8 @@ pub enum StrategyType {
     IronButterfly,
     Strangle,
     Straddle,
-    CalendarSpread,
+    CallCalendarSpread,
+    PutCalendarSpread,
     CashSecuredPut,
     CoveredCall,
     Pmcc,
@@ -44,7 +45,8 @@ impl StrategyType {
             StrategyType::IronButterfly       => "Iron Butterfly",
             StrategyType::Strangle            => "Strangle",
             StrategyType::Straddle            => "Straddle",
-            StrategyType::CalendarSpread      => "Calendar Spread",
+            StrategyType::CallCalendarSpread  => "Call Calendar Spread",
+            StrategyType::PutCalendarSpread   => "Put Calendar Spread",
             StrategyType::CashSecuredPut      => "Cash Secured Put",
             StrategyType::CoveredCall         => "Covered Call",
             StrategyType::Pmcc                => "Poor Man's Covered Call",
@@ -72,7 +74,8 @@ impl StrategyType {
             StrategyType::IronButterfly       => "IB",
             StrategyType::Strangle            => "STR",
             StrategyType::Straddle            => "STD",
-            StrategyType::CalendarSpread      => "CAL",
+            StrategyType::CallCalendarSpread  => "CCAL",
+            StrategyType::PutCalendarSpread   => "PCAL",
             StrategyType::CashSecuredPut      => "CSP",
             StrategyType::CoveredCall         => "CC",
             StrategyType::Pmcc                => "PMCC",
@@ -100,7 +103,9 @@ impl StrategyType {
             "iron_butterfly"        => StrategyType::IronButterfly,
             "strangle"              => StrategyType::Strangle,
             "straddle"              => StrategyType::Straddle,
-            "calendar_spread"       => StrategyType::CalendarSpread,
+            "call_calendar_spread"  => StrategyType::CallCalendarSpread,
+            "put_calendar_spread"   => StrategyType::PutCalendarSpread,
+            "calendar_spread"       => StrategyType::CallCalendarSpread,
             "cash_secured_put"      => StrategyType::CashSecuredPut,
             "covered_call"          => StrategyType::CoveredCall,
             "pmcc"                  => StrategyType::Pmcc,
@@ -131,7 +136,8 @@ impl StrategyType {
             StrategyType::IronButterfly       => "iron_butterfly",
             StrategyType::Strangle            => "strangle",
             StrategyType::Straddle            => "straddle",
-            StrategyType::CalendarSpread      => "calendar_spread",
+            StrategyType::CallCalendarSpread  => "call_calendar_spread",
+            StrategyType::PutCalendarSpread   => "put_calendar_spread",
             StrategyType::CashSecuredPut      => "cash_secured_put",
             StrategyType::CoveredCall         => "covered_call",
             StrategyType::Pmcc                => "pmcc",
@@ -163,7 +169,8 @@ impl StrategyType {
             | StrategyType::CashSecuredPut
             // CC: risk capped at stock purchase price; tastytrade treats as defined/low-risk
             | StrategyType::CoveredCall
-            | StrategyType::CalendarSpread
+            | StrategyType::CallCalendarSpread
+            | StrategyType::PutCalendarSpread
             | StrategyType::Pmcc
             | StrategyType::LongDiagonalSpread
             | StrategyType::ShortDiagonalSpread
@@ -185,7 +192,7 @@ impl StrategyType {
     pub fn default_profit_target_pct(&self) -> f64 {
         match self {
             StrategyType::CashSecuredPut | StrategyType::CoveredCall => 85.0,
-            StrategyType::CalendarSpread | StrategyType::IronButterfly => 25.0,
+            StrategyType::CallCalendarSpread | StrategyType::PutCalendarSpread | StrategyType::IronButterfly => 25.0,
             StrategyType::PutButterfly | StrategyType::CallButterfly => 25.0,
             _ => 50.0,
         }
@@ -199,7 +206,7 @@ impl StrategyType {
             StrategyType::CashSecuredPut | StrategyType::CoveredCall => Some((30, 45)),
             StrategyType::ShortPutVertical | StrategyType::ShortCallVertical => Some((21, 45)),
             StrategyType::Strangle | StrategyType::Straddle => Some((25, 45)),
-            StrategyType::CalendarSpread | StrategyType::Pmcc => Some((30, 60)),
+            StrategyType::CallCalendarSpread | StrategyType::PutCalendarSpread | StrategyType::Pmcc => Some((30, 60)),
             StrategyType::LongCallVertical | StrategyType::LongPutVertical => Some((21, 45)),
             StrategyType::JadeLizard => Some((21, 45)),
             StrategyType::PutBrokenWingButterfly | StrategyType::CallBrokenWingButterfly => Some((30, 45)),
@@ -300,7 +307,8 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::IronButterfly       => vec![LegType::ShortPut,  LegType::LongPut,  LegType::ShortCall, LegType::LongCall],
         StrategyType::Strangle            => vec![LegType::ShortPut,  LegType::ShortCall],
         StrategyType::Straddle            => vec![LegType::ShortPut,  LegType::ShortCall],
-        StrategyType::CalendarSpread      => vec![LegType::ShortCall, LegType::LongCall],
+        StrategyType::CallCalendarSpread  => vec![LegType::ShortCall, LegType::LongCall],
+        StrategyType::PutCalendarSpread   => vec![LegType::ShortPut,  LegType::LongPut],
         StrategyType::CashSecuredPut      => vec![LegType::ShortPut],
         StrategyType::CoveredCall         => vec![LegType::ShortCall],
         StrategyType::Pmcc                => vec![LegType::LongCall,  LegType::ShortCall],

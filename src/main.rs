@@ -1372,7 +1372,8 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::IronButterfly,
         models::StrategyType::Strangle,
         models::StrategyType::Straddle,
-        models::StrategyType::CalendarSpread,
+        models::StrategyType::CallCalendarSpread,
+        models::StrategyType::PutCalendarSpread,
         models::StrategyType::CashSecuredPut,
         models::StrategyType::CoveredCall,
         models::StrategyType::Pmcc,
@@ -1392,7 +1393,8 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
 /// True for calendar/diagonal/pmcc/custom — strategies with per-leg expiry.
 fn strategy_shows_per_leg_expiry(strategy: &models::StrategyType) -> bool {
     matches!(strategy,
-        models::StrategyType::CalendarSpread |
+        models::StrategyType::CallCalendarSpread |
+        models::StrategyType::PutCalendarSpread |
         models::StrategyType::LongDiagonalSpread |
         models::StrategyType::ShortDiagonalSpread |
         models::StrategyType::Pmcc |
@@ -1983,7 +1985,8 @@ fn all_spread_type_strings() -> Vec<String> {
         "straddle".to_string(),
         "cash_secured_put".to_string(),
         "covered_call".to_string(),
-        "calendar_spread".to_string(),
+        "call_calendar_spread".to_string(),
+        "put_calendar_spread".to_string(),
         "pmcc".to_string(),
         "long_diagonal_spread".to_string(),
         "short_diagonal_spread".to_string(),

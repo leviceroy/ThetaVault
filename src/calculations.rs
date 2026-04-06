@@ -215,7 +215,7 @@ pub fn calculate_max_loss_from_legs(
     // Calendar/diagonal/butterfly: max loss = net debit paid = abs(credit) * 100 * qty
     if matches!(
         spread_type,
-        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
+        "call_calendar_spread" | "put_calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
         | "put_butterfly" | "call_butterfly"
     ) {
         return credit.abs() * 100.0 * qty;
@@ -325,7 +325,7 @@ pub fn calculate_bpr(
     // Calendar/diagonal: BPR = net debit
     if matches!(
         spread_type,
-        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
+        "call_calendar_spread" | "put_calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread"
     ) {
         return credit.abs() * 100.0 * qty;
     }
@@ -508,7 +508,8 @@ pub fn calculate_credit_width_ratio(
         spread_type,
         "cash_secured_put"
             | "covered_call"
-            | "calendar_spread"
+            | "call_calendar_spread"
+            | "put_calendar_spread"
             | "strangle"
             | "straddle"
             | "pmcc"
@@ -622,7 +623,7 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
             return [be_put, be_call].iter().filter_map(|x| *x).collect();
         }
         // Calendar/diagonal: IV-dependent, cannot compute statically
-        "calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" => {
+        "call_calendar_spread" | "put_calendar_spread" | "pmcc" | "long_diagonal_spread" | "short_diagonal_spread" => {
             return vec![];
         }
         "put_butterfly" => {
@@ -904,13 +905,19 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
                 return format!("{:.0}C CC", sc.strike);
             }
         }
-        "calendar_spread" => {
+        "call_calendar_spread" => {
             let strike = short_call
                 .map(|l| l.strike)
                 .or_else(|| short_put.map(|l| l.strike))
                 .unwrap_or(0.0);
             let leg_char = if short_call.is_some() { "C" } else { "P" };
-            return format!("{:.0}{} Cal", strike, leg_char);
+            return format!("{:.0}{} CCAL", strike, leg_char);
+        }
+        "put_calendar_spread" => {
+            let strike = short_put
+                .map(|l| l.strike)
+                .unwrap_or(0.0);
+            return format!("{:.0}P PCAL", strike);
         }
         "pmcc" => {
             if let (Some(lc), Some(sc)) = (long_call, short_call) {
@@ -1791,7 +1798,8 @@ pub fn check_playbook_compliance(
             crate::models::StrategyType::IronButterfly |
             crate::models::StrategyType::Strangle |
             crate::models::StrategyType::Straddle |
-            crate::models::StrategyType::CalendarSpread
+            crate::models::StrategyType::CallCalendarSpread |
+            crate::models::StrategyType::PutCalendarSpread
         );
         
         if is_neutral && check_delta < 5.0 {

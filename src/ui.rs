@@ -192,7 +192,7 @@ pub fn draw_ui(
         (0, _) => " Q:Quit  Tab:Switch  ←→:Focus  ↑↓:Scroll  i:KPI Info  R:Refresh ",
         (2, AppMode::EditThesis)   => " Type to edit  Enter:Newline  Backspace:Del  Ctrl+S:Save  Esc:Cancel ",
         (2, AppMode::EditPlaybook) => " ↑↓/Tab:Field  +/-:Cycle  Ctrl+S:Save  Esc:Cancel ",
-        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CAL/STR/BWB/CBWB/JL/PBF/CBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
+        (2, _) if under_tauri      => " Q:Quit  Tab:Switch  ↑↓:Select  N:New  E:Edit  T:Thesis  ?:Guide (CC/SPV/SCV/IC/IFly/CCAL/PCAL/STR/BWB/CBWB/JL/PBF/CBF/LCV/LPV/PMCC/LDS/SDS/RS/PZBR/CZBR) ",
         (2, _)                     => " Q:Quit  Tab:Switch  ↑↓:Select  ↕:Scroll  N:New  E:Edit  T:Edit Thesis ",
         (3, AppMode::JournalNote)  => " Type note  Enter:Save  Esc:Cancel ",
         (3, _)                     => " Q:Quit  ↑↓:Nav  Enter:Collapse/→Journal  N:Add Note  R:Refresh ",
@@ -1221,7 +1221,8 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
                     "IB"  => "iron_butterfly",
                     "STR" => "strangle",
                     "STD" => "straddle",
-                    "CAL" => "calendar_spread",
+                    "CCAL" => "call_calendar_spread",
+                    "PCAL" => "put_calendar_spread",
                     "CSP" => "cash_secured_put",
                     "CC"  => "covered_call",
                     "PMCC" => "pmcc",
@@ -4426,7 +4427,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
         (remaining_dte, iv)
     };
 
-    let max_profit = if spread_type == "calendar_spread" {
+    let max_profit = if matches!(spread_type, "call_calendar_spread" | "put_calendar_spread") {
         // Peak P&L is at the strike (top of the tent shape); estimate via Black-Scholes
         let (rem_dte, iv) = calendar_params();
         let strike = trade.legs.iter().map(|l| l.strike).find(|&s| s > 0.0).unwrap_or(100.0);
@@ -4627,7 +4628,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
 
     // ── ASCII grid chart renderer ─────────────────────────────────────────────
     // Precompute calendar params once if needed
-    let (cal_rem_dte, cal_iv) = if spread_type == "calendar_spread" {
+    let (cal_rem_dte, cal_iv) = if matches!(spread_type, "call_calendar_spread" | "put_calendar_spread") {
         calendar_params()
     } else {
         (0.0, 0.0)
@@ -4639,7 +4640,7 @@ fn draw_analyze_pane(f: &mut Frame, area: Rect, trade: &Trade) {
     let col_denom = (chart_cols - 1).max(1) as f64;
     let payoffs: Vec<f64> = (0..chart_cols).map(|col| {
         let p = lo + (hi - lo) * col as f64 / col_denom;
-        let raw = if spread_type == "calendar_spread" {
+        let raw = if matches!(spread_type, "call_calendar_spread" | "put_calendar_spread") {
             calculate_calendar_payoff_at_price(&trade.legs, trade.credit_received, p, cal_rem_dte, cal_iv)
         } else {
             calculate_payoff_at_price(&trade.legs, trade.credit_received, p)
@@ -4788,7 +4789,7 @@ fn badge_color(spread_type: &str) -> Color {
         "strangle" | "straddle"                        => Color::Magenta,
         "cash_secured_put"                             => C_GREEN,
         "covered_call"                                 => Color::Rgb(132, 204, 22),
-        "calendar_spread" | "pmcc"                     => C_YELLOW,
+        "call_calendar_spread" | "put_calendar_spread" | "pmcc" => C_YELLOW,
         "long_diagonal_spread" | "short_diagonal_spread" => Color::Rgb(249, 115, 22),
         "long_call_vertical" | "long_put_vertical"    => C_CYAN,
         "pzbr" | "czbr"                                => Color::Rgb(168, 85, 247),  // purple
@@ -7474,7 +7475,8 @@ fn draw_journal_help_popup(f: &mut Frame, area: Rect, scroll: u16, max_scroll: &
             def("CSP",          "Cash Secured Put — sell naked put"),
             def("CC",           "Covered Call — sell call against long stock"),
             def("PMCC",         "Poor Man's Covered Call — LEAP long call + short call"),
-            def("CAL",          "Calendar Spread — sell near, buy far expiration"),
+            def("CCAL",         "Call Calendar Spread — sell near call, buy far call; long vega"),
+            def("PCAL",         "Put Calendar Spread — sell near put, buy far put; bearish, long vega"),
             def("LDS",          "Long Diagonal Spread"),
             def("SDS",          "Short Diagonal Spread"),
             def("PZBR",         "Put ZEBRA — long 2 puts, short 1 put (ratio spread)"),
