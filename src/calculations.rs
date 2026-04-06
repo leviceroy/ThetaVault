@@ -228,8 +228,8 @@ pub fn calculate_max_loss_from_legs(
         }
     }
 
-    // Covered Call: stock risk not tracked by options → 0
-    if spread_type == "covered_call" {
+    // Covered Call / Short Naked Call: unlimited theoretical upside → 0 (use BPR for ROC)
+    if spread_type == "covered_call" || spread_type == "short_naked_call" {
         return 0.0;
     }
 
@@ -352,6 +352,20 @@ pub fn calculate_bpr(
         return 0.0;
     }
 
+    // Short Naked Call: 20% Naked Call Margin Rule (same structure as SNP but for calls)
+    if spread_type == "short_naked_call" {
+        if let Some(sc) = legs.iter().find(|l| l.leg_type == LegType::ShortCall) {
+            if let Some(up) = underlying_price.filter(|&p| p > 0.0) {
+                let call_otm = (sc.strike - up).max(0.0);
+                let margin = (0.20 * up - call_otm + sc.premium)
+                    .max(0.10 * up + sc.premium);
+                return margin * 100.0 * qty;
+            }
+            // Fallback: 20% of strike
+            return sc.strike * 0.20 * 100.0 * qty;
+        }
+    }
+
     let short_put  = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
     let long_put   = legs.iter().find(|l| l.leg_type == LegType::LongPut);
     let short_call = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
@@ -472,8 +486,8 @@ pub fn calculate_roc(
     let mut capital_at_risk =
         calculate_max_loss_from_legs(legs, credit_received, quantity, spread_type);
 
-    // Cash Secured Put / Short Naked Put: prefer BPR; fallback to standard Reg-T 20% margin estimate.
-    if spread_type == "cash_secured_put" || spread_type == "short_naked_put" {
+    // Cash Secured Put / Short Naked Put / Short Naked Call: prefer BPR; fallback to Reg-T estimate.
+    if spread_type == "cash_secured_put" || spread_type == "short_naked_put" || spread_type == "short_naked_call" {
         if let Some(b) = bpr {
             if b > 0.0 { capital_at_risk = b; }
         } else if capital_at_risk <= 0.0 || capital_at_risk > underlying_price.unwrap_or(0.0) * 20.0 * quantity as f64 {
@@ -508,6 +522,7 @@ pub fn calculate_credit_width_ratio(
         spread_type,
         "cash_secured_put"
             | "short_naked_put"
+            | "short_naked_call"
             | "covered_call"
             | "call_calendar_spread"
             | "put_calendar_spread"
@@ -613,7 +628,7 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
                 return vec![sp.strike - credit];
             }
         }
-        "short_call_vertical" | "covered_call" => {
+        "short_call_vertical" | "covered_call" | "short_naked_call" => {
             if let Some(sc) = short_call {
                 return vec![sc.strike + credit];
             }
@@ -909,6 +924,11 @@ pub fn format_trade_description(legs: &[TradeLeg], spread_type: &str) -> String 
         "covered_call" => {
             if let Some(sc) = short_call {
                 return format!("{:.0}C CC", sc.strike);
+            }
+        }
+        "short_naked_call" => {
+            if let Some(sc) = short_call {
+                return format!("{:.0}C SNC", sc.strike);
             }
         }
         "call_calendar_spread" => {
@@ -1615,7 +1635,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
-        StrategyType::CoveredCall => {
+        StrategyType::CoveredCall | StrategyType::ShortNakedCall => {
             let k = trade.legs.iter()
                 .find(|l| l.leg_type == LegType::ShortCall)
                 .map(|l| l.strike)
@@ -1706,7 +1726,7 @@ pub fn calculate_p50(trade: &Trade) -> Option<f64> {
             let d2 = bs_d1(s, threshold, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
-        StrategyType::CoveredCall | StrategyType::ShortCallVertical => {
+        StrategyType::CoveredCall | StrategyType::ShortNakedCall | StrategyType::ShortCallVertical => {
             // 50% profit when stock stays below: short_strike + credit*0.5
             // Proof: P&L = credit - max(0, S-k). For P&L = credit/2: S = k + credit/2.
             let k = trade.legs.iter()

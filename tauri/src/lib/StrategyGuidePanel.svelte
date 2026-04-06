@@ -290,6 +290,280 @@
       </div>
     </div>
 
+  {:else if strategy === "short_naked_call"}
+    <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+    <div class="header-block">
+      <div class="header-left">
+        <div class="red-bar"></div>
+        <div class="header-title">SHORT NAKED CALL</div>
+      </div>
+      <div class="header-right">
+        <p class="header-desc">
+          Neutral-Bearish undefined risk credit trade where we are betting against the stock moving above
+          our strike price by the expiration of our contract.
+        </p>
+        <div class="metrics-row">
+          <div class="metric-cell">
+            <div class="metric-icon">↘</div>
+            <div class="metric-label">DIRECTIONAL ASSUMPTION</div>
+            <div class="metric-value">Neutral-Bearish</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">◈</div>
+            <div class="metric-label">IV ENVIRONMENT</div>
+            <div class="metric-value">High</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▦</div>
+            <div class="metric-label">DAYS TO EXPIRATION</div>
+            <div class="metric-value">45</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-icon">▲</div>
+            <div class="metric-label">PROBABILITY OF PROFIT</div>
+            <div class="metric-value">60% to 80%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SETUP ─────────────────────────────────────────────────────────── -->
+    <div class="section-title-white">SETUP</div>
+    <div class="setup-row">
+      <div class="setup-left">
+        <!-- Step 1 -->
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-badge red-badge">C</div>
+          <div class="step-label">Sell an OTM call (~30 delta)</div>
+        </div>
+
+        <!-- Stats box -->
+        <div class="stats-box">
+          <div class="stats-row">
+            <span class="stats-icon red-text">↑</span>
+            <div>
+              <div class="stats-key red-text">MAX PROFIT</div>
+              <div class="stats-val">Credit Received</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">↓</span>
+            <div>
+              <div class="stats-key red-text">MAX LOSS</div>
+              <div class="stats-val">Unlimited</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">◎</span>
+            <div>
+              <div class="stats-key red-text">PROFIT TARGET</div>
+              <div class="stats-val">50% of Max Profit</div>
+            </div>
+          </div>
+          <div class="stats-row">
+            <span class="stats-icon red-text">⚖</span>
+            <div>
+              <div class="stats-key red-text">BREAKEVEN</div>
+              <div class="stats-val">Call Strike + Credit Received</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-right">
+        <!-- Example box -->
+        <div class="example-box">
+          <div class="example-header">EXAMPLE</div>
+          <p class="example-text">
+            With XYZ stock at $100, we might sell the 105 call and look to collect $1.00 in credit.
+          </p>
+          <div class="chain-diagram">
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">105</span>
+              <div class="chain-badge red-badge">C</div>
+            </div>
+            <div class="chain-spacer"></div>
+            <div class="chain-row" style="justify-content:flex-end;">
+              <span class="chain-price">100</span>
+              <div style="width:20px;height:20px;border-radius:50%;border:2px solid #64748b;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8;">○</div>
+            </div>
+          </div>
+          <div class="greeks-grid">
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Δ</span>
+              <span class="greek-label">DELTA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">V</span>
+              <span class="greek-label">VEGA</span>
+              <span class="greek-val">Short</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Θ</span>
+              <span class="greek-label">THETA</span>
+              <span class="greek-val">Long</span>
+            </div>
+            <div class="greek-cell">
+              <span class="greek-sym amber-text">Γ</span>
+              <span class="greek-label">GAMMA</span>
+              <span class="greek-val">Short</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SVG PAYOFF DIAGRAM ────────────────────────────────────────────── -->
+    <!--
+      X range $90–$115, width 600 → scale 24px/$
+      Sell 105C for $1.00 credit → max profit $100 at/below $105, loss above BE $106
+      BE = $105 + $1.00 = $106 → x=(106-90)*24=384
+      Short call $105 → x=(105-90)*24=360
+      Stock $100 → x=(100-90)*24=240
+      Display: clamp loss to -$500 for readability
+      pnl range +100 to -500 (600 total)
+      y(pnl) = (100 - pnl) / 600 * 160
+        pnl=+100 → y=0, pnl=0 → y=26.7, pnl=-500 → y=160
+    -->
+    <div class="payoff-wrap">
+      <div class="payoff-label gray-text">Payoff at Expiration — XYZ $100 stock, sell 105C @ $1.00 credit</div>
+      <svg viewBox="0 0 600 160" class="payoff-svg" preserveAspectRatio="none">
+        <!-- Green profit zone: left of breakeven -->
+        <polygon
+          points="0,0 384,0 384,26.7 384,160 0,160"
+          fill="rgba(34,197,94,0.15)"
+        />
+        <!-- Red loss zone: right of breakeven -->
+        <polygon
+          points="384,26.7 600,160 600,160 384,160"
+          fill="rgba(220,38,38,0.18)"
+        />
+
+        <!-- Zero P&L line -->
+        <line x1="0" y1="26.7" x2="600" y2="26.7" stroke="#475569" stroke-width="0.8" stroke-dasharray="2,4" />
+
+        <!-- Dashed vertical: short call $105 (x=360) -->
+        <line x1="360" y1="0" x2="360" y2="160" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" />
+        <!-- Dashed vertical: stock $100 (x=240) -->
+        <line x1="240" y1="0" x2="240" y2="160" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3" />
+        <!-- Dashed vertical: BE $106 (x=384) -->
+        <line x1="384" y1="0" x2="384" y2="160" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" />
+
+        <!-- Payoff line: flat max profit left of $105 → slope down right of $105 -->
+        <polyline
+          points="0,0 360,0 384,26.7 600,160"
+          fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linejoin="round"
+        />
+
+        <!-- Labels -->
+        <text x="5" y="12" fill="#22c55e" font-size="10" font-family="monospace">Max Profit $100</text>
+        <text x="387" y="22" fill="#f59e0b" font-size="9" font-family="monospace">BE $106</text>
+        <text x="510" y="155" fill="#dc2626" font-size="9" font-family="monospace">Loss (unlimited↑)</text>
+        <text x="363" y="155" fill="#dc2626" font-size="8" font-family="monospace">$105C</text>
+        <text x="243" y="155" fill="#94a3b8" font-size="8" font-family="monospace">$100</text>
+      </svg>
+    </div>
+
+    <!-- ─── TASTYLIVE APPROACH ────────────────────────────────────────────── -->
+    <div class="dark-section">
+      <div class="section-title-amber">TASTYLIVE APPROACH</div>
+      <div class="subsection-title-amber">HOW THE TRADE WORKS</div>
+
+      <div class="approach-grid">
+        <!-- Ideal -->
+        <div class="approach-card">
+          <div class="approach-card-title">IDEAL</div>
+          <p>
+            The stock decreases in value. As time passes, and if volatility decreases, the extrinsic value
+            of the call will decrease. As long as we buy back the call for less than we sold it for,
+            we lock in a profit.
+          </p>
+        </div>
+
+        <!-- Not Ideal -->
+        <div class="approach-card not-ideal">
+          <div class="approach-card-title red-text">NOT IDEAL</div>
+          <p>
+            The stock increases in value. As the stock goes up, the value of the call will increase,
+            which means we may see losses if the option is worth more than we sold it for when we
+            opened the trade.
+          </p>
+        </div>
+
+        <!-- Defensive Tactics -->
+        <div class="approach-card defensive">
+          <div class="approach-card-title">DEFENSIVE TACTICS</div>
+          <p>
+            Short naked options can usually be rolled out in time for a credit without adding any
+            additional risk. Rolling out in time extends duration and increases extrinsic value in
+            the position, which improves your breakeven on the trade overall.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── VOLATILITY ───────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">VOLATILITY</div>
+      <div class="vol-grid">
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY EXPANDS</div>
+          <p>
+            We may hold — this may result in an extrinsic value loss, but extrinsic value will always
+            go to zero by expiration.
+          </p>
+        </div>
+        <div class="vol-card">
+          <div class="vol-card-title">IF VOLATILITY CONTRACTS</div>
+          <p>
+            Close for a winner if we reach our desired profit target and the strike is still OTM.
+          </p>
+        </div>
+      </div>
+
+      <!-- ─── EXPIRATION ────────────────────────────────────────────────── -->
+      <div class="subsection-title-amber vol-title">EXPIRATION</div>
+      <div class="exp-grid-spv">
+        <div class="exp-card">
+          <div class="exp-card-title">IF OTM AT EXPIRATION</div>
+          <p>
+            The call will expire worthless, and we keep the credit received up front as profit.
+          </p>
+        </div>
+        <div class="exp-card">
+          <div class="exp-card-title">IF ITM AT EXPIRATION</div>
+          <p>
+            If the option is ITM through expiration, the call seller will be short 100 shares of
+            that stock at the strike price. To avoid this, we roll the position out in time or close it.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TAKEAWAYS ────────────────────────────────────────────────────── -->
+    <div class="takeaways-section">
+      <div class="section-title-amber">TAKEAWAYS</div>
+      <div class="takeaways-grid">
+        <div class="takeaway-card">
+          <div class="takeaway-num">1</div>
+          <p>
+            Short calls can be profitable if the stock stays the same, goes down, or even goes up a
+            little bit as long as the strike remains OTM through expiration. The many ways to be
+            profitable translates to a high probability trade when sold OTM.
+          </p>
+        </div>
+        <div class="takeaway-card">
+          <div class="takeaway-num">2</div>
+          <p>
+            Short ITM calls could be subject to additional assignment risk due to dividends. If you're
+            trading a dividend stock and have an ITM short call with an upcoming dividend, ensure that
+            your short call's extrinsic value is more than the expected dividend. If it is less, consider
+            rolling the position out in time to add extrinsic value and remove dividend assignment risk.
+          </p>
+        </div>
+      </div>
+    </div>
+
   {:else if strategy === "short_naked_put"}
     <!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
     <div class="header-block">

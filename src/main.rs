@@ -1376,6 +1376,7 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::PutCalendarSpread,
         models::StrategyType::CashSecuredPut,
         models::StrategyType::ShortNakedPut,
+        models::StrategyType::ShortNakedCall,
         models::StrategyType::CoveredCall,
         models::StrategyType::Pmcc,
         models::StrategyType::LongDiagonalSpread,
@@ -1658,7 +1659,7 @@ fn build_edit_fields(t: &models::Trade) -> Vec<EditField> {
         &t.fill_vs_mid.map(|v| format!("{:.2}", v)).unwrap_or_default()));
 
     // ── Assignment (CSP / CC only)
-    if matches!(t.strategy, models::StrategyType::CashSecuredPut | models::StrategyType::ShortNakedPut | models::StrategyType::CoveredCall) {
+    if matches!(t.strategy, models::StrategyType::CashSecuredPut | models::StrategyType::ShortNakedPut | models::StrategyType::ShortNakedCall | models::StrategyType::CoveredCall) {
         f.push(EditField::bool_field("Was Assigned", t.was_assigned)
             .with_section("── Assignment ────────────────────────────────────────────────────"));
         f.push(EditField::number("Assigned Shares",
@@ -1989,6 +1990,7 @@ fn all_spread_type_strings() -> Vec<String> {
         "straddle".to_string(),
         "cash_secured_put".to_string(),
         "short_naked_put".to_string(),
+        "short_naked_call".to_string(),
         "covered_call".to_string(),
         "call_calendar_spread".to_string(),
         "put_calendar_spread".to_string(),

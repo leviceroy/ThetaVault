@@ -1223,6 +1223,15 @@ impl Storage {
                 }),
             },
             Def {
+                name: "Short Naked Call",
+                spread_type: "short_naked_call",
+                desc: build_short_naked_call_desc(),
+                ec: Some(EntryCriteria {
+                    target_profit_pct: Some(50.0),
+                    ..Default::default()
+                }),
+            },
+            Def {
                 name: "Short Naked Put",
                 spread_type: "short_naked_put",
                 desc: build_short_naked_put_desc(),
@@ -1605,6 +1614,47 @@ V. MANAGEMENT & DEFENSIVE TACTICS
 VI. EXPIRATION OUTCOMES
 \u{2022} If OTM: Put expires worthless. Keep the full premium and deploy another CSP if desired.
 \u{2022} If ITM: Assigned 100 shares of stock at the strike price. Your effective entry price is the Breakeven."
+}
+
+fn build_short_naked_call_desc() -> &'static str {
+    "Neutral-Bearish undefined risk credit trade where we bet against the stock moving above our strike price by expiration. Margin-backed with theoretically unlimited upside risk.
+
+I. CORE MECHANICS
+\u{2022} Directional Assumption: Neutral / Bearish
+\u{2022} IV Environment: High (Ideal for maximizing premium)
+\u{2022} Ideal Expiration: 45 Days to Expiration (DTE)
+\u{2022} Probability of Profit (POP): 60% to 80%
+
+II. SETUP
+1. Sell 1 OTM Call at ~30 Delta (or lower for more safety).
+2. Margin requirement secures the position — no defined cap on loss.
+
+III. FINANCIAL PROFILE
+\u{2022} Max Profit: Premium (Credit) Received.
+\u{2022} Max Loss: Unlimited — stock can rise indefinitely.
+\u{2022} Breakeven: Short Call Strike + Credit Received.
+\u{2022} Profit Target: 50% of Max Profit.
+
+IV. THE GREEKS
+\u{2022} Delta: Short (Profits as stock falls or stays flat)
+\u{2022} Theta: Long (Profits from time decay)
+\u{2022} Vega: Short (Hurt by volatility expansion)
+\u{2022} Gamma: Short (Risk accelerates as expiry approaches ITM)
+
+V. MANAGEMENT & DEFENSIVE TACTICS
+\u{2022} Ideal Scenario: Stock falls or stays flat. Call expires OTM; keep full credit.
+\u{2022} Managing Winners: Close at 50% of max profit or 21 DTE to reduce gamma risk.
+\u{2022} Rolling: If the strike is tested, roll out in time for a net credit — extends duration and improves breakeven without adding risk.
+\u{2022} Assignment: If ITM at expiry, short 100 shares at the strike price. Roll or close before expiration.
+
+VI. DIVIDEND RISK
+\u{2022} Short ITM calls on dividend-paying stocks carry early assignment risk.
+\u{2022} If extrinsic value < expected dividend, the call owner may exercise early to capture the dividend.
+\u{2022} Monitor and roll/close before ex-dividend date if the call is ITM.
+
+VII. EXPIRATION OUTCOMES
+\u{2022} If OTM: Call expires worthless. Keep the full premium.
+\u{2022} If ITM: Assigned short 100 shares at the short call strike. Roll or close to manage."
 }
 
 fn build_short_naked_put_desc() -> &'static str {
