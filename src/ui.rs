@@ -763,10 +763,10 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         else { "→ Reduce/cals" }
     }).unwrap_or("");
     let (vix_em_line, vix_spx_line) = if let Some(vix) = stats.vix {
-        // Tastytrade uses calendar-day convention: IV / sqrt(365) for 1-day EM
-        let d = (vix / 100.0) / 365.0_f64.sqrt() * 100.0;
+        // VIX/16 ≈ VIX/√252 — tastytrade projected 1-day % move
+        let d = vix / 16.0;
         let em_line = Line::from(vec![
-            Span::styled(format!(" 1d ±{:.2}%", d), Style::default().fg(C_CYAN)),
+            Span::styled(format!(" VIX 1d  ±{:.1}%", d), Style::default().fg(C_CYAN)),
         ]);
         let spx_line = if let Some(spx) = stats.spx_price {
             let spx_em = spx * (vix / 100.0) / 365.0_f64.sqrt();
@@ -6899,9 +6899,9 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
             sub("Green ≥50 (elevated IV). Yellow ≥25. Red <25 — low IV environment, reduce premium selling."),
         ]),
         Line::from(vec![
-            lbl("  1d ±%     "),
+            lbl("  VIX 1d ±% "),
             Span::styled(
-                stats.vix.map_or("— (no VIX)".to_string(), |v| format!("±{:.2}%  = (VIX/100) / √252 × 100  — annualized vol scaled to 1 trading day", (v/100.0)/252.0_f64.sqrt()*100.0)),
+                stats.vix.map_or("— (no VIX)".to_string(), |v| format!("±{:.1}%  = VIX / 16  — projected 1-day % move (tastytrade standard)", v / 16.0)),
                 Style::default().fg(C_WHITE),
             ),
         ]),
