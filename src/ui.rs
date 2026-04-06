@@ -762,11 +762,16 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         else if v >= 15.0 { "→ Std premium" }
         else { "→ Reduce/cals" }
     }).unwrap_or("");
-    let (vix_em_line, vix_spx_line) = if let Some(vix) = stats.vix {
+    let (vix_em_line, vix_1d_line, vix_spx_line) = if let Some(vix) = stats.vix {
         // VIX/16 ≈ VIX/√252 — tastytrade projected 1-day % move
-        let d = vix / 16.0;
+        let d16 = vix / 16.0;
         let em_line = Line::from(vec![
-            Span::styled(format!(" VIX 1d  ±{:.1}%", d), Style::default().fg(C_CYAN)),
+            Span::styled(format!(" VIX 1d  ±{:.1}%", d16), Style::default().fg(C_CYAN)),
+        ]);
+        // Calendar-day convention: VIX/√365
+        let d365 = (vix / 100.0) / 365.0_f64.sqrt() * 100.0;
+        let line_1d = Line::from(vec![
+            Span::styled(format!(" 1d  ±{:.2}%", d365), Style::default().fg(C_GRAY)),
         ]);
         let spx_line = if let Some(spx) = stats.spx_price {
             let spx_em = spx * (vix / 100.0) / 365.0_f64.sqrt();
@@ -779,9 +784,9 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         } else {
             Line::from("")
         };
-        (em_line, spx_line)
+        (em_line, line_1d, spx_line)
     } else {
-        (Line::from(""), Line::from(""))
+        (Line::from(""), Line::from(""), Line::from(""))
     };
     f.render_widget(
         Paragraph::new(vec![
@@ -792,6 +797,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
             )]),
             vix_ivr_line,
             vix_em_line,
+            vix_1d_line,
             vix_spx_line,
             Line::from(vec![Span::styled(format!(" {}", vix_suggestion), Style::default().fg(C_GRAY))]),
         ])
