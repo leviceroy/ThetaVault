@@ -1391,7 +1391,6 @@ fn all_strategy_types() -> Vec<models::StrategyType> {
         models::StrategyType::JadeLizard,
         models::StrategyType::PutButterfly,
         models::StrategyType::CallButterfly,
-        models::StrategyType::ShortNakedPut,
     ]
 }
 

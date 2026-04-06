@@ -1631,7 +1631,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
                 .find(|l| l.leg_type == LegType::ShortPut)
                 .map(|l| l.strike)
                 .unwrap_or(trade.short_strike);
-            if k <= 0.0 { return 60.0; }
+            if k <= 0.0 { return 0.0; }
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
@@ -1640,7 +1640,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
                 .find(|l| l.leg_type == LegType::ShortCall)
                 .map(|l| l.strike)
                 .unwrap_or(trade.short_strike);
-            if k <= 0.0 { return 60.0; }
+            if k <= 0.0 { return 0.0; }
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(-d2) * 100.0
         }
@@ -1650,7 +1650,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
             let width = trade.spread_width
                 .filter(|&w| w > 0.0)
                 .unwrap_or_else(|| (trade.short_strike - trade.long_strike).abs());
-            if width <= 0.0 || trade.credit_received <= 0.0 { return 60.0; }
+            if width <= 0.0 || trade.credit_received <= 0.0 { return 0.0; }
             let max_loss = width - trade.credit_received;
             if max_loss <= 0.0 { return 95.0; }
             (max_loss / width * 100.0).clamp(10.0, 95.0)
@@ -1662,7 +1662,7 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
                 .find(|l| l.leg_type == LegType::ShortPut)
                 .map(|l| l.strike)
                 .unwrap_or(trade.short_strike);
-            if k <= 0.0 { return 60.0; }
+            if k <= 0.0 { return 0.0; }
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }

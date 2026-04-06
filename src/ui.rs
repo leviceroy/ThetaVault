@@ -3116,10 +3116,12 @@ fn draw_trade_detail(f: &mut Frame, area: Rect, trade: &Trade, scroll: u16, chai
                 s2.push(Span::styled(format!("${:.4}  ", dp), Style::default().fg(C_WHITE)));
             }
             if let Some(iv) = trade.iv_at_close {
+                let norm_iv = |v: f64| if v < 2.0 { v * 100.0 } else { v };
+                let iv_pct = norm_iv(iv);
                 s2.push(Span::styled("IV@close: ", Style::default().fg(C_GRAY)));
-                s2.push(Span::styled(format!("{:.1}%", iv), Style::default().fg(C_CYAN)));
+                s2.push(Span::styled(format!("{:.1}%", iv_pct), Style::default().fg(C_CYAN)));
                 if let Some(entry_iv) = trade.implied_volatility {
-                    let crush = (entry_iv - iv) * 100.0;
+                    let crush = norm_iv(entry_iv) - iv_pct;
                     let cc = if crush > 0.0 { C_GREEN } else { C_RED };
                     s2.push(Span::styled(format!(" (crush {:+.1}pp)  ", crush), Style::default().fg(cc)));
                 } else { s2.push(Span::raw("  ")); }
