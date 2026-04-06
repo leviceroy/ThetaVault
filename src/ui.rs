@@ -766,7 +766,7 @@ fn draw_dashboard(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf_stats:
         // VIX/16 ≈ VIX/√252 — tastytrade projected 1-day % move
         let d16 = vix / 16.0;
         let em_line = Line::from(vec![
-            Span::styled(format!(" VIX 1d  ±{:.1}%", d16), Style::default().fg(C_CYAN)),
+            Span::styled(format!(" VIX 1d  ±{:.2}%", d16), Style::default().fg(C_CYAN)),
         ]);
         // Calendar-day convention: VIX/√365
         let d365 = (vix / 100.0) / 365.0_f64.sqrt() * 100.0;
@@ -6907,7 +6907,7 @@ fn draw_kpi_popup(f: &mut Frame, area: Rect, stats: &PortfolioStats, perf: &Perf
         Line::from(vec![
             lbl("  VIX 1d ±% "),
             Span::styled(
-                stats.vix.map_or("— (no VIX)".to_string(), |v| format!("±{:.1}%  = VIX / 16  — projected 1-day % move (tastytrade standard)", v / 16.0)),
+                stats.vix.map_or("— (no VIX)".to_string(), |v| format!("±{:.2}%  = VIX / 16  — projected 1-day % move (tastytrade standard)", v / 16.0)),
                 Style::default().fg(C_WHITE),
             ),
         ]),
