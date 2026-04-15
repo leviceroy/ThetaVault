@@ -176,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sector: None,
             closed_at_target: false,
             ex_dividend_date: None,
+            cached_max_profit: None, cached_max_loss: None, hv20_at_entry: None,
         };
         storage.insert_trade(&trade)?;
     }

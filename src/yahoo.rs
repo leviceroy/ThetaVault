@@ -185,6 +185,18 @@ pub async fn fetch_vix() -> Option<f64> {
         .and_then(|s| s.parse::<f64>().ok())
 }
 
+/// Map derivative tickers (weekly index options) to the underlying that CNBC recognises.
+/// SPXW and XSP are S&P weekly option tickers; the underlying is SPX.
+/// NDXP is the Nasdaq weekly; NDX is the underlying.
+fn price_alias(ticker: &str) -> &str {
+    match ticker {
+        "SPXW" | "XSP"  => "SPX",
+        "NDXP"           => "NDX",
+        "RUTW"           => "RUT",
+        other            => other,
+    }
+}
+
 /// Fetch current prices for a list of tickers using CNBC (same pattern as fetch_spy_price).
 pub async fn fetch_underlying_prices(tickers: &[String]) -> HashMap<String, f64> {
     if tickers.is_empty() { return HashMap::new(); }
@@ -193,8 +205,9 @@ pub async fn fetch_underlying_prices(tickers: &[String]) -> HashMap<String, f64>
     let mut handles = Vec::new();
     for ticker in tickers {
         let c = client.clone();
-        let t = ticker.clone();
-        handles.push(tokio::spawn(async move { fetch_price_single(c, t).await }));
+        // Fetch the canonical underlying symbol but store back under the original ticker name.
+        let fetch_as = price_alias(ticker).to_string();
+        handles.push(tokio::spawn(async move { fetch_price_single(c, fetch_as).await }));
     }
 
     let mut result = HashMap::new();
@@ -245,12 +258,12 @@ pub async fn fetch_atm_ivs(tickers: &[String]) -> HashMap<String, f64> {
 }
 
 async fn fetch_atm_iv_single(client: reqwest::Client, ticker: String) -> Option<f64> {
-    let url = format!(
+    let base_url = format!(
         "https://query2.finance.yahoo.com/v7/finance/options/{}",
         ticker
     );
     let resp = client
-        .get(&url)
+        .get(&base_url)
         .header("Accept", "application/json")
         .send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
@@ -259,6 +272,36 @@ async fn fetch_atm_iv_single(client: reqwest::Client, ticker: String) -> Option<
     let spot = result.pointer("/quote/regularMarketPrice")
         .and_then(|v| v.as_f64())
         .filter(|&p| p > 0.0)?;
+
+    // Pick nearest expiry ≥ 14 DTE to avoid weekly-pin IV distortions.
+    // Yahoo returns expirationDates as Unix timestamps; the options array matches by index.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    let min_secs = now_secs + 14 * 86400;
+
+    let exp_dates: Option<Vec<i64>> = result.pointer("/expirationDates")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect());
+
+    // Find the index of the first expiry >= 14 days out
+    let preferred_exp: Option<i64> = exp_dates.as_ref().and_then(|dates| {
+        dates.iter().copied().find(|&ts| ts >= min_secs)
+    });
+
+    // If the preferred expiry is not the first one, re-fetch with ?date= param
+    let (json2, result2_owner);
+    let result = if let Some(exp_ts) = preferred_exp.filter(|_| {
+        // Only re-fetch if first expiry is too short (<14d)
+        exp_dates.as_ref().and_then(|d| d.first().copied()).map_or(false, |first| first < min_secs)
+    }) {
+        let url2 = format!("{}?date={}", base_url, exp_ts);
+        let resp2 = client.get(&url2).header("Accept", "application/json").send().await.ok()?;
+        json2 = resp2.json::<serde_json::Value>().await.ok()?;
+        result2_owner = json2.pointer("/optionChain/result/0")?;
+        result2_owner
+    } else {
+        result
+    };
 
     let options = result.pointer("/options/0")?;
 

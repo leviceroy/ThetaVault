@@ -74,14 +74,16 @@ pub struct AppState {
     pub playbook_state:  ListState,
 
     // Month/year grouping
-    pub collapsed_years:  HashSet<i32>,
-    pub collapsed_months: HashSet<(i32, u32)>,
+    pub collapsed_years:        HashSet<i32>,
+    pub collapsed_months:       HashSet<(i32, u32)>,  // closed section: present = collapsed
+    pub open_collapsed_months:  HashSet<(i32, u32)>,  // open section: present = exception to default
     pub visual_rows:      Vec<VisualRowKind>,
     // Chain View mode
     pub journal_chain_view: bool,
 
-    // Column visibility for trade table (21 columns — last is EM)
-    pub col_visibility:  [bool; 25],
+    // Column visibility for trade table
+    pub col_visibility:      [bool; 28],  // global / non-open filters
+    pub open_col_visibility: [bool; 28],  // Open filter KPI preset
     pub show_col_picker: bool,
 
     // Strategy guide (Tauri right panel — OSC 9997)
@@ -108,7 +110,7 @@ pub struct AppState {
     pub perf_analytics_scroll:        u16,
     pub perf_analytics_scroll_target: u16,
     pub perf_analytics_max_scroll:    u16,
-    pub perf_collapsed:   [bool; 15], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=PnlDist 12=Held 13=Commission 14=0DteMonthly
+    pub perf_collapsed:   [bool; 16], // 0=Health 1=Returns 2=Advanced 3=Growth 4=Strategy 5=Ticker 6=Monthly 7=IVR 8=VIX 9=DTE 10=IVREntry 11=PnlDist 12=Held 13=Commission 14=0DteMonthly 15=Earnings
     pub perf_section_cursor: usize,  // 0-based index into current subtab's navigable section list
     pub perf_scroll_dirty:   bool,   // true → scroll refresh block should sync scroll to cursor
 
@@ -124,6 +126,9 @@ pub struct AppState {
     pub show_detail: bool,
     pub selected_trade_chain: Vec<models::Trade>,
     pub app_mode:    AppMode,
+
+    // Playbook picker (N key in journal)
+    pub playbook_picker_idx: usize,
 
     // Journal filter / sort
     pub filter_status: FilterStatus,
@@ -195,7 +200,7 @@ impl AppState {
                 }
             }
         }
-        let playbooks = storage.get_all_playbooks().unwrap_or_default();
+        let playbooks = { let mut p = storage.get_all_playbooks().unwrap_or_default(); sort_playbooks_by_risk(&mut p); p };
         let account_size = storage.get_setting("account_size")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(100_000.0);
@@ -227,8 +232,21 @@ impl AppState {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(30);
         let col_visibility_str = storage.get_setting("col_visibility")
-            .unwrap_or_else(|| "1111111111111111111".to_string());
+            .unwrap_or_else(|| "1111111111111111111011111".to_string());  // col 19=OTM% off by default
         let col_visibility = parse_col_visibility(&col_visibility_str);
+        // Open-filter KPI preset: Date Ticker Spot ER Str Qty Credit GTC BE BPR% DTE OTM% EM Mgmt P50 θ/d NΔ
+        let open_col_visibility_str = storage.get_setting("open_col_visibility")
+            .unwrap_or_else(|| "1111111110100001000111011100".to_string());
+        let open_col_visibility = parse_col_visibility(&open_col_visibility_str);
+        let persisted_sort_key = storage.get_setting("sort_key").as_deref().and_then(|s| match s {
+            "Ticker"  => Some(SortKey::Ticker),
+            "Pnl"     => Some(SortKey::Pnl),
+            "Roc"     => Some(SortKey::Roc),
+            "Dte"     => Some(SortKey::Dte),
+            "Credit"  => Some(SortKey::Credit),
+            "PctMax"  => Some(SortKey::PctMax),
+            _         => Some(SortKey::Date),
+        }).unwrap_or(SortKey::Date);
         let current_vix: Option<f64> = None;
         let beta_map = std::collections::HashMap::new();
         let spy_price: Option<f64> = None;
@@ -296,6 +314,7 @@ impl AppState {
             export_status: None,
             export_status_tick: 0,
             col_visibility,
+            open_col_visibility,
             show_col_picker: false,
             show_guide: false,
             playbook_match_candidates: Vec::new(),
@@ -326,8 +345,9 @@ impl AppState {
             selected_tab:     0,
             table_state,
             playbook_state,
-            collapsed_years:  HashSet::new(),
-            collapsed_months: HashSet::new(),
+            collapsed_years:       HashSet::new(),
+            collapsed_months:      HashSet::new(),
+            open_collapsed_months: HashSet::new(),
             visual_rows:      Vec::new(),
             journal_chain_view: false,
             thesis_scroll:      0,
@@ -348,7 +368,7 @@ impl AppState {
             perf_analytics_scroll_target: 0,
             perf_analytics_max_scroll: u16::MAX,
             // Default: Health(0), Returns(1), Growth(3) expanded; rest collapsed
-            perf_collapsed:   [false, false, false, false, false, true, true, true, true, true, true, true, true, true, true],
+            perf_collapsed:   [false, false, false, false, false, true, true, true, true, true, true, true, true, true, true, true],
             perf_section_cursor: 0,
             perf_scroll_dirty:   false,
             cal_year:      0,
@@ -360,9 +380,10 @@ impl AppState {
             show_detail:      false,
             selected_trade_chain: Vec::new(),
             app_mode:         AppMode::Normal,
+            playbook_picker_idx: 0,
             filter_status:    FilterStatus::All,
             filter_ticker:    String::new(),
-            sort_key:         SortKey::Date,
+            sort_key:         persisted_sort_key,
             sort_desc:        true,
             edit_trade_id:    None,
             edit_fields:      Vec::new(),
@@ -388,7 +409,7 @@ impl AppState {
 
     pub fn reload(&mut self, storage: &storage::Storage) {
         self.trades      = storage.get_all_trades().unwrap_or_default();
-        self.playbooks   = storage.get_all_playbooks().unwrap_or_default();
+        self.playbooks   = { let mut p = storage.get_all_playbooks().unwrap_or_default(); sort_playbooks_by_risk(&mut p); p };
         self.stats              = calculations::build_portfolio_stats(&self.trades, self.account_size, self.current_vix, &self.beta_map, self.spy_price, self.spx_price, self.target_undefined_pct, self.monthly_pnl_target);
         self.perf_stats         = calculations::build_performance_stats(&self.trades, self.account_size, self.risk_free_rate_pct, self.rolling_window);
         self.playbook_analytics = calculations::build_playbook_analytics(&self.trades, &self.playbooks, self.account_size);
@@ -442,38 +463,110 @@ impl AppState {
 
         let sorted = self.filtered_sorted_indices();
 
-        // Phase 1: group into (year, month) buckets, preserving sort order within each bucket
-        let mut buckets: BTreeMap<(i32, u32), Vec<usize>> = BTreeMap::new();
-        for trade_idx in sorted {
-            let t = &self.trades[trade_idx];
-            let key = (t.trade_date.year(), t.trade_date.month());
-            buckets.entry(key).or_default().push(trade_idx);
-        }
+        let mut rows: Vec<VisualRowKind> = Vec::new();
+        let now = chrono::Utc::now();
+        let cur_year  = chrono::Datelike::year(&now);
+        let cur_month = chrono::Datelike::month(&now);
+        // Previous calendar month
+        let (prev_year, prev_month) = if cur_month == 1 {
+            (cur_year - 1, 12u32)
+        } else {
+            (cur_year, cur_month - 1)
+        };
 
-        // Phase 2: emit rows in descending (year, month) order — most recent first
-        let mut rows = Vec::new();
-        let mut last_year: Option<i32> = None;
-
-        for (&(year, month), trade_indices) in buckets.iter().rev() {
-            // Year header (once per year)
-            if last_year != Some(year) {
-                rows.push(VisualRowKind::YearHeader { year });
-                last_year = Some(year);
+        if self.filter_status == FilterStatus::All {
+            // All filter: unified month buckets (open + closed together).
+            // Current month and previous month expanded by default; all others collapsed.
+            // collapsed_months is the exception set:
+            //   recent month in set  → user explicitly collapsed it
+            //   older month in set   → user explicitly expanded it
+            let mut buckets: BTreeMap<(i32, u32), Vec<usize>> = BTreeMap::new();
+            for &ti in &sorted {
+                let key = (self.trades[ti].trade_date.year(), self.trades[ti].trade_date.month());
+                buckets.entry(key).or_default().push(ti);
             }
-            if self.collapsed_years.contains(&year) {
-                continue;
+            let mut last_year: Option<i32> = None;
+            for (&(year, month), trade_indices) in buckets.iter().rev() {
+                if last_year != Some(year) {
+                    rows.push(VisualRowKind::YearHeader { year });
+                    last_year = Some(year);
+                }
+                if self.collapsed_years.contains(&year) { continue; }
+                let is_recent = (year == cur_year && month == cur_month)
+                    || (year == prev_year && month == prev_month);
+                let in_set = self.collapsed_months.contains(&(year, month));
+                // Recent months: expanded unless user collapsed; older: collapsed unless user expanded.
+                let collapsed = if is_recent { in_set } else { !in_set };
+                rows.push(VisualRowKind::MonthHeader { year, month, collapsed, is_open_section: false });
+                if !collapsed {
+                    for &ti in trade_indices {
+                        rows.push(VisualRowKind::Trade(ti));
+                    }
+                }
+            }
+        } else {
+            // All other filters: open trades above, closed below with CLOSED divider.
+            let open_indices: Vec<usize> = sorted.iter().copied()
+                .filter(|&i| self.trades[i].is_open()).collect();
+            let closed_indices: Vec<usize> = sorted.iter().copied()
+                .filter(|&i| !self.trades[i].is_open()).collect();
+
+            // Phase 1 — open trades: all months expanded by default.
+            {
+                let mut buckets: BTreeMap<(i32, u32), Vec<usize>> = BTreeMap::new();
+                for &ti in &open_indices {
+                    let key = (self.trades[ti].trade_date.year(), self.trades[ti].trade_date.month());
+                    buckets.entry(key).or_default().push(ti);
+                }
+                let mut last_year: Option<i32> = None;
+                for (&(year, month), trade_indices) in buckets.iter().rev() {
+                    if last_year != Some(year) {
+                        rows.push(VisualRowKind::YearHeader { year });
+                        last_year = Some(year);
+                    }
+                    if self.collapsed_years.contains(&year) { continue; }
+                    let collapsed = self.open_collapsed_months.contains(&(year, month));
+                    rows.push(VisualRowKind::MonthHeader { year, month, collapsed, is_open_section: true });
+                    if !collapsed {
+                        for &ti in trade_indices {
+                            rows.push(VisualRowKind::Trade(ti));
+                        }
+                    }
+                }
             }
 
-            // Month header (exactly once per month)
-            rows.push(VisualRowKind::MonthHeader { year, month });
+            // Divider between open and closed sections
+            if !open_indices.is_empty() && !closed_indices.is_empty() {
+                rows.push(VisualRowKind::SectionDivider { label: "CLOSED".to_string() });
+            }
 
-            // Trades within the month (unless month is collapsed)
-            if !self.collapsed_months.contains(&(year, month)) {
-                for &ti in trade_indices {
-                    rows.push(VisualRowKind::Trade(ti));
+            // Phase 2 — closed trades: current month expanded, rest collapsed.
+            {
+                let mut buckets: BTreeMap<(i32, u32), Vec<usize>> = BTreeMap::new();
+                for &ti in &closed_indices {
+                    let key = (self.trades[ti].trade_date.year(), self.trades[ti].trade_date.month());
+                    buckets.entry(key).or_default().push(ti);
+                }
+                let mut last_year: Option<i32> = None;
+                for (&(year, month), trade_indices) in buckets.iter().rev() {
+                    if last_year != Some(year) {
+                        rows.push(VisualRowKind::YearHeader { year });
+                        last_year = Some(year);
+                    }
+                    if self.collapsed_years.contains(&year) { continue; }
+                    let is_current = year == cur_year && month == cur_month;
+                    let in_set = self.collapsed_months.contains(&(year, month));
+                    let collapsed = if is_current { in_set } else { !in_set };
+                    rows.push(VisualRowKind::MonthHeader { year, month, collapsed, is_open_section: false });
+                    if !collapsed {
+                        for &ti in trade_indices {
+                            rows.push(VisualRowKind::Trade(ti));
+                        }
+                    }
                 }
             }
         }
+
         self.visual_rows = rows;
     }
 
@@ -616,9 +709,14 @@ impl AppState {
         idxs.sort_by(|&a, &b| {
             let ta = &self.trades[a];
             let tb = &self.trades[b];
+            // Ticker is always ascending A→Z; secondary sort by date desc within each ticker.
+            if self.sort_key == SortKey::Ticker {
+                return ta.ticker.cmp(&tb.ticker)
+                    .then_with(|| tb.trade_date.cmp(&ta.trade_date));
+            }
             let ord = match self.sort_key {
                 SortKey::Date   => ta.trade_date.cmp(&tb.trade_date),
-                SortKey::Ticker => ta.ticker.cmp(&tb.ticker),
+                SortKey::Ticker => unreachable!(),
                 SortKey::Pnl    => {
                     let pa = ta.pnl.unwrap_or(f64::NEG_INFINITY);
                     let pb = tb.pnl.unwrap_or(f64::NEG_INFINITY);
@@ -636,8 +734,8 @@ impl AppState {
                 SortKey::Credit => ta.credit_received.partial_cmp(&tb.credit_received)
                     .unwrap_or(std::cmp::Ordering::Equal),
                 SortKey::PctMax => {
-                    let pa = ta.pnl.map(|p| calculations::calculate_pct_max_profit(p, ta.credit_received, ta.quantity)).unwrap_or(f64::NEG_INFINITY);
-                    let pb = tb.pnl.map(|p| calculations::calculate_pct_max_profit(p, tb.credit_received, tb.quantity)).unwrap_or(f64::NEG_INFINITY);
+                    let pa = ta.pnl.map(|p| calculations::calculate_pct_max_profit(p, &ta.legs, ta.credit_received, ta.quantity, ta.spread_type())).unwrap_or(f64::NEG_INFINITY);
+                    let pb = tb.pnl.map(|p| calculations::calculate_pct_max_profit(p, &tb.legs, tb.credit_received, tb.quantity, tb.spread_type())).unwrap_or(f64::NEG_INFINITY);
                     pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
                 }
             };
@@ -653,7 +751,8 @@ impl AppState {
         match self.visual_rows.get(idx)? {
             VisualRowKind::Trade(ti) => self.trades.get(*ti),
             VisualRowKind::YearHeader { .. } | VisualRowKind::MonthHeader { .. }
-            | VisualRowKind::TickerHeader { .. } | VisualRowKind::ChainHeader { .. } => None,
+            | VisualRowKind::TickerHeader { .. } | VisualRowKind::ChainHeader { .. }
+            | VisualRowKind::SectionDivider { .. } => None,
         }
     }
 
@@ -1107,7 +1206,7 @@ impl AppState {
     /// Apply edit fields back onto a Trade clone, returning it ready to save.
     pub fn build_updated_trade(&self, original: &models::Trade) -> models::Trade {
         let mut t = original.clone();
-        apply_edit_fields_to_trade(&self.edit_fields, &mut t);
+        apply_edit_fields_to_trade(&self.edit_fields, &mut t, self.risk_free_rate_pct / 100.0);
         // Auto-inherit roll_count from parent when this trade is a roll continuation
         if let Some(pid) = t.rolled_from_id {
             if t.roll_count == 0 {
@@ -1121,6 +1220,32 @@ impl AppState {
             let matches = calculations::find_matching_playbooks(&t, &self.playbooks);
             if matches.len() == 1 {
                 t.playbook_id = Some(matches[0]);
+            }
+        }
+        // H3: auto-populate entry Greeks when all are blank and IV + spot are available
+        if t.delta.is_none() && t.theta.is_none() && t.gamma.is_none() && t.vega.is_none() {
+            if let (Some(spot), Some(iv_pct)) = (t.underlying_price.filter(|&s| s > 0.0), t.implied_volatility.filter(|&v| v > 0.0)) {
+                let sigma = if iv_pct > 0.99 { iv_pct / 100.0 } else { iv_pct };
+                let dte = t.entry_dte.unwrap_or(45).max(1);
+                let mut sum_delta = 0.0_f64;
+                let mut sum_theta = 0.0_f64;
+                let mut sum_gamma = 0.0_f64;
+                let mut sum_vega  = 0.0_f64;
+                for leg in &t.legs {
+                    let is_call  = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::LongCall);
+                    let is_short = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::ShortPut);
+                    let (d, th, g, v, _) = calculations::estimate_greeks(spot, leg.strike, dte, 0.045, sigma, is_call, is_short);
+                    sum_delta += d * t.quantity as f64;
+                    sum_theta += th * t.quantity as f64;
+                    sum_gamma += g * t.quantity as f64;
+                    sum_vega  += v * t.quantity as f64;
+                }
+                if sum_delta != 0.0 || sum_theta != 0.0 {
+                    t.delta = Some(sum_delta);
+                    t.theta = Some(sum_theta);
+                    t.gamma = Some(sum_gamma);
+                    t.vega  = Some(sum_vega);
+                }
             }
         }
         t
@@ -1158,6 +1283,112 @@ impl AppState {
         self.new_trade_template = Some(template);
         self.app_mode        = AppMode::EditTrade;
         self.show_detail     = false;
+    }
+
+    /// Open a blank new trade form (no template).
+    pub fn start_new_blank_trade(&mut self) {
+        let now = Utc::now();
+        let exp = now + chrono::Duration::days(45);
+        let strategy = models::StrategyType::ShortPutVertical;
+        let leg_types = models::strategy_leg_template(&strategy);
+        let legs: Vec<models::TradeLeg> = leg_types.into_iter().map(|lt| models::TradeLeg {
+            leg_type: lt, strike: 0.0, premium: 0.0, close_premium: None, expiration_date: None, quantity: None,
+        }).collect();
+        let template = models::Trade {
+            id: 0, ticker: String::new(), strategy,
+            quantity: 1, short_strike: 0.0, long_strike: 0.0,
+            short_premium: 0.0, long_premium: 0.0, credit_received: 0.0,
+            entry_date: now, exit_date: None, expiration_date: exp, trade_date: now,
+            back_month_expiration: None, pnl: None, debit_paid: None,
+            delta: None, theta: None, gamma: None, vega: None, pop: None,
+            underlying_price: None, underlying_price_at_close: None,
+            iv_rank: None, iv_percentile: None, vix_at_entry: self.current_vix,
+            implied_volatility: None, commission: None,
+            entry_reason: None, exit_reason: None, management_rule: None, target_profit_pct: None,
+            spread_width: None, bpr: None, sector: None, entry_dte: None, dte_at_close: None,
+            iv_at_close: None, delta_at_close: None, theta_at_close: None,
+            gamma_at_close: None, vega_at_close: None, ex_dividend_date: None,
+            roll_count: 0, playbook_id: None, rolled_from_id: None,
+            is_earnings_play: false, is_tested: false, next_earnings: None,
+            trade_grade: None, grade_notes: None, legs, tags: Vec::new(), notes: None,
+            bid_ask_spread_at_entry: None, fill_vs_mid: None,
+            was_assigned: false, assigned_shares: None, cost_basis: None, close_notes: None,
+            closed_at_target: false,
+            cached_max_profit: None, cached_max_loss: None, hv20_at_entry: None,
+        };
+        self.edit_trade_id      = Some(0);
+        self.edit_fields        = build_edit_fields(&template);
+        self.edit_field_idx     = 0;
+        self.edit_scroll        = 0;
+        self.new_trade_template = Some(template);
+        self.app_mode           = AppMode::EditTrade;
+        self.show_detail        = false;
+    }
+
+    /// Open the playbook picker popup (N key). Falls back to blank trade if no playbooks.
+    pub fn start_playbook_picker(&mut self) {
+        if self.playbooks.is_empty() {
+            self.start_new_blank_trade();
+        } else {
+            self.playbook_picker_idx = 0;
+            self.app_mode = AppMode::PlaybookPicker;
+            self.show_detail = false;
+        }
+    }
+
+    /// Create a new blank trade pre-filled from the chosen playbook, then open the edit form.
+    pub fn start_new_trade_from_playbook(&mut self, pb: &models::PlaybookStrategy) {
+        let now = Utc::now();
+        // Target DTE: midpoint of playbook criteria, fallback 45
+        let target_dte = pb.entry_criteria.as_ref().and_then(|ec| {
+            match (ec.min_dte, ec.max_dte) {
+                (Some(lo), Some(hi)) => Some((lo + hi) / 2),
+                (Some(lo), None)     => Some(lo),
+                (None, Some(hi))     => Some(hi),
+                _                   => None,
+            }
+        }).unwrap_or(45);
+        let exp = now + chrono::Duration::days(target_dte as i64);
+        let strategy = pb.spread_type.as_deref()
+            .map(models::StrategyType::from_str)
+            .unwrap_or(models::StrategyType::ShortPutVertical);
+        let leg_types = models::strategy_leg_template(&strategy);
+        let legs: Vec<models::TradeLeg> = leg_types.into_iter().map(|lt| models::TradeLeg {
+            leg_type: lt, strike: 0.0, premium: 0.0, close_premium: None, expiration_date: None, quantity: None,
+        }).collect();
+        let target_profit_pct = pb.entry_criteria.as_ref()
+            .and_then(|ec| ec.target_profit_pct.or(ec.profit_target_pct));
+        let management_rule = pb.entry_criteria.as_ref()
+            .and_then(|ec| ec.management_rule.clone());
+        let template = models::Trade {
+            id: 0, ticker: String::new(), strategy,
+            quantity: 1, short_strike: 0.0, long_strike: 0.0,
+            short_premium: 0.0, long_premium: 0.0, credit_received: 0.0,
+            entry_date: now, exit_date: None, expiration_date: exp, trade_date: now,
+            back_month_expiration: None, pnl: None, debit_paid: None,
+            delta: None, theta: None, gamma: None, vega: None, pop: None,
+            underlying_price: None, underlying_price_at_close: None,
+            iv_rank: None, iv_percentile: None, vix_at_entry: self.current_vix,
+            implied_volatility: None, commission: None,
+            entry_reason: None, exit_reason: None, management_rule, target_profit_pct,
+            spread_width: None, bpr: None, sector: None, entry_dte: None, dte_at_close: None,
+            iv_at_close: None, delta_at_close: None, theta_at_close: None,
+            gamma_at_close: None, vega_at_close: None, ex_dividend_date: None,
+            roll_count: 0, playbook_id: Some(pb.id), rolled_from_id: None,
+            is_earnings_play: false, is_tested: false, next_earnings: None,
+            trade_grade: None, grade_notes: None, legs, tags: Vec::new(), notes: None,
+            bid_ask_spread_at_entry: None, fill_vs_mid: None,
+            was_assigned: false, assigned_shares: None, cost_basis: None, close_notes: None,
+            closed_at_target: false,
+            cached_max_profit: None, cached_max_loss: None, hv20_at_entry: None,
+        };
+        self.edit_trade_id      = Some(0);
+        self.edit_fields        = build_edit_fields(&template);
+        self.edit_field_idx     = 0;
+        self.edit_scroll        = 0;
+        self.new_trade_template = Some(template);
+        self.app_mode           = AppMode::EditTrade;
+        self.show_detail        = false;
     }
 
     pub fn close_key_char(&mut self, c: char) {
@@ -1700,7 +1931,7 @@ fn field_select_value(fields: &[EditField], label: &str) -> Option<String> {
     })
 }
 
-fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
+fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade, risk_free_rate: f64) {
     // ── Strategy
     let sidx = fields.iter().find(|f| f.label == "Strategy")
         .and_then(|f| f.value.parse::<usize>().ok()).unwrap_or(0);
@@ -1750,6 +1981,10 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     // ── Exit
     t.exit_date   = parse_date_field(fields, "Exit Date");
     t.exit_reason = field_select_value(fields, "Exit Reason");
+    // Auto-compute dte_at_close whenever exit_date is set (covers expiry, manual close, edit)
+    if let Some(exit) = t.exit_date {
+        t.dte_at_close = Some((t.expiration_date.date_naive() - exit.date_naive()).num_days().max(0) as i32);
+    }
 
     // ── Greeks
     t.delta = field_opt_f64(fields, "Delta");
@@ -1763,7 +1998,12 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
     t.iv_rank                   = field_opt_f64(fields, "IVR %");
     t.iv_percentile             = field_opt_f64(fields, "IV Pct %");
     t.vix_at_entry              = field_opt_f64(fields, "VIX at Entry");
-    t.implied_volatility        = field_opt_f64(fields, "Impl Vol %");
+    // IV storage convention: always store as whole-% (25.0 = 25% IV, 350.0 = 350% IV).
+    // If user enters a decimal (e.g. 0.25 or 3.5), normalize on save. This ensures the
+    // `iv > 2.0 → /100` guard in calculations.rs works correctly for all IV regimes,
+    // including extreme meme-stock/biotech IV values like 350%.
+    t.implied_volatility = field_opt_f64(fields, "Impl Vol %")
+        .map(|v| if v > 0.0 && v < 2.0 { v * 100.0 } else { v });
     t.underlying_price_at_close = field_opt_f64(fields, "Underlying @ Close");
 
     // ── Live Greek Estimation (if blank)
@@ -1780,8 +2020,8 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
         let mut v_total = 0.0;
 
         for leg in &t.legs {
-            let (d, th, g, v) = calculations::estimate_greeks(
-                up, leg.strike, dte, 0.045, iv, 
+            let (d, th, g, v, _) = calculations::estimate_greeks(
+                up, leg.strike, dte, 0.045, iv,
                 leg.leg_type.is_call(), leg.leg_type.is_short()
             );
             d_total += d;
@@ -1793,7 +2033,7 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
         t.theta = Some(t_total);
         t.gamma = Some(g_total);
         t.vega  = Some(v_total);
-        t.pop   = Some(calculations::estimate_pop(t));
+        t.pop   = Some(calculations::estimate_pop(t, risk_free_rate));
     }
 
     // ── Meta
@@ -1842,6 +2082,21 @@ fn apply_edit_fields_to_trade(fields: &[EditField], t: &mut models::Trade) {
             t.dte_at_close = Some((t.expiration_date.date_naive() - exit.date_naive()).num_days().max(0) as i32);
         }
     }
+
+    // H1: Cache max_profit and max_loss to avoid per-frame sweeps
+    if !t.legs.is_empty() {
+        let spread_str = t.strategy.as_str();
+        let mp = calculations::calculate_max_profit_from_legs(&t.legs, t.credit_received, t.quantity, spread_str);
+        let ml = calculations::calculate_max_loss_from_legs(&t.legs, t.credit_received, t.quantity, spread_str);
+        t.cached_max_profit = if mp > 0.0 { Some(mp) } else { None };
+        t.cached_max_loss   = if ml > 0.0 { Some(ml) } else { None };
+    }
+
+    // H5: Always populate BPR when not already set (or recompute if legs changed)
+    if t.bpr.is_none() && !t.legs.is_empty() {
+        let b = calculations::calculate_bpr(&t.legs, t.credit_received, t.quantity, t.underlying_price, t.strategy.as_str());
+        if b > 0.0 { t.bpr = Some(b); }
+    }
 }
 
 fn parse_date_field(fields: &[EditField], label: &str) -> Option<chrono::DateTime<Utc>> {
@@ -1867,7 +2122,7 @@ fn build_close_fields(t: &models::Trade) -> Vec<EditField> {
 
     let exit_reasons = vec!["closed".to_string(), "expired".to_string(), "rolled".to_string(), "stopped".to_string()];
     f.push(EditField::select("Exit Reason", "0", exit_reasons));
-    f.push(EditField::number("Underlying @ Close", &t.underlying_price.map(|v| format!("{:.2}", v)).unwrap_or_default()));
+    f.push(EditField::number("Underlying @ Close", &t.underlying_price_at_close.or(t.underlying_price).map(|v| format!("{:.2}", v)).unwrap_or_default()));
     f.push(EditField::number("IV at Close",    &t.iv_at_close.map(|v| format!("{:.1}", v)).unwrap_or_default()));
     f.push(EditField::number("Delta at Close", &t.delta_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
     f.push(EditField::number("Theta at Close", &t.theta_at_close.map(|v| format!("{:.4}", v)).unwrap_or_default()));
@@ -2277,8 +2532,8 @@ fn apply_admin_fields(fields: &[EditField], storage: &storage::Storage)
 // Column visibility helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn parse_col_visibility(s: &str) -> [bool; 25] {
-    let mut vis = [true; 25];
+fn parse_col_visibility(s: &str) -> [bool; 28] {
+    let mut vis = [true; 28];
     let chars: Vec<char> = s.chars().collect();
     let padded: Vec<char> = if chars.len() == 17 {
         // Legacy 17-char: insert BPR at pos 9, BPR% at pos 10
@@ -2294,18 +2549,21 @@ fn parse_col_visibility(s: &str) -> [bool; 25] {
     } else {
         chars
     };
-    // Pad to 25: IVP (22) ON, P50 (23) ON, θ/d (24) ON
+    // Pad to 28: IVP (22) ON, P50 (23) ON, θ/d (24) ON, NetΔ (25) OFF, Θ$/d (26) OFF, Vega (27) OFF
     let mut padded = padded;
     while padded.len() < 25 {
         padded.push('1');
     }
-    for (i, ch) in padded.iter().take(25).enumerate() {
+    while padded.len() < 28 {
+        padded.push('0');
+    }
+    for (i, ch) in padded.iter().take(28).enumerate() {
         vis[i] = *ch != '0';
     }
     vis
 }
 
-fn col_visibility_to_string(vis: &[bool; 25]) -> String {
+fn col_visibility_to_string(vis: &[bool; 28]) -> String {
     vis.iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
@@ -2332,11 +2590,11 @@ fn perf_section_count(subtab: usize) -> usize {
 /// Maps (subtab, cursor) → `perf_collapsed` global index.
 /// Overview map: [0=Health, 1=Returns]
 /// Charts map:   [3=Growth]
-/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission, 14=0DteMonthly]
+/// Analytics map: [2=Advanced, 4=Strategy, 5=Ticker, 6=Monthly, 7=IVR, 8=VIX, 9=DTE, 10=IVREntry, 11=PnlDist, 12=Held, 13=Commission, 14=0DteMonthly, 15=Earnings]
 fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
     const OVERVIEW_MAP:  [usize; 2]  = [0, 1];
     const CHARTS_MAP:    [usize; 1]  = [3];
-    const ANALYTICS_MAP: [usize; 12] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    const ANALYTICS_MAP: [usize; 13] = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     match subtab {
         0 => OVERVIEW_MAP.get(cursor).copied(),
         1 => CHARTS_MAP.get(cursor).copied(),
@@ -2347,6 +2605,19 @@ fn perf_cursor_to_gi(subtab: usize, cursor: usize) -> Option<usize> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main
+/// Sort playbooks: Undefined Risk first, Defined Risk second; alphabetical within each group.
+fn sort_playbooks_by_risk(playbooks: &mut Vec<models::PlaybookStrategy>) {
+    playbooks.sort_by(|a, b| {
+        let a_def = a.spread_type.as_deref()
+            .and_then(|s| Some(models::StrategyType::from_str(s).is_defined_risk()))
+            .unwrap_or(false);
+        let b_def = b.spread_type.as_deref()
+            .and_then(|s| Some(models::StrategyType::from_str(s).is_defined_risk()))
+            .unwrap_or(false);
+        a_def.cmp(&b_def).then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -2360,6 +2631,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _ = storage.ensure_put_bwb_playbook();
     let _ = storage.ensure_default_playbooks();
     let _ = storage.backfill_ivr_all_trades();
+    let _ = storage.backfill_ivp_all_trades();
     let mut app = AppState::new(&storage);
 
     // ── Yahoo Finance startup fetch (10 s timeout)
@@ -2518,16 +2790,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Refresh dashboard open positions and risk distribution scroll limits
         if app.selected_tab == 0 {
             if let Ok(size) = term.size() {
-                let content_h    = size.height.saturating_sub(4) as usize; // tabs(3)+footer(1)
-                let lower_h      = content_h.saturating_sub(9);            // top KPI row
-                let open_panel_h = lower_h * 60 / 100;                     // Percentage(60)
-                let visible_rows = open_panel_h.saturating_sub(3);         // borders+header
-                let open_count   = app.trades.iter().filter(|t| t.is_open()).count();
-                app.dash_open_max_scroll = open_count.saturating_sub(visible_rows);
-                // Risk distribution panel: same height as open panel, minus borders
-                let risk_visible_h = lower_h.saturating_sub(2);
-                app.dash_risk_max_scroll = theta_vault_rust::ui::count_risk_lines(&app.trades, &app.stats)
-                    .saturating_sub(risk_visible_h);
+                let open_count = app.trades.iter().filter(|t| t.is_open()).count();
+                let total_risk_lines = theta_vault_rust::ui::count_risk_lines(&app.trades, &app.stats);
+
+                // Layout: tab(3) + status(1) + footer(1) = 5 overhead; kpi row = 9 (wide) or 18 (narrow); footer2 = 1
+                let kpi_h: u16 = if size.width >= 130 { 9 } else { 18 };
+                let bottom_h = size.height.saturating_sub(5 + kpi_h + 1) as usize;
+
+                // Open positions: right 65% of bottom, then top 50% of that; minus 2 borders + 1 header
+                let bot_right_h = (bottom_h * 65) / 100;
+                let open_panel_h = bot_right_h / 2;
+                let visible_open = open_panel_h.saturating_sub(3).max(1);
+                app.dash_open_max_scroll = open_count.saturating_sub(visible_open);
+
+                // Risk distribution: left panel full bottom height; minus 2 borders
+                let visible_risk = bottom_h.saturating_sub(2).max(1);
+                app.dash_risk_max_scroll = total_risk_lines.saturating_sub(visible_risk);
             }
         }
 
@@ -2575,11 +2853,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let right_n = theta_vault_rust::ui::count_detail_lines_right(&app.trades[*ti], &app.selected_trade_chain, &app.playbooks, app.account_size);
                     app.detail_total_lines = left_n.max(right_n);
                     if let Ok(size) = term.size() {
-                        // Detail panel = 45% of content area (tabs+footer = 4 rows), minus 2 borders
-                        let content_h = size.height.saturating_sub(4) as usize;
+                        // Detail panel = 45% of content area.
+                        // Overhead: tab bar(3) + status bar(1) + footer(1) + filter bar(1) = 6 rows
+                        let content_h = size.height.saturating_sub(6) as usize;
                         let detail_h  = content_h * 45 / 100;
                         let visible   = detail_h.saturating_sub(2);
-                        app.detail_max_scroll = app.detail_total_lines.saturating_sub(visible) as u16;
+                        // Add 8-line safety margin so conditional lines never get cut off
+                        app.detail_max_scroll = app.detail_total_lines.saturating_sub(visible).saturating_add(8) as u16;
                     }
                 }
             }
@@ -2653,7 +2933,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &app.live_prices,
             &app.perf_collapsed,
             app.perf_section_cursor,
-            &app.col_visibility,
+            if app.filter_status == FilterStatus::Open { &app.open_col_visibility } else { &app.col_visibility },
             app.show_col_picker,
             app.journal_chain_view,
             app.default_profit_target_pct,
@@ -2664,6 +2944,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &app.playbook_analytics,
             &app.journal_note_buf,
             app.journal_note_trade_id,
+            app.playbook_picker_idx,
+            app.edit_trade_id == Some(0),
         ))?;
         // Decrement export status tick
         if app.export_status_tick > 0 {
@@ -2820,6 +3102,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
+            // ── Playbook picker mode ─────────────────────────────────────────
+            if app.app_mode == AppMode::PlaybookPicker {
+                let n = app.playbooks.len() + 1; // +1 for "[Blank]" at index 0
+                match key.code {
+                    KeyCode::Esc => { app.app_mode = AppMode::Normal; }
+                    KeyCode::Up   | KeyCode::Char('k') => {
+                        app.playbook_picker_idx = app.playbook_picker_idx.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.playbook_picker_idx + 1 < n {
+                            app.playbook_picker_idx += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if app.playbook_picker_idx == 0 {
+                            app.start_new_blank_trade();
+                        } else {
+                            let idx = app.playbook_picker_idx - 1;
+                            if let Some(pb) = app.playbooks.get(idx).cloned() {
+                                app.start_new_trade_from_playbook(&pb);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // ── Edit trade mode ──────────────────────────────────────────────
             if app.app_mode == AppMode::EditTrade {
                 match key.code {
@@ -2871,6 +3181,65 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             }
                                         }
                                     }
+                                    if updated.iv_percentile.is_none() {
+                                        if let Some(iv) = updated.implied_volatility {
+                                            if let Ok(Some(ivp)) = storage.compute_ivp_for_ticker(&updated.ticker, iv) {
+                                                updated.iv_percentile = Some(ivp);
+                                            }
+                                        }
+                                    }
+                                    // Auto-populate computed fields before save
+                                    {
+                                        let stype = updated.spread_type();
+                                        if updated.entry_dte.is_none() {
+                                            let d = (updated.expiration_date.date_naive() - updated.entry_date.date_naive()).num_days();
+                                            if d > 0 { updated.entry_dte = Some(d as i32); }
+                                        }
+                                        if updated.spread_width.map_or(true, |w| w == 0.0) {
+                                            let sw = calculations::compute_spread_width_from_legs(&updated.legs);
+                                            if sw > 0.0 { updated.spread_width = Some(sw); }
+                                        }
+                                        if updated.bpr.is_none() {
+                                            let b = calculations::calculate_bpr(&updated.legs, updated.credit_received, updated.quantity, updated.underlying_price, stype);
+                                            if b > 0.0 { updated.bpr = Some(b); }
+                                        }
+                                        if updated.delta.is_none() && updated.theta.is_none() && updated.gamma.is_none() && updated.vega.is_none() {
+                                            if let (Some(spot), Some(iv_raw), Some(dte)) = (updated.underlying_price, updated.implied_volatility, updated.entry_dte) {
+                                                if spot > 0.0 && iv_raw > 0.0 && dte > 0 {
+                                                    let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else { iv_raw };
+                                                    let qty = updated.quantity as f64;
+                                                    let (mut nd, mut nth, mut ng, mut nv) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+                                                    for leg in &updated.legs {
+                                                        let lq = leg.quantity.unwrap_or(1) as f64;
+                                                        let is_call  = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::LongCall);
+                                                        let is_short = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::ShortPut);
+                                                        let (d, th, g, v, _) = calculations::estimate_greeks(spot, leg.strike, dte, 0.045, iv, is_call, is_short);
+                                                        nd += d * lq; nth += th * lq; ng += g * lq; nv += v * lq;
+                                                    }
+                                                    updated.delta = Some(nd * qty);
+                                                    updated.theta = Some(nth * qty);
+                                                    updated.gamma = Some(ng * qty);
+                                                    updated.vega  = Some(nv * qty);
+                                                }
+                                            }
+                                        }
+                                        if updated.pop.is_none() {
+                                            let p = calculations::estimate_pop(&updated, app.risk_free_rate_pct / 100.0);
+                                            if p > 0.0 { updated.pop = Some(p); }
+                                        }
+                                    }
+                                    // H7: pre-save playbook compliance check (non-blocking warning)
+                                    if let Some(pb_id) = updated.playbook_id {
+                                        if let Some(pb) = app.playbooks.iter().find(|p| p.id == pb_id) {
+                                            if let Some(ec) = &pb.entry_criteria {
+                                                let violations = calculations::check_playbook_compliance(&updated, ec, app.account_size);
+                                                if !violations.is_empty() {
+                                                    app.export_status = Some(format!("⚠ Playbook violations: {}", violations.iter().map(|v| v.rule.as_str()).collect::<Vec<_>>().join(" | ")));
+                                                    app.export_status_tick = 240;
+                                                }
+                                            }
+                                        }
+                                    }
                                     let _ = storage.insert_trade(&updated);
                                     app.cancel_mode();
                                     app.reload(&storage);
@@ -2899,11 +3268,70 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                     }
                                 }
-                                // Auto-compute IVR if implied_volatility is set and iv_rank is blank
+                                // Auto-compute IVR/IVP if implied_volatility is set and fields are blank
                                 if updated.iv_rank.is_none() {
                                     if let Some(iv) = updated.implied_volatility {
                                         if let Ok(Some(ivr)) = storage.compute_ivr_for_ticker(&updated.ticker, iv) {
                                             updated.iv_rank = Some(ivr);
+                                        }
+                                    }
+                                }
+                                if updated.iv_percentile.is_none() {
+                                    if let Some(iv) = updated.implied_volatility {
+                                        if let Ok(Some(ivp)) = storage.compute_ivp_for_ticker(&updated.ticker, iv) {
+                                            updated.iv_percentile = Some(ivp);
+                                        }
+                                    }
+                                }
+                                // Auto-populate computed fields before save
+                                {
+                                    let stype = updated.spread_type();
+                                    if updated.entry_dte.is_none() {
+                                        let d = (updated.expiration_date.date_naive() - updated.entry_date.date_naive()).num_days();
+                                        if d > 0 { updated.entry_dte = Some(d as i32); }
+                                    }
+                                    if updated.spread_width.map_or(true, |w| w == 0.0) {
+                                        let sw = calculations::compute_spread_width_from_legs(&updated.legs);
+                                        if sw > 0.0 { updated.spread_width = Some(sw); }
+                                    }
+                                    if updated.bpr.is_none() {
+                                        let b = calculations::calculate_bpr(&updated.legs, updated.credit_received, updated.quantity, updated.underlying_price, stype);
+                                        if b > 0.0 { updated.bpr = Some(b); }
+                                    }
+                                    if updated.delta.is_none() && updated.theta.is_none() && updated.gamma.is_none() && updated.vega.is_none() {
+                                        if let (Some(spot), Some(iv_raw), Some(dte)) = (updated.underlying_price, updated.implied_volatility, updated.entry_dte) {
+                                            if spot > 0.0 && iv_raw > 0.0 && dte > 0 {
+                                                let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else { iv_raw };
+                                                let qty = updated.quantity as f64;
+                                                let (mut nd, mut nth, mut ng, mut nv) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+                                                for leg in &updated.legs {
+                                                    let lq = leg.quantity.unwrap_or(1) as f64;
+                                                    let is_call  = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::LongCall);
+                                                    let is_short = matches!(leg.leg_type, models::LegType::ShortCall | models::LegType::ShortPut);
+                                                    let (d, th, g, v, _) = calculations::estimate_greeks(spot, leg.strike, dte, 0.045, iv, is_call, is_short);
+                                                    nd += d * lq; nth += th * lq; ng += g * lq; nv += v * lq;
+                                                }
+                                                updated.delta = Some(nd * qty);
+                                                updated.theta = Some(nth * qty);
+                                                updated.gamma = Some(ng * qty);
+                                                updated.vega  = Some(nv * qty);
+                                            }
+                                        }
+                                    }
+                                    if updated.pop.is_none() {
+                                        let p = calculations::estimate_pop(&updated, app.risk_free_rate_pct / 100.0);
+                                        if p > 0.0 { updated.pop = Some(p); }
+                                    }
+                                }
+                                // H7: pre-save playbook compliance check (non-blocking warning)
+                                if let Some(pb_id) = updated.playbook_id {
+                                    if let Some(pb) = app.playbooks.iter().find(|p| p.id == pb_id) {
+                                        if let Some(ec) = &pb.entry_criteria {
+                                            let violations = calculations::check_playbook_compliance(&updated, ec, app.account_size);
+                                            if !violations.is_empty() {
+                                                app.export_status = Some(format!("⚠ Playbook violations: {}", violations.iter().map(|v| v.rule.as_str()).collect::<Vec<_>>().join(" | ")));
+                                                app.export_status_tick = 240;
+                                            }
                                         }
                                     }
                                 }
@@ -3196,6 +3624,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
+            // ── Column picker: intercept ALL keys before global handlers ─────
+            // (q=quit and r=reload fire before the journal tab arm otherwise)
+            if app.show_col_picker && app.selected_tab == 1 {
+                let is_open_filter = app.filter_status == FilterStatus::Open;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('v') => {
+                        app.show_col_picker = false;
+                        if is_open_filter {
+                            let s = col_visibility_to_string(&app.open_col_visibility);
+                            let _ = storage.set_setting("open_col_visibility", &s);
+                        } else {
+                            let s = col_visibility_to_string(&app.col_visibility);
+                            let _ = storage.set_setting("col_visibility", &s);
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        let idx: Option<usize> = match c {
+                            '1' => Some(0), '2' => Some(1), '3' => Some(2),
+                            '4' => Some(3), '5' => Some(4), '6' => Some(5),
+                            '7' => Some(6), '8' => Some(7), '9' => Some(8),
+                            'a' => Some(9),  // BPR
+                            'b' => Some(10), // BPR%
+                            'c' => Some(11), // MaxPft
+                            'd' => Some(12), // P&L
+                            'e' => Some(13), // ROC%
+                            'f' => Some(14), // $V/d
+                            'g' => Some(15), // DTE
+                            'h' => Some(16), // Exit
+                            'i' => Some(17), // Held
+                            'j' => Some(18), // Status
+                            'k' => Some(19), // OTM%
+                            'l' => Some(20), // EM
+                            'm' => Some(21), // Mgmt
+                            'n' => Some(22), // IVP
+                            'o' => Some(23), // P50
+                            'p' => Some(24), // θ/d
+                            'q' => Some(25), // Net Δ
+                            'r' => Some(26), // Θ$/d
+                            's' => Some(27), // Vega
+                            _ => None,
+                        };
+                        if let Some(i) = idx {
+                            if is_open_filter {
+                                app.open_col_visibility[i] = !app.open_col_visibility[i];
+                            } else {
+                                app.col_visibility[i] = !app.col_visibility[i];
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // ── Normal mode ──────────────────────────────────────────────────
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => break,
@@ -3307,11 +3789,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 // Performance analytics A/B/C section toggle (sections 10-12 → A/B/C)
-                KeyCode::Char(c) if app.selected_tab == 5 && app.perf_subtab == 2 && matches!(c.to_ascii_lowercase(), 'a'|'b'|'c') => {
+                KeyCode::Char(c) if app.selected_tab == 5 && app.perf_subtab == 2 && matches!(c.to_ascii_lowercase(), 'a'|'b'|'c'|'d') => {
                     let gi: Option<usize> = match c.to_ascii_lowercase() {
                         'a' => Some(12),
                         'b' => Some(13),
                         'c' => Some(14),
+                        'd' => Some(15),
                         _   => None,
                     };
                     if let Some(gi) = gi {
@@ -3346,11 +3829,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ if app.selected_tab == 1 => {
                     // Column picker intercepts number/letter keys when open
                     if app.show_col_picker {
+                        let is_open_filter = app.filter_status == FilterStatus::Open;
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('v') => {
                                 app.show_col_picker = false;
-                                let s = col_visibility_to_string(&app.col_visibility);
-                                let _ = storage.set_setting("col_visibility", &s);
+                                if is_open_filter {
+                                    let s = col_visibility_to_string(&app.open_col_visibility);
+                                    let _ = storage.set_setting("open_col_visibility", &s);
+                                } else {
+                                    let s = col_visibility_to_string(&app.col_visibility);
+                                    let _ = storage.set_setting("col_visibility", &s);
+                                }
                             }
                             KeyCode::Char(c) => {
                                 let idx: Option<usize> = match c {
@@ -3373,10 +3862,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     'n' => Some(22), // IVP
                                     'o' => Some(23), // P50
                                     'p' => Some(24), // θ/d
+                                    'q' => Some(25), // Net Δ
+                                    'r' => Some(26), // Θ$/d
+                                    's' => Some(27), // Vega
                                     _ => None,
                                 };
                                 if let Some(i) = idx {
-                                    app.col_visibility[i] = !app.col_visibility[i];
+                                    if is_open_filter {
+                                        app.open_col_visibility[i] = !app.open_col_visibility[i];
+                                    } else {
+                                        app.col_visibility[i] = !app.col_visibility[i];
+                                    }
                                 }
                             }
                             _ => {}
@@ -3409,6 +3905,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('s') => {
                             app.sort_key = app.sort_key.next();
                             app.rebuild_visual_rows();
+                            let key_str = format!("{:?}", app.sort_key);
+                            let _ = storage.set_setting("sort_key", &key_str);
                         }
                         // Flip sort direction
                         KeyCode::Char('S') => {
@@ -3435,10 +3933,57 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 app.detail_scroll = 0;
                             }
                         }
+                        // New blank trade
+                        KeyCode::Char('n') => {
+                            app.start_new_blank_trade();
+                        }
+                        // New trade from playbook template picker
+                        KeyCode::Char('N') => {
+                            app.start_playbook_picker();
+                        }
                         // Edit trade
-                        KeyCode::Char('e') | KeyCode::Char('E') => {
+                        KeyCode::Char('e') => {
                             if let Some(t) = app.selected_trade_cloned() {
                                 app.start_edit(&t);
+                            }
+                        }
+                        // P5: Batch expire — close all open trades whose expiration_date ≤ today
+                        KeyCode::Char('E') => {
+                            let today = Utc::now();
+                            let today_date = today.date_naive();
+                            let expired_ids: Vec<i32> = app.trades.iter()
+                                .filter(|t| t.is_open() && t.expiration_date.date_naive() <= today_date)
+                                .map(|t| t.id)
+                                .collect();
+                            if expired_ids.is_empty() {
+                                app.export_status = Some("No open trades expiring today or earlier".to_string());
+                                app.export_status_tick = 120;
+                            } else {
+                                let n = expired_ids.len();
+                                let mut ok = 0usize;
+                                for tid in &expired_ids {
+                                    if let Some(src) = app.trades.iter().find(|t| t.id == *tid).cloned() {
+                                        let mut closed = src.clone();
+                                        let comm = closed.commission.unwrap_or(0.0);
+                                        closed.exit_date        = Some(today);
+                                        closed.exit_reason      = Some("expired".to_string());
+                                        closed.debit_paid       = Some(0.0);
+                                        closed.dte_at_close     = Some(0);
+                                        closed.closed_at_target = false;
+                                        // Expired worthless: P&L = full credit kept - commissions
+                                        let gross = closed.credit_received * 100.0 * closed.quantity as f64;
+                                        closed.pnl              = Some(gross - comm);
+                                        for leg in closed.legs.iter_mut() {
+                                            leg.close_premium = Some(0.0);
+                                        }
+                                        if storage.update_trade(*tid, &closed).is_ok() {
+                                            ok += 1;
+                                        }
+                                    }
+                                }
+                                app.reload(&storage);
+                                app.export_status = Some(format!("✓ Expired {}/{} trades worthless", ok, n));
+                                app.export_status_tick = 180;
                             }
                         }
                         // Roll trade (UI 7): open new trade form pre-populated from selected
@@ -3453,7 +3998,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('c') | KeyCode::Char('C') => {
                             if let Some(t) = app.selected_trade_cloned() {
                                 if t.is_open() {
-                                    app.start_close(&t);
+                                    // Pre-fill close form with already-cached live prices (no blocking fetch)
+                                    let mut t_close = t.clone();
+                                    let ticker = t.ticker.clone();
+                                    if let Some(&px) = app.live_prices.get(&ticker) {
+                                        t_close.underlying_price_at_close = Some(px);
+                                    }
+                                    app.start_close(&t_close);
                                 }
                             }
                         }
@@ -3490,12 +4041,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             app.table_state.select(Some(len.saturating_sub(1)));
                                         }
                                     }
-                                    Some(VisualRowKind::MonthHeader { year, month }) => {
+                                    Some(VisualRowKind::MonthHeader { year, month, is_open_section, .. }) => {
                                         let key = (year, month);
-                                        if app.collapsed_months.contains(&key) {
-                                            app.collapsed_months.remove(&key);
+                                        if is_open_section {
+                                            if app.open_collapsed_months.contains(&key) { app.open_collapsed_months.remove(&key); }
+                                            else { app.open_collapsed_months.insert(key); }
                                         } else {
-                                            app.collapsed_months.insert(key);
+                                            if app.collapsed_months.contains(&key) { app.collapsed_months.remove(&key); }
+                                            else { app.collapsed_months.insert(key); }
                                         }
                                         app.rebuild_visual_rows();
                                         let len = app.visual_rows.len();
@@ -3515,7 +4068,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         app.detail_scroll = 0;
                                     }
                                     Some(VisualRowKind::TickerHeader { .. })
-                                    | Some(VisualRowKind::ChainHeader { .. }) => {}
+                                    | Some(VisualRowKind::ChainHeader { .. })
+                                    | Some(VisualRowKind::SectionDivider { .. }) => {}
                                     None => {}
                                 }
                             }

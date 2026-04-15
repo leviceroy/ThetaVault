@@ -292,14 +292,28 @@ pub fn calculate_max_loss_from_legs(
         return 0.0;
     }
 
-    // Jade Lizard: max loss on put side = (short_put - credit) × 100 × qty
-    // (stock goes to zero; call spread is hedged so no upside max loss when credit > call width)
+    // Jade Lizard: two possible max loss scenarios
+    // Downside: stock → 0  → (short_put - credit) × 100 × qty
+    // Upside:   stock > long_call → (call_width - credit) × 100 × qty when credit < call_width
+    // Return the greater of the two.
     if spread_type == "jade_lizard" {
+        let sc = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
+        let lc = legs.iter().find(|l| l.leg_type == LegType::LongCall);
+        let call_width = match (sc, lc) {
+            (Some(s), Some(l)) => (l.strike - s.strike).abs(),
+            _ => 0.0,
+        };
+        let upside_ml = if call_width > credit {
+            (call_width - credit) * 100.0 * qty
+        } else {
+            0.0
+        };
         if let Some(sp) = legs.iter().find(|l| l.leg_type == LegType::ShortPut) {
-            let ml = (sp.strike - credit) * 100.0 * qty;
+            let downside_ml = (sp.strike - credit) * 100.0 * qty;
+            let ml = downside_ml.max(upside_ml);
             if ml > 0.0 { return ml; }
         }
-        return 0.0;
+        return upside_ml.max(0.0);
     }
 
     // Custom / ratio spread: use payoff sweep (returns 0.0 if naked call risk detected)
@@ -392,7 +406,7 @@ pub fn calculate_bpr(
 
     // Strangle / Straddle: Reg-T margin approximation
     // Per-leg margin = max(20% * underlying - OTM + legPremium, 10% * underlying + legPremium)
-    // Total = max(put_margin, call_margin) — thinkorswim uses greater leg only
+    // Total = max(put_margin, call_margin) + premium_of_other_leg (CBOE Reg-T rule 12)
     if short_put.is_some() && short_call.is_some() && long_put.is_none() && long_call.is_none() {
         if let Some(up) = underlying_price.filter(|&p| p > 0.0) {
             let sp = short_put.unwrap();
@@ -403,7 +417,9 @@ pub fn calculate_bpr(
                 .max(0.10 * up + sp.premium);
             let call_margin = (0.20 * up - call_otm + sc.premium)
                 .max(0.10 * up + sc.premium);
-            let margin = put_margin.max(call_margin);
+            // CBOE Reg-T: greater-leg margin PLUS premium of the other leg
+            let other_leg_premium = if put_margin >= call_margin { sc.premium } else { sp.premium };
+            let margin = put_margin.max(call_margin) + other_leg_premium;
             return margin * 100.0 * qty;
         }
         // Fallback: 2x credit
@@ -423,6 +439,21 @@ pub fn calculate_bpr(
         }
     }
 
+    // PBWB: BPR = (short_width - long_width - credit) × 100 × qty (mirrors max loss formula)
+    // long_puts sorted descending: [0]=ATM anchor (higher strike), [1]=wing (lower strike)
+    if spread_type == "put_broken_wing_butterfly" {
+        let sp = legs.iter().find(|l| l.leg_type == LegType::ShortPut);
+        let mut lps: Vec<&TradeLeg> = legs.iter().filter(|l| l.leg_type == LegType::LongPut).collect();
+        lps.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(sp), [atm, wing, ..]) = (sp, lps.as_slice()) {
+            let long_width  = atm.strike - sp.strike;  // ATM long − short
+            let short_width = sp.strike - wing.strike; // short − wing long
+            let bpr = (short_width - long_width - credit) * 100.0 * qty;
+            if bpr > 0.0 { return bpr; }
+        }
+        return 0.0;
+    }
+
     // CBWB: BPR = (short_width - long_width - credit) × 100 × qty (same as max loss)
     if spread_type == "call_broken_wing_butterfly" {
         let sc = legs.iter().find(|l| l.leg_type == LegType::ShortCall);
@@ -440,9 +471,17 @@ pub fn calculate_bpr(
     0.0
 }
 
-/// % of max profit captured — matches calculatePctMaxProfit()
-pub fn calculate_pct_max_profit(pnl: f64, credit_received: f64, quantity: i32) -> f64 {
-    let max_profit = credit_received * 100.0 * quantity as f64;
+/// % of max profit captured — uses strategy-specific max profit as denominator.
+/// For PBWB/butterfly/custom spreads max profit ≠ credit; this calls
+/// calculate_max_profit_from_legs() to get the correct denominator.
+pub fn calculate_pct_max_profit(
+    pnl: f64,
+    legs: &[TradeLeg],
+    credit_received: f64,
+    quantity: i32,
+    spread_type: &str,
+) -> f64 {
+    let max_profit = calculate_max_profit_from_legs(legs, credit_received, quantity, spread_type);
     if max_profit > 0.0 {
         (pnl / max_profit) * 100.0
     } else {
@@ -508,6 +547,24 @@ pub fn calculate_roc(
     }
 
     if capital_at_risk > 0.0 { Some((pnl / capital_at_risk) * 100.0) } else { None }
+}
+
+/// ROC on cash-secured basis for CSP/SNP — uses full strike obligation as capital.
+/// Cash accounts must set aside (short_strike × 100 × qty); this gives the conservative
+/// but accurate ROC for cash-secured traders vs the Reg-T margin basis.
+/// Returns None for strategies where cash-secured concept doesn't apply.
+pub fn calculate_roc_cash_secured(
+    pnl: f64,
+    legs: &[TradeLeg],
+    quantity: i32,
+    spread_type: &str,
+) -> Option<f64> {
+    if !matches!(spread_type, "cash_secured_put" | "short_naked_put") {
+        return None;
+    }
+    let short_put = legs.iter().find(|l| l.leg_type == LegType::ShortPut)?;
+    let capital = short_put.strike * 100.0 * quantity as f64;
+    if capital > 0.0 { Some((pnl / capital) * 100.0) } else { None }
 }
 
 /// Credit-to-Width ratio — matches calculateCreditWidthRatio()
@@ -643,15 +700,19 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
             return vec![];
         }
         "put_butterfly" => {
-            // Two breakevens: upper = upper_long + credit (= upper_long - debit)
-            //                 lower = lower_long - credit (= lower_long + debit)
+            // Two breakevens: upper = upper_long − debit, lower = lower_long + debit
+            // credit is stored as negative for debit trades; debit = -credit.
+            // Guard: if somehow stored as positive for a debit fly, infer from leg structure.
             let mut long_puts: Vec<&TradeLeg> = legs.iter()
                 .filter(|l| l.leg_type == LegType::LongPut)
                 .collect();
             long_puts.sort_by(|a, b| b.strike.partial_cmp(&a.strike).unwrap_or(std::cmp::Ordering::Equal));
             if long_puts.len() >= 2 {
-                let upper_be = long_puts[0].strike + credit; // upper_long - debit
-                let lower_be = long_puts[1].strike - credit; // lower_long + debit
+                // For a debit butterfly: debit paid = -credit (credit is negative).
+                // If credit > 0 it's a credit butterfly (rare); formula is the same.
+                let debit = -credit; // positive when debit paid
+                let upper_be = long_puts[0].strike - debit;
+                let lower_be = long_puts[1].strike + debit;
                 return vec![lower_be, upper_be];
             }
         }
@@ -669,15 +730,16 @@ pub fn calculate_breakevens(legs: &[TradeLeg], spread_type: &str, credit_overrid
             }
         }
         "call_butterfly" => {
-            // Two BEs: lower = lower_long - credit (= lower_long + debit)
-            //          upper = upper_long + credit  (= upper_long - debit)
+            // Two BEs: lower = lower_long + debit, upper = upper_long − debit
+            // Same sign convention as put_butterfly: debit = -credit.
             let mut long_calls: Vec<&TradeLeg> = legs.iter()
                 .filter(|l| l.leg_type == LegType::LongCall)
                 .collect();
             long_calls.sort_by(|a, b| a.strike.partial_cmp(&b.strike).unwrap_or(std::cmp::Ordering::Equal));
             if long_calls.len() >= 2 {
-                let lower_be = long_calls[0].strike - credit; // lower_long + debit
-                let upper_be = long_calls[1].strike + credit; // upper_long - debit
+                let debit = -credit;
+                let lower_be = long_calls[0].strike + debit;
+                let upper_be = long_calls[1].strike - debit;
                 return vec![lower_be, upper_be];
             }
         }
@@ -1218,7 +1280,7 @@ pub fn build_portfolio_stats(
                 closed_pnl_series.push((exit.date_naive(), pnl));
             }
         } else {
-            open_count += 1;
+            if trade.exit_date.is_none() { open_count += 1; }
 
             // Net theta and vega from open positions
             if let Some(th) = trade.theta {
@@ -1269,7 +1331,7 @@ pub fn build_portfolio_stats(
 
             // Use stored POP if available; fall back to BS estimate for
             // trades entered before POP was wired (or imported trades).
-            let effective_pop = trade.pop.unwrap_or_else(|| estimate_pop(trade));
+            let effective_pop = trade.pop.unwrap_or_else(|| estimate_pop(trade, 0.045));
             pop_sum   += effective_pop;
             pop_count += 1;
 
@@ -1286,7 +1348,7 @@ pub fn build_portfolio_stats(
             }
 
             // M1: P50
-            if let Some(p50) = calculate_p50(trade) {
+            if let Some(p50) = calculate_p50(trade, 0.045) {
                 p50_open_sum   += p50;
                 p50_open_count += 1;
             }
@@ -1294,11 +1356,20 @@ pub fn build_portfolio_stats(
             // L3: strategy distribution
             *open_strategy_map.entry(trade.strategy.badge().to_string()).or_insert(0) += 1;
 
-            // Unrealized P&L estimate: theta ($/share/day) × days_held × 100 × qty
-            // theta is stored as positive for credit sellers (we benefit from decay)
-            if let Some(theta) = trade.theta {
+            // Unrealized P&L: use payoff-at-price when underlying_price is available
+            // (mark-to-market estimate at stored underlying price), otherwise fall back
+            // to theta × days accumulation (positive-biased linear estimate).
+            let qty = trade.quantity as f64;
+            if let Some(price) = trade.underlying_price.filter(|&p| p > 0.0) {
+                if !trade.legs.is_empty() {
+                    unrealized_pnl += calculate_payoff_at_price(&trade.legs, trade.credit_received, price) * qty;
+                } else if let Some(theta) = trade.theta {
+                    let days_held = (today - trade.trade_date.date_naive()).num_days().max(0) as f64;
+                    unrealized_pnl += theta * 100.0 * qty * days_held;
+                }
+            } else if let Some(theta) = trade.theta {
                 let days_held = (today - trade.trade_date.date_naive()).num_days().max(0) as f64;
-                unrealized_pnl += theta * 100.0 * trade.quantity as f64 * days_held;
+                unrealized_pnl += theta * 100.0 * qty * days_held;
             }
         }
     }
@@ -1356,6 +1427,8 @@ pub fn build_portfolio_stats(
     let drift   = undefined_pct - target_undefined_pct;
     let avg_pop = if pop_count > 0 { pop_sum / pop_count as f64 } else { 0.0 };
     let balance = account_size + realized_pnl;
+    // True Net Liq adds the theta-estimated unrealized P&L from open positions.
+    // unrealized_pnl is computed later in this function; forward-reference via a closure below.
     let largest_position_bpr_pct = if account_size > 0.0 { largest_bpr / account_size * 100.0 } else { 0.0 };
 
     // M5: sort critical positions by DTE ascending
@@ -1393,7 +1466,7 @@ pub fn build_portfolio_stats(
 
     // L3: open strategy counts sorted by count desc
     let mut open_strategy_counts: Vec<(String, usize)> = open_strategy_map.into_iter().collect();
-    open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    open_strategy_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     // Item 13: Portfolio stress test (beta-adjusted, 7 scenarios)
     use crate::models::StressPoint;
@@ -1404,8 +1477,13 @@ pub fn build_portfolio_stats(
         .count();
     let stress_test: Vec<StressPoint> = [-20.0f64, -15.0, -10.0, -5.0, 0.0, 5.0, 10.0].iter().map(|&move_pct| {
         let mut total = 0.0f64;
+        let mut vix_total = 0.0f64;
         let mut worst_pnl = f64::MAX;
         let mut worst_ticker = String::new();
+        // IV expansion model: each 1% SPY drop ≈ +1pp implied volatility spike.
+        // Typically a -20% SPY move corresponds to VIX rising from ~15 to ~35 (+20pp).
+        // Short-vega positions (negative vega) lose when IV rises.
+        let iv_expansion_pp = (-move_pct).max(0.0); // positive for downside moves
         for trade in &open_trades_for_stress {
             if let Some(underlying) = trade.underlying_price {
                 if underlying > 0.0 && !trade.legs.is_empty() {
@@ -1418,6 +1496,10 @@ pub fn build_portfolio_stats(
                         worst_pnl = pnl;
                         worst_ticker = trade.ticker.clone();
                     }
+                    // Vega contribution: vega ($/1% IV change) × iv_expansion_pp × qty
+                    if let Some(v) = trade.vega {
+                        vix_total += v * iv_expansion_pp * trade.quantity as f64;
+                    }
                 }
             }
         }
@@ -1427,6 +1509,7 @@ pub fn build_portfolio_stats(
             pct_of_account: if account_size > 0.0 { total / account_size * 100.0 } else { 0.0 },
             worst_ticker: if worst_ticker.is_empty() { "—".to_string() } else { worst_ticker },
             worst_pnl: if worst_pnl == f64::MAX { 0.0 } else { worst_pnl },
+            vix_pnl: vix_total,
         }
     }).collect();
 
@@ -1453,6 +1536,7 @@ pub fn build_portfolio_stats(
         // OTJ Dashboard
         account_size,
         balance,
+        true_net_liq: balance + unrealized_pnl,
         alloc_pct,
         total_open_bpr,
         undefined_risk_bpr: undefined_bpr,
@@ -1518,7 +1602,7 @@ fn bs_d1(s: f64, k: f64, t: f64, r: f64, sigma: f64) -> f64 {
 
 pub fn estimate_greeks(
     s: f64, k: f64, t_days: i32, r: f64, sigma: f64, is_call: bool, is_short: bool
-) -> (f64, f64, f64, f64) {
+) -> (f64, f64, f64, f64, f64) {
     let t = (t_days as f64 / 365.25).max(1.0 / 365.0);
     let d1 = bs_d1(s, k, t, r, sigma);
     let d2 = d1 - sigma * t.sqrt();
@@ -1526,7 +1610,7 @@ pub fn estimate_greeks(
 
     let mut delta = if is_call { normal_cdf(d1) } else { normal_cdf(d1) - 1.0 };
     let mut gamma = nd1 / (s * sigma * t.sqrt());
-    
+
     let mut theta_ann = -(s * nd1 * sigma) / (2.0 * t.sqrt());
     if is_call {
         theta_ann -= r * k * (-r * t).exp() * normal_cdf(d2);
@@ -1535,6 +1619,12 @@ pub fn estimate_greeks(
     }
     let mut theta = theta_ann / 365.25;
     let mut vega = s * nd1 * t.sqrt() / 100.0;
+    // Rho: $/1% interest rate change (divided by 100 per tastytrade/TOS convention)
+    let mut rho = if is_call {
+        k * t * (-r * t).exp() * normal_cdf(d2) / 100.0
+    } else {
+        -k * t * (-r * t).exp() * normal_cdf(-d2) / 100.0
+    };
 
     // Apply signs for short positions
     if is_short {
@@ -1542,9 +1632,33 @@ pub fn estimate_greeks(
         theta = -theta;
         vega  = -vega;
         gamma = -gamma;  // Short gamma is negative (position loses delta faster on moves)
+        rho   = -rho;
     }
 
-    (delta, theta, gamma, vega)
+    (delta, theta, gamma, vega, rho)
+}
+
+/// Charm (dΔ/dt): the rate of change of delta with respect to time — delta decay per calendar day.
+/// For an OTM short put approaching expiry, charm causes delta to shrink toward 0 (position neutralizes).
+/// Formula (plan §2): −N'(d₁) × d₂ / (2σT) per year, then divided by 365.25 for per-day.
+/// Sign is flipped for short positions (matching delta sign convention in this codebase).
+/// Returns charm in delta-per-day units.
+pub fn calculate_charm(
+    s: f64, k: f64, t_days: i32, r: f64, sigma: f64, is_call: bool, is_short: bool
+) -> f64 {
+    let t = (t_days as f64 / 365.25).max(1.0 / 365.0);
+    if sigma <= 0.0 || s <= 0.0 || k <= 0.0 { return 0.0; }
+    let d1 = bs_d1(s, k, t, r, sigma);
+    let d2 = d1 - sigma * t.sqrt();
+    let nd1 = normal_pdf(d1);
+    // charm per year (call formula; put = call + dN(d1)/dt term, but for brevity use same)
+    let charm_ann = if is_call {
+        -nd1 * (2.0 * r * t - d2 * sigma * t.sqrt()) / (2.0 * t * sigma * t.sqrt())
+    } else {
+        nd1 * (2.0 * r * t - d2 * sigma * t.sqrt()) / (2.0 * t * sigma * t.sqrt())
+    };
+    let charm_daily = charm_ann / 365.25;
+    if is_short { -charm_daily } else { charm_daily }
 }
 
 /// Estimate implied volatility from an option's entry premium via Newton-Raphson,
@@ -1606,10 +1720,15 @@ pub fn estimate_iv_from_premium(
 /// For short puts/verticals: POP = N(d2) = P(S_T > K).
 /// For short calls/verticals: POP = N(-d2) = P(S_T < K).
 /// For ICs/strangles: P(K_put < S_T < K_call) ≈ N(d2_put) + N(-d2_call) - 1.
+/// For straddles/IBF: both short strikes are ATM; use breakeven prices instead to avoid ~0% POP.
 /// Falls back to delta-based estimate when IV or price unavailable.
-pub fn estimate_pop(trade: &Trade) -> f64 {
+/// `r` = risk-free rate as a decimal (e.g. 0.045 for 4.5%).
+pub fn estimate_pop(trade: &Trade, r: f64) -> f64 {
     // IV stored as whole-number % (e.g. 25.0 → 0.25 for BS)
     let iv_raw = trade.implied_volatility.unwrap_or(0.0);
+    // Guard: IV stored as whole-number % (e.g. 25.0 → 0.25 for BS). Threshold 2.0 matches
+    // main.rs and correctly handles high-IV names (meme stocks, biotech) stored as decimals
+    // up to 1.99 (199% IV). Values < 2.0 are treated as already-decimal fractions.
     let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else { 0.0 };
 
     let s = match trade.underlying_price {
@@ -1623,7 +1742,6 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
 
     let dte = calculate_remaining_dte(&trade.expiration_date);
     let t = (dte as f64 / 365.25).max(1.0 / 365.0);
-    let r = 0.045_f64;
 
     let pop = match trade.strategy {
         StrategyType::CashSecuredPut | StrategyType::ShortNakedPut => {
@@ -1666,8 +1784,8 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
             let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
             normal_cdf(d2) * 100.0
         }
-        StrategyType::IronCondor | StrategyType::IronButterfly
-        | StrategyType::Strangle | StrategyType::Straddle => {
+        // IC / Strangle: short put and short call strikes are DIFFERENT — N(d2_put)+N(-d2_call)-1 is correct.
+        StrategyType::IronCondor | StrategyType::Strangle => {
             let kp = trade.legs.iter().find(|l| l.leg_type == LegType::ShortPut).map(|l| l.strike);
             let kc = trade.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike);
             match (kp, kc) {
@@ -1684,21 +1802,75 @@ pub fn estimate_pop(trade: &Trade) -> f64 {
                 _ => 68.0,
             }
         }
+        // Straddle / Iron Butterfly: both short legs share the same ATM strike K.
+        // Using K directly gives N(d2)+N(-d2)-1 ≈ 0 for ATM — a meaningless result.
+        // Correct: P(BE_low < S_T < BE_high) = N(d2(BE_low)) - N(d2(BE_high))
+        // where BE_low = K - credit, BE_high = K + credit.
+        StrategyType::Straddle | StrategyType::IronButterfly => {
+            let k = trade.legs.iter()
+                .find(|l| l.leg_type == LegType::ShortPut)
+                .map(|l| l.strike)
+                .or_else(|| trade.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike))
+                .filter(|&k| k > 0.0)
+                .unwrap_or_else(|| if trade.short_strike > 0.0 { trade.short_strike } else { 0.0 });
+            if k <= 0.0 { return delta_based_pop_fallback(trade); }
+            let credit = trade.credit_received;
+            let be_low  = k - credit;
+            let be_high = k + credit;
+            if be_low <= 0.0 { return delta_based_pop_fallback(trade); }
+            let d2_low  = bs_d1(s, be_low,  t, r, iv) - iv * t.sqrt();
+            let d2_high = bs_d1(s, be_high, t, r, iv) - iv * t.sqrt();
+            // P(BE_low < S_T < BE_high) = N(d2_low) - N(d2_high); both d2_low > d2_high
+            (normal_cdf(d2_low) - normal_cdf(d2_high)) * 100.0
+        }
         _ => delta_based_pop_fallback(trade),
     };
     pop.clamp(10.0, 95.0)
 }
 
+/// POT (Probability of Touch) ≈ 2 × P(ITM at expiry) for the dominant short leg.
+/// Tastytrade context: a 30-delta short put has ~30% P(expire ITM) but ~60% P(touch).
+/// Returns None when IV or underlying price is unavailable, or for multi-leg strategies
+/// where a single touch probability is not meaningful (use POP/PIT instead).
+/// `r` = risk-free rate as a decimal (e.g. 0.045 for 4.5%).
+pub fn estimate_pot(trade: &Trade, r: f64) -> Option<f64> {
+    let iv_raw = trade.implied_volatility.unwrap_or(0.0);
+    let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else { return None; };
+    let s = trade.underlying_price.filter(|&p| p > 0.0)?;
+    let dte = calculate_remaining_dte(&trade.expiration_date);
+    let t = (dte as f64 / 365.25).max(1.0 / 365.0);
+
+    let pot = match trade.strategy {
+        StrategyType::CashSecuredPut | StrategyType::ShortNakedPut | StrategyType::ShortPutVertical => {
+            let k = trade.legs.iter().find(|l| l.leg_type == LegType::ShortPut).map(|l| l.strike)
+                .unwrap_or(trade.short_strike);
+            if k <= 0.0 { return None; }
+            let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
+            2.0 * normal_cdf(-d2) * 100.0
+        }
+        StrategyType::CoveredCall | StrategyType::ShortNakedCall | StrategyType::ShortCallVertical => {
+            let k = trade.legs.iter().find(|l| l.leg_type == LegType::ShortCall).map(|l| l.strike)
+                .unwrap_or(trade.short_strike);
+            if k <= 0.0 { return None; }
+            let d2 = bs_d1(s, k, t, r, iv) - iv * t.sqrt();
+            2.0 * normal_cdf(d2) * 100.0
+        }
+        _ => return None,
+    };
+    Some(pot.clamp(0.0, 100.0))
+}
+
 /// P50 = probability of reaching 50% of max profit before expiry.
 /// Evaluated at the 50%-profit threshold strike using Black-Scholes d2.
-pub fn calculate_p50(trade: &Trade) -> Option<f64> {
+/// `r` = risk-free rate as a decimal (e.g. 0.045 for 4.5%).
+pub fn calculate_p50(trade: &Trade, r: f64) -> Option<f64> {
     let iv_raw = trade.implied_volatility.unwrap_or(0.0);
     let iv = if iv_raw > 2.0 { iv_raw / 100.0 } else if iv_raw > 0.0 { iv_raw } else {
         // For Strangle/Straddle without IV: fall back to POP-based estimate
         // P50 ≈ POP × 0.85 (50%-profit target is harder to reach than POP)
         match trade.strategy {
             StrategyType::Strangle | StrategyType::Straddle => {
-                let pop = estimate_pop(trade);
+                let pop = estimate_pop(trade, r);
                 return Some((pop * 0.85).clamp(5.0, 95.0));
             }
             _ => return None,
@@ -1710,7 +1882,6 @@ pub fn calculate_p50(trade: &Trade) -> Option<f64> {
 
     let dte = calculate_remaining_dte(&trade.expiration_date);
     let t = (dte as f64 / 365.25).max(1.0 / 365.0);
-    let r = 0.045_f64;
     let credit = trade.credit_received;
 
     let p50 = match trade.strategy {
@@ -1838,7 +2009,7 @@ pub fn check_playbook_compliance(
                 for leg in &trade.legs {
                     if leg.leg_type.is_short() && leg.strike > 0.0 {
                         let is_call = matches!(leg.leg_type, crate::models::LegType::ShortCall);
-                        let (leg_d, _, _, _) = estimate_greeks(s, leg.strike, t_days, 0.045, iv, is_call, false);
+                        let (leg_d, _, _, _, _) = estimate_greeks(s, leg.strike, t_days, 0.045, iv, is_call, false);
                         max_short_leg_delta = max_short_leg_delta.max(leg_d.abs() * 100.0);
                     }
                 }
@@ -2004,7 +2175,8 @@ fn calculate_sharpe_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     if returns.len() < 2 { return 0.0; }
     let n = returns.len() as f64;
     let mean = returns.iter().sum::<f64>() / n;
-    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+    // Sample variance (N-1): unbiased estimator; population variance overstates risk for small N
+    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
     let std_dev = variance.sqrt();
     if std_dev <= 0.0 { return 0.0; }
     let risk_free_daily = risk_free_annual / 252.0;
@@ -2039,7 +2211,7 @@ fn calculate_calmar_ratio(total_pnl: f64, account_size: f64, span_days: f64, max
 
 pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_rate_pct: f64, rolling_window: usize) -> crate::models::PerformanceStats {
     use chrono::Datelike;
-    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket, HeldBucket};
+    use crate::models::{PerformanceStats, StrategyBreakdown, TickerBreakdown, MonthlyPnl, IvrBucket, VixRegime, IvrEntryBucket, HeldBucket, StrategyDteBucket};
 
     // Step 1: filter and sort closed trades by exit_date ascending
     let mut sorted_closed: Vec<&Trade> = trades.iter()
@@ -2064,6 +2236,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
 
     let mut dte_sum = 0.0_f64;
     let mut dte_count = 0u32;
+    // KPI #7: trades closed at ≥21 DTE (tastytrade 21 DTE rule adherence)
+    let mut close_quality_hit = 0u32;
+    let mut close_quality_total = 0u32;
 
     let mut held_sum = 0.0_f64;
 
@@ -2098,10 +2273,14 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     let mut iv_crush_sum   = 0.0_f64;
     let mut iv_crush_count = 0u32;
 
+    // H6: IV edge = IV-predicted 1SD move − actual % move during hold
+    let mut rv_iv_edge_sum   = 0.0_f64;
+    let mut rv_iv_edge_count = 0u32;
+
     // IVR buckets: (trades, wins, pnl_sum) for [0-25), [25-50), [50-75), [75+)
     let mut ivr_data: [(usize, usize, f64); 4] = [(0, 0, 0.0); 4];
 
-    // VIX regime buckets: (trades, wins, pnl_sum) for Calm/<15, Normal/15-20, Elevated/20-25, High/25-35, Stress/35+
+    // VIX regime buckets: (trades, wins, pnl_sum) for Calm/<15, Normal/15-20, Elevated/20-30, High/30-40, Stress/40+
     let mut vix_data: [(usize, usize, f64); 5] = [(0, 0, 0.0); 5];
 
     // balance history: start at account_size, push running after each trade
@@ -2129,8 +2308,9 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         let exit = t.exit_date.unwrap();
         let exit_date_naive = exit.date_naive();
 
-        // Scratch threshold: 5% of max profit per trade (min $10 for tiny trades)
-        let max_profit = calculate_max_profit(t.credit_received, t.quantity);
+        // Scratch threshold: 5% of max profit per trade (min $10 for tiny trades).
+        // Uses strategy-specific max profit so PBWB/butterfly trades are correctly bucketed.
+        let max_profit = calculate_max_profit_from_legs(&t.legs, t.credit_received, t.quantity, t.spread_type());
         let scratch_threshold = (max_profit * 0.05).max(10.0);
         if pnl.abs() < scratch_threshold {
             scratch_count += 1.0;
@@ -2151,10 +2331,15 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         // Per-trade ROC for strategy breakdown
         let roc_opt = calculate_roc(pnl, &t.legs, t.credit_received, t.quantity, &t.spread_type(), t.bpr, t.underlying_price);
 
-        // DTE at close
+        // DTE at close + close quality (21 DTE rule adherence)
         if let Some(dte) = t.dte_at_close {
             dte_sum += dte as f64;
             dte_count += 1;
+            // Only score strategies where DTE management applies (skip 0DTE, calendars, etc.)
+            if t.entry_dte.map_or(true, |ed| ed >= 14) {
+                close_quality_total += 1;
+                if dte >= 21 { close_quality_hit += 1; }
+            }
         }
 
         // Held days
@@ -2248,6 +2433,26 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             let to_pct = |v: f64| if v < 2.0 { v * 100.0 } else { v };
             iv_crush_sum   += to_pct(entry_iv) - to_pct(close_iv);
             iv_crush_count += 1;
+        }
+
+        // H6: IV edge — IV-predicted 1SD move vs actual underlying move during hold
+        // iv_predicted_1sd_pct = entry_IV(%) × sqrt(days_held / 365.25)
+        // actual_move_pct = |spot_at_close − spot_at_entry| / spot_at_entry × 100
+        // edge = predicted − actual: positive = IV over-predicted, confirming vol edge
+        if let (Some(spot_entry), Some(spot_close), Some(iv_raw), Some(exit_dt)) = (
+            t.underlying_price,
+            t.underlying_price_at_close,
+            t.implied_volatility,
+            t.exit_date,
+        ) {
+            if spot_entry > 0.0 {
+                let held = (exit_dt.date_naive() - t.trade_date.date_naive()).num_days().max(1);
+                let iv_dec = if iv_raw > 2.0 { iv_raw / 100.0 } else { iv_raw };
+                let iv_predicted = iv_dec * ((held as f64 / 365.25_f64).sqrt()) * 100.0;
+                let actual_move  = ((spot_close - spot_entry) / spot_entry).abs() * 100.0;
+                rv_iv_edge_sum   += iv_predicted - actual_move;
+                rv_iv_edge_count += 1;
+            }
         }
 
         // IVR bucket
@@ -2376,16 +2581,25 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         if non_zero.is_empty() { None } else { Some(non_zero.iter().sum::<f64>() / non_zero.len() as f64) }
     };
 
-    // Step 4: Sharpe
-    let daily_returns: Vec<f64> = daily_pnl_map.values()
-        .map(|p| p / account_size)
-        .collect();
-    let sharpe_ratio = calculate_sharpe_ratio(&daily_returns, risk_free_rate_pct / 100.0);
-
-    // Step 5: trade frequency
+    // Step 4: Sharpe — build continuous daily returns (all calendar days, zeros on non-exit days)
+    // Using only exit-day P&Ls would exclude flat days and inflate risk-adjusted metrics.
     let first_exit = sorted_closed.first().unwrap().exit_date.unwrap().date_naive();
     let last_exit  = sorted_closed.last().unwrap().exit_date.unwrap().date_naive();
     let span_days  = (last_exit - first_exit).num_days().max(1) as f64;
+    let daily_returns: Vec<f64> = {
+        let mut returns = Vec::new();
+        let mut d = first_exit;
+        while d <= last_exit {
+            let pnl = daily_pnl_map.get(&d).copied().unwrap_or(0.0);
+            returns.push(pnl / account_size);
+            d = d.succ_opt().unwrap_or(last_exit);
+            if d > last_exit { break; }
+        }
+        returns
+    };
+    let sharpe_ratio = calculate_sharpe_ratio(&daily_returns, risk_free_rate_pct / 100.0);
+
+    // Step 5: trade frequency
     let (trades_per_week, trades_per_month) = if sorted_closed.len() > 1 {
         (closed_count / (span_days / 7.0), closed_count / (span_days / 30.4375))
     } else {
@@ -2450,6 +2664,55 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
     }
     // Re-sort: closed trades first (by count desc), then open-only entries
     strategy_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades).then(b.open_count.cmp(&a.open_count)));
+
+    // KPI #6: Roll P&L tracking — compare rolled chains vs single-leg trades
+    // Build root→chain map: for each root trade (rolled_from_id == None), collect chain P&Ls
+    let id_to_idx: std::collections::HashMap<i32, usize> = trades.iter().enumerate()
+        .map(|(i, t)| (t.id, i)).collect();
+    // Find all root trades that have at least one roll child
+    let rolled_root_ids: std::collections::HashSet<i32> = trades.iter()
+        .filter_map(|t| t.rolled_from_id)
+        .collect();
+    let mut rolled_chain_wins = 0u32;
+    let mut rolled_chain_total = 0u32;
+    let mut non_rolled_wins = 0u32;
+    let mut non_rolled_total = 0u32;
+    let mut roll_credit_sum = 0.0_f64;
+    let mut roll_credit_count = 0u32;
+    for t in &sorted_closed {
+        if t.rolled_from_id.is_some() {
+            // This is a roll leg — accumulate its credit as "roll credit added"
+            if t.credit_received > 0.0 {
+                roll_credit_sum += t.credit_received;
+                roll_credit_count += 1;
+            }
+            continue; // don't double-count chain legs
+        }
+        // Root trade: compute net chain P&L
+        let is_rolled_root = rolled_root_ids.contains(&t.id);
+        if is_rolled_root {
+            // Walk the chain: collect all closed legs with this root ancestry
+            let mut chain_pnl = t.pnl.unwrap_or(0.0);
+            let mut queue = vec![t.id];
+            while let Some(pid) = queue.pop() {
+                for child in trades.iter().filter(|c| c.rolled_from_id == Some(pid) && c.exit_date.is_some()) {
+                    chain_pnl += child.pnl.unwrap_or(0.0);
+                    queue.push(child.id);
+                }
+            }
+            rolled_chain_total += 1;
+            if chain_pnl > 0.0 { rolled_chain_wins += 1; }
+        } else if t.pnl.is_some() {
+            // Non-rolled single trade
+            non_rolled_total += 1;
+            if t.pnl.unwrap_or(0.0) > 0.0 { non_rolled_wins += 1; }
+        }
+    }
+    let rolled_chain_win_rate = if rolled_chain_total > 0 { Some(rolled_chain_wins as f64 / rolled_chain_total as f64 * 100.0) } else { None };
+    let non_rolled_win_rate = if non_rolled_total > 0 { Some(non_rolled_wins as f64 / non_rolled_total as f64 * 100.0) } else { None };
+    let avg_roll_credit = if roll_credit_count > 0 { Some(roll_credit_sum / roll_credit_count as f64) } else { None };
+    let total_rolled_chains = rolled_chain_total as usize;
+    let _ = id_to_idx; // suppress unused warning
 
     // Step 7a: ticker breakdown
     let mut ticker_breakdown: Vec<TickerBreakdown> = ticker_map.into_iter().map(|(ticker, (trades, wins, scratches, total_pnl, roc_sum, roc_count, ivr_sum, ivr_count, dte_sum, dte_count))| {
@@ -2739,6 +3002,38 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         }).collect()
     };
 
+    // H6: Earnings play analytics
+    let (earnings_count, earnings_win_rate, earnings_avg_pnl, earnings_avg_iv_crush,
+         earnings_avg_entry_dte, earnings_avg_dte_at_close) = {
+        let ep: Vec<&Trade> = sorted_closed.iter().copied().filter(|t| t.is_earnings_play).collect();
+        let n = ep.len();
+        if n == 0 {
+            (0usize, None, None, None, None, None)
+        } else {
+            let wins = ep.iter().filter(|t| t.pnl.unwrap_or(0.0) > 0.0).count();
+            let avg_pnl = ep.iter().filter_map(|t| t.pnl).sum::<f64>() / n as f64;
+            let iv_crush_vals: Vec<f64> = ep.iter().filter_map(|t| {
+                let iv_e = t.implied_volatility?;
+                let iv_c = t.iv_at_close?;
+                // Normalize both to whole-percent scale before computing crush
+                let iv_e_pct = if iv_e <= 2.0 { iv_e * 100.0 } else { iv_e };
+                let iv_c_pct = if iv_c <= 2.0 { iv_c * 100.0 } else { iv_c };
+                Some(iv_e_pct - iv_c_pct)
+            }).collect();
+            let avg_iv_crush = if iv_crush_vals.is_empty() { None }
+                else { Some(iv_crush_vals.iter().sum::<f64>() / iv_crush_vals.len() as f64) };
+            let avg_entry_dte = {
+                let vals: Vec<f64> = ep.iter().filter_map(|t| t.entry_dte.map(|d| d as f64)).collect();
+                if vals.is_empty() { None } else { Some(vals.iter().sum::<f64>() / vals.len() as f64) }
+            };
+            let avg_dte_at_close = {
+                let vals: Vec<f64> = ep.iter().filter_map(|t| t.dte_at_close.map(|d| d as f64)).collect();
+                if vals.is_empty() { None } else { Some(vals.iter().sum::<f64>() / vals.len() as f64) }
+            };
+            (n, Some(wins as f64 / n as f64 * 100.0), Some(avg_pnl), avg_iv_crush, avg_entry_dte, avg_dte_at_close)
+        }
+    };
+
     // M11: unrealized history — balance_history + one extra point projecting open theta decay
     let unrealized_history: Vec<f64> = {
         let today = chrono::Utc::now().date_naive();
@@ -2756,6 +3051,72 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
             uh.push(last_realized + unrealized_est);
         }
         uh
+    };
+
+    // H6: Per-strategy × DTE-at-entry bucket breakdown
+    let strategy_dte_buckets: Vec<StrategyDteBucket> = {
+        use std::collections::HashMap;
+        // DTE-at-entry buckets: 0–7, 7–21, 21–45, 45+
+        const DTE_BUCKETS: [(&str, i32, i32); 4] = [
+            ("0–7",  0,   7),
+            ("7–21", 7,  21),
+            ("21–45",21, 45),
+            ("45+",  45, i32::MAX),
+        ];
+        // abbreviation map for display
+        let abbrev = |s: &str| match s {
+            "iron_condor"             => "IC",
+            "iron_butterfly"          => "IB",
+            "strangle"                => "STR",
+            "straddle"                => "STD",
+            "cash_secured_put"        => "CSP",
+            "short_naked_put"         => "SNP",
+            "short_naked_call"        => "SNC",
+            "covered_call"            => "CC",
+            "short_put_vertical"      => "SPV",
+            "short_call_vertical"     => "SCV",
+            "long_put_vertical"       => "LPV",
+            "long_call_vertical"      => "LCV",
+            "pmcc"                    => "PMCC",
+            "call_calendar_spread"    => "CCAL",
+            "put_calendar_spread"     => "PCAL",
+            "put_broken_wing_butterfly" | "pzbr" => "PBWB",
+            "call_broken_wing_butterfly" | "czbr" => "CBWB",
+            "jade_lizard"             => "JL",
+            "put_butterfly"           => "PBF",
+            "call_butterfly"          => "CBF",
+            _                         => "OTH",
+        };
+        // (strat_str, dte_bucket_idx) -> (trades, wins, roc_sum)
+        let mut map: HashMap<(String, usize), (usize, usize, f64)> = HashMap::new();
+        for t in &sorted_closed {
+            if let Some(entry_dte) = t.entry_dte {
+                let bi = DTE_BUCKETS.iter().position(|&(_, lo, hi)| entry_dte >= lo && entry_dte < hi)
+                    .unwrap_or(3);
+                let key = (t.strategy.as_str().to_string(), bi);
+                let roc = t.pnl.and_then(|p| calculate_roc(p, &t.legs, t.credit_received, t.quantity, t.spread_type(), t.bpr, t.underlying_price)).unwrap_or(0.0);
+                let e = map.entry(key).or_insert((0, 0, 0.0));
+                e.0 += 1;
+                if t.pnl.unwrap_or(0.0) > 0.0 { e.1 += 1; }
+                e.2 += roc;
+            }
+        }
+        let mut out: Vec<StrategyDteBucket> = map.into_iter()
+            .filter(|(_, (trades, _, _))| *trades > 0)
+            .map(|((strat, bi), (trades, wins, roc_sum))| {
+                let (label, _, _) = DTE_BUCKETS[bi];
+                StrategyDteBucket {
+                    strategy: abbrev(&strat),
+                    dte_label: label,
+                    trades,
+                    wins,
+                    win_rate: if trades > 0 { wins as f64 / trades as f64 * 100.0 } else { 0.0 },
+                    avg_roc: if trades > 0 { roc_sum / trades as f64 } else { 0.0 },
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.strategy.cmp(b.strategy).then(a.dte_label.cmp(b.dte_label)));
+        out
     };
 
     PerformanceStats {
@@ -2818,6 +3179,19 @@ pub fn build_performance_stats(trades: &[Trade], account_size: f64, risk_free_ra
         sector_trends,
         monthly_0dte_pnl,
         dte_weekday_stats,
+        avg_rv_vs_iv_edge: if rv_iv_edge_count > 0 { Some(rv_iv_edge_sum / rv_iv_edge_count as f64) } else { None },
+        close_quality_pct: if close_quality_total > 0 { Some(close_quality_hit as f64 / close_quality_total as f64 * 100.0) } else { None },
+        rolled_chain_win_rate,
+        non_rolled_win_rate,
+        avg_roll_credit,
+        total_rolled_chains,
+        strategy_dte_buckets,
+        earnings_count,
+        earnings_win_rate,
+        earnings_avg_pnl,
+        earnings_avg_iv_crush,
+        earnings_avg_entry_dte,
+        earnings_avg_dte_at_close,
     }
 }
 

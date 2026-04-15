@@ -218,6 +218,9 @@ impl Storage {
             ("closed_at_target",         "ALTER TABLE trades ADD COLUMN closed_at_target INTEGER NOT NULL DEFAULT 0"),
             ("iv_percentile",            "ALTER TABLE trades ADD COLUMN iv_percentile REAL"),
             ("ex_dividend_date",         "ALTER TABLE trades ADD COLUMN ex_dividend_date TEXT"),
+            ("cached_max_profit",        "ALTER TABLE trades ADD COLUMN cached_max_profit REAL"),
+            ("cached_max_loss",          "ALTER TABLE trades ADD COLUMN cached_max_loss REAL"),
+            ("hv20_at_entry",            "ALTER TABLE trades ADD COLUMN hv20_at_entry REAL"),
         ];
 
         for (col_name, sql) in migrations {
@@ -271,8 +274,9 @@ impl Storage {
                 bid_ask_spread_at_entry=?51, fill_vs_mid=?52,
                 was_assigned=?53, assigned_shares=?54, cost_basis=?55,
                 close_notes=?56, sector=?57, closed_at_target=?58,
-                iv_percentile=?59, ex_dividend_date=?60
-             WHERE id=?61",
+                iv_percentile=?59, ex_dividend_date=?60,
+                cached_max_profit=?61, cached_max_loss=?62, hv20_at_entry=?63
+             WHERE id=?64",
             params![
                 t.ticker,                               // 1
                 strategy_str,                           // 2
@@ -334,7 +338,10 @@ impl Storage {
                 t.closed_at_target as i32,              // 58
                 t.iv_percentile,                        // 59
                 t.ex_dividend_date.map(|d| d.format("%Y-%m-%d").to_string()), // 60
-                id,                                     // 61
+                t.cached_max_profit,                    // 61
+                t.cached_max_loss,                      // 62
+                t.hv20_at_entry,                        // 63
+                id,                                     // 64
             ],
         )?;
         Ok(())
@@ -374,7 +381,8 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date,
+                cached_max_profit, cached_max_loss, hv20_at_entry
             ) VALUES (
                 ?1,  ?2,  ?3,
                 ?4,  ?5,  ?6,  ?7,
@@ -394,7 +402,8 @@ impl Storage {
                 ?48, ?49, ?50,
                 ?51, ?52,
                 ?53, ?54, ?55,
-                ?56, ?57, ?58, ?59, ?60
+                ?56, ?57, ?58, ?59, ?60,
+                ?61, ?62, ?63
             )",
             params![
                 trade.ticker,               // 1
@@ -457,6 +466,9 @@ impl Storage {
                 trade.closed_at_target as i32,      // 58
                 trade.iv_percentile,                // 59
                 trade.ex_dividend_date.map(|d| d.format("%Y-%m-%d").to_string()), // 60
+                trade.cached_max_profit,                // 61
+                trade.cached_max_loss,                  // 62
+                trade.hv20_at_entry,                    // 63
             ],
         )?;
 
@@ -554,7 +566,8 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date,
+                cached_max_profit, cached_max_loss, hv20_at_entry
             FROM trades
             ORDER BY trade_date DESC, entry_date DESC"
         )?;
@@ -661,6 +674,9 @@ impl Storage {
                 closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
                 iv_percentile:             row.get(59)?,
                 ex_dividend_date,
+                cached_max_profit:         row.get(61)?,
+                cached_max_loss:           row.get(62)?,
+                hv20_at_entry:             row.get(63)?,
             })
         })?;
 
@@ -695,7 +711,8 @@ impl Storage {
                 theta_at_close, gamma_at_close, vega_at_close,
                 bid_ask_spread_at_entry, fill_vs_mid,
                 was_assigned, assigned_shares, cost_basis,
-                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date
+                close_notes, sector, closed_at_target, iv_percentile, ex_dividend_date,
+                cached_max_profit, cached_max_loss, hv20_at_entry
             FROM trades WHERE id = ?1"
         )?;
 
@@ -801,6 +818,9 @@ impl Storage {
                 closed_at_target:          row.get::<_, Option<i32>>(58)?.unwrap_or(0) != 0,
                 iv_percentile:             row.get(59)?,
                 ex_dividend_date,
+                cached_max_profit:         row.get(61)?,
+                cached_max_loss:           row.get(62)?,
+                hv20_at_entry:             row.get(63)?,
             })
         })?;
 
@@ -1125,6 +1145,47 @@ impl Storage {
                 self.conn.execute(
                     "UPDATE trades SET iv_rank = ?1 WHERE id = ?2",
                     rusqlite::params![ivr, id],
+                )?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// IV Percentile (IVP): % of daily iv_snapshot values for this ticker that are ≤ current_iv.
+    /// Returns None when fewer than 30 snapshots exist (not enough history for a meaningful percentile).
+    pub fn compute_ivp_for_ticker(&self, ticker: &str, current_iv: f64) -> Result<Option<f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT iv FROM iv_snapshots WHERE ticker = ?1 ORDER BY date ASC"
+        )?;
+        let ivs: Vec<f64> = stmt.query_map(rusqlite::params![ticker], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if ivs.len() < 30 { return Ok(None); }
+        let below = ivs.iter().filter(|&&v| v <= current_iv).count();
+        Ok(Some(below as f64 / ivs.len() as f64 * 100.0))
+    }
+
+    /// Backfill iv_percentile for all trades that have implied_volatility but no iv_percentile.
+    /// Uses iv_snapshots history; silently skips tickers with insufficient data (< 30 points).
+    pub fn backfill_ivp_all_trades(&self) -> Result<usize> {
+        let candidates: Vec<(i32, String, f64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, ticker, implied_volatility \
+                 FROM trades \
+                 WHERE implied_volatility IS NOT NULL AND iv_percentile IS NULL"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |r| {
+                Ok((r.get::<_, i32>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut count = 0usize;
+        for (id, ticker, iv) in candidates {
+            if let Ok(Some(ivp)) = self.compute_ivp_for_ticker(&ticker, iv) {
+                self.conn.execute(
+                    "UPDATE trades SET iv_percentile = ?1 WHERE id = ?2",
+                    rusqlite::params![ivp, id],
                 )?;
                 count += 1;
             }

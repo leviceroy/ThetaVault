@@ -11,13 +11,15 @@ pub enum VisualRowKind {
     /// Top-level collapsible year group header
     YearHeader { year: i32 },
     /// Collapsible month group header (nested under YearHeader)
-    MonthHeader { year: i32, month: u32 },
+    MonthHeader { year: i32, month: u32, collapsed: bool, is_open_section: bool },
     /// A trade; value is the index into `AppState::trades`
     Trade(usize),
     /// Chain View: top-level ticker group header
     TickerHeader { ticker: String, open_count: usize, closed_count: usize, net_pnl: f64 },
     /// Chain View: roll chain summary row (one per root trade)
     ChainHeader { root_id: i32, ticker: String, strategy: String, roll_count: i32, net_credit: f64, chain_pnl: f64, chain_commissions: f64, is_open: bool, entry_date: chrono::DateTime<chrono::Utc> },
+    /// Visual separator between open and closed sections in the journal
+    SectionDivider { label: String },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +90,18 @@ impl SortKey {
             SortKey::PctMax => "%Max",
         }
     }
+    /// Returns the COL_NAMES string this sort key corresponds to, for header indicator display.
+    pub fn col_name(self) -> &'static str {
+        match self {
+            SortKey::Date   => "Date",
+            SortKey::Ticker => "Ticker",
+            SortKey::Pnl    => "P&L",
+            SortKey::Roc    => "ROC%",
+            SortKey::Dte    => "DTE",
+            SortKey::Credit => "Credit",
+            SortKey::PctMax => "MaxPft",
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,8 +119,9 @@ pub enum AppMode {
     EditThesis,     // in-place editing of the selected playbook's thesis text
     AdminSettings,  // editing admin/risk management settings
     AnalyzeTrade,   // payoff-at-expiration chart (activated with 'a')
-    DatePicker,     // calendar overlay over EditTrade / CloseTrade
-    JournalNote,    // quick note input for a trade from the Actions tab (N key)
+    DatePicker,       // calendar overlay over EditTrade / CloseTrade
+    JournalNote,      // quick note input for a trade from the Actions tab (N key)
+    PlaybookPicker,   // popup to select a playbook template before opening new trade form
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

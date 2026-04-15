@@ -168,6 +168,8 @@ impl StrategyType {
 
     /// Whether this strategy has defined (capped) risk.
     /// Tastylive sizing: defined risk = 0.05-2% of net liq; undefined = 3-7%.
+    /// CSP and CC are undefined-risk: max loss is (strike-credit)×100 or full stock downside.
+    /// They are sized and managed as undefined-risk positions per tastytrade methodology.
     pub fn is_defined_risk(&self) -> bool {
         matches!(self,
             StrategyType::IronCondor
@@ -176,9 +178,6 @@ impl StrategyType {
             | StrategyType::ShortCallVertical
             | StrategyType::LongPutVertical
             | StrategyType::LongCallVertical
-            | StrategyType::CashSecuredPut
-            // CC: risk capped at stock purchase price; tastytrade treats as defined/low-risk
-            | StrategyType::CoveredCall
             | StrategyType::CallCalendarSpread
             | StrategyType::PutCalendarSpread
             | StrategyType::Pmcc
@@ -201,7 +200,7 @@ impl StrategyType {
     /// Matches Tom Sosnoff / tastytrade rules per strategy type.
     pub fn default_profit_target_pct(&self) -> f64 {
         match self {
-            StrategyType::CashSecuredPut | StrategyType::CoveredCall | StrategyType::ShortNakedPut => 85.0,
+            StrategyType::CashSecuredPut | StrategyType::CoveredCall | StrategyType::ShortNakedPut => 50.0,
             StrategyType::ShortNakedCall => 50.0,
             StrategyType::CallCalendarSpread | StrategyType::PutCalendarSpread | StrategyType::IronButterfly => 25.0,
             StrategyType::PutButterfly | StrategyType::CallButterfly => 25.0,
@@ -332,8 +331,8 @@ pub fn strategy_leg_template(strategy: &StrategyType) -> Vec<LegType> {
         StrategyType::PutZebra            => vec![],  // user builds legs freely
         StrategyType::CallZebra           => vec![],
         StrategyType::Custom              => vec![],
-        // ShortPut = ATM anchor short; two LongPuts = ATM long (higher) + wing (lower)
-        StrategyType::PutBrokenWingButterfly => vec![LegType::ShortPut, LegType::LongPut, LegType::LongPut],
+        // tastytrade PBWB 1:2:1: LongPut(upper anchor) + 2×ShortPut(body) + LongPut(outer wing) = net credit
+        StrategyType::PutBrokenWingButterfly => vec![LegType::LongPut, LegType::ShortPut, LegType::ShortPut, LegType::LongPut],
         // CBWB mirrors PBWB on the call side: LongCall (anchor) + ShortCall + LongCall (outer wing)
         StrategyType::CallBrokenWingButterfly => vec![LegType::LongCall, LegType::ShortCall, LegType::LongCall],
         // Jade Lizard: short put (OTM) + short call (OTM) + long call (higher strike)
@@ -522,6 +521,13 @@ pub struct Trade {
 
     // M5: profit target tracking
     pub closed_at_target: bool,               // true if closed at or beyond profit target
+
+    // H1: cached payoff extremes (populated on every write)
+    pub cached_max_profit: Option<f64>,       // max_profit in dollars, cached to avoid repeated sweeps
+    pub cached_max_loss: Option<f64>,         // max_loss in dollars, cached to avoid repeated sweeps
+
+    // H4: Historical Volatility at entry (20-day annualized, from Yahoo Finance prices)
+    pub hv20_at_entry: Option<f64>,           // HV20 in % (e.g. 25.3 means 25.3%)
 }
 
 impl Trade {
@@ -670,6 +676,7 @@ pub struct PortfolioStats {
     // OTJ Dashboard metrics
     pub account_size: f64,
     pub balance: f64,              // account_size + realized_pnl
+    pub true_net_liq: f64,        // balance + theta-estimated unrealized P&L from open positions
     pub alloc_pct: f64,            // total_open_bpr / account_size × 100
     pub total_open_bpr: f64,
     pub undefined_risk_bpr: f64,   // BPR in undefined-risk strategies (CSP, CC, STR, STD)
@@ -790,10 +797,11 @@ pub struct HeldBucket {
 #[derive(Debug, Clone)]
 pub struct StressPoint {
     pub spy_move_pct: f64,     // e.g. -20.0
-    pub total_pnl: f64,        // sum across all open positions
+    pub total_pnl: f64,        // sum across all open positions (delta move only)
     pub pct_of_account: f64,   // total_pnl / account_size * 100
     pub worst_ticker: String,  // ticker with most negative P&L at this move
     pub worst_pnl: f64,        // that position's P&L
+    pub vix_pnl: f64,          // estimated vega loss from IV expansion (≈ 1pp per 1% SPY drop)
 }
 
 /// L10: IVR entry frequency histogram bucket
@@ -846,6 +854,17 @@ pub struct IvrBucket {
     pub wins: usize,
     pub win_rate: f64,          // 0.0–100.0
     pub avg_pnl: f64,
+}
+
+///// H6: Per-strategy × DTE-at-entry bucket breakdown
+#[derive(Debug, Clone)]
+pub struct StrategyDteBucket {
+    pub strategy: &'static str,   // display abbreviation, e.g. "IC", "CSP"
+    pub dte_label: &'static str,  // e.g. "0–7", "7–21", "21–45", "45+"
+    pub trades: usize,
+    pub wins: usize,
+    pub win_rate: f64,            // 0.0–100.0
+    pub avg_roc: f64,             // average ROC% for trades in this bucket
 }
 
 /// DTE-at-close bucket: performance by how many DTE remained when trade was closed
@@ -975,6 +994,30 @@ pub struct PerformanceStats {
     pub monthly_0dte_pnl: Vec<MonthlyPnl>,
     // 0DTE: P&L breakdown by expiry day of week (Mon/Wed/Fri)
     pub dte_weekday_stats: Vec<WeekdayStats>,
+
+    // H6: IV edge — avg (IV-predicted 1SD % move − actual % move) across closed trades
+    // Positive value = IV overstated realized volatility (good: you were selling expensive vol)
+    pub avg_rv_vs_iv_edge: Option<f64>,
+
+    // KPI #7: Close quality — % of trades closed with DTE ≥ 21 (tastytrade 21 DTE rule)
+    pub close_quality_pct: Option<f64>,  // 0–100; None if no DTE-at-close data
+
+    // KPI #6: Roll P&L tracking — compare rolled vs non-rolled outcomes
+    pub rolled_chain_win_rate: Option<f64>,  // % of roll chains with net positive P&L
+    pub non_rolled_win_rate: Option<f64>,    // % of single (no-roll) trades with positive P&L
+    pub avg_roll_credit: Option<f64>,        // avg credit per individual roll leg across all rolls
+    pub total_rolled_chains: usize,          // number of root trades that were rolled at least once
+
+    // H6: Per-strategy × DTE-at-entry performance breakdown
+    pub strategy_dte_buckets: Vec<StrategyDteBucket>,
+
+    // H6: Earnings play analytics (closed trades with is_earnings_play == true)
+    pub earnings_count: usize,
+    pub earnings_win_rate: Option<f64>,
+    pub earnings_avg_pnl: Option<f64>,
+    pub earnings_avg_iv_crush: Option<f64>,      // avg entry IV − close IV in % points
+    pub earnings_avg_entry_dte: Option<f64>,
+    pub earnings_avg_dte_at_close: Option<f64>,
 }
 
 impl Default for PerformanceStats {
@@ -1006,6 +1049,16 @@ impl Default for PerformanceStats {
             sector_trends: vec![],
             monthly_0dte_pnl: vec![],
             dte_weekday_stats: vec![],
+            avg_rv_vs_iv_edge: None,
+            close_quality_pct: None,
+            rolled_chain_win_rate: None,
+            non_rolled_win_rate: None,
+            avg_roll_credit: None,
+            total_rolled_chains: 0,
+            strategy_dte_buckets: vec![],
+            earnings_count: 0,
+            earnings_win_rate: None, earnings_avg_pnl: None, earnings_avg_iv_crush: None,
+            earnings_avg_entry_dte: None, earnings_avg_dte_at_close: None,
         }
     }
 }

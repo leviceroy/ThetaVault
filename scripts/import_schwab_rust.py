@@ -309,6 +309,18 @@ def estimate_trade_greeks(trade: Dict, ticker_prices: Dict[str, float],
     if vix_val:
         result['vixAtEntry'] = round(vix_val, 1)
 
+    # H4: Compute HV20 from the 20 trading days before trade_date
+    sorted_dates = sorted(d for d in ticker_prices if d <= trade_date)
+    if len(sorted_dates) >= 21:
+        window_prices = [ticker_prices[d] for d in sorted_dates[-21:]]
+        import math
+        log_returns = [math.log(window_prices[i] / window_prices[i-1]) for i in range(1, len(window_prices))]
+        if len(log_returns) >= 2:
+            mean_r = sum(log_returns) / len(log_returns)
+            variance = sum((r - mean_r) ** 2 for r in log_returns) / (len(log_returns) - 1)
+            hv20 = math.sqrt(variance) * math.sqrt(252) * 100.0
+            result['hv20AtEntry'] = round(hv20, 2)
+
     return result
 
 def parse_symbol(symbol: str) -> Optional[Dict]:
@@ -1013,7 +1025,7 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                         'exp_str': datetime.strptime(exp_date_str, '%Y-%m-%d').strftime('%m/%d/%Y'),
                         'strike': leg['strike'],
                         'opt_type': 'call' if 'call' in leg['type'] else 'put',
-                        'qty': t_db['quantity'],
+                        'qty': leg.get('quantity', t_db['quantity']),
                         'action': 'Sell to Open' if 'short' in leg['type'] else 'Buy to Open'
                     }
 
@@ -1052,11 +1064,21 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                         roll_key = (roll_date_str, t_db['ticker'])
                         roll_pool = opens_by_date_ticker.get(roll_key, [])
                         if roll_pool:
-                            # Remove any open legs from the pool matching the IC's
-                            # new rolled-to legs (those without closePremium in the DB).
-                            for leg in t_db['legs']:
-                                if leg.get('closePremium') is not None:
-                                    continue
+                            # Collect legs to consume: start with parent's open legs,
+                            # then also include the child trade's legs (handles partial-roll
+                            # where the rolled side has closePremium on the parent but the
+                            # child's new legs need to be consumed from the opens pool).
+                            legs_to_consume = [l for l in t_db['legs']
+                                               if l.get('closePremium') is None]
+                            child_row = conn.execute(
+                                "SELECT legs_json FROM trades WHERE rolled_from_id=? AND trade_date LIKE ?",
+                                (t_db['id'], roll_date_str + '%')
+                            ).fetchone()
+                            if child_row:
+                                child_legs = json.loads(child_row[0] or '[]')
+                                legs_to_consume.extend(child_legs)
+
+                            for leg in legs_to_consume:
                                 opt = 'call' if 'call' in leg['type'] else 'put'
                                 action = 'Sell to Open' if 'short' in leg['type'] else 'Buy to Open'
                                 to_remove = [
@@ -1222,8 +1244,10 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
                                               f"→ split into {put_strategy} ({parent_exp_str}) + {new_spread_strategy} ({new_exp_str}), "
                                               f"parent pnl=${updated_trade['forcePnl']:+.2f}")
                                     else:
-                                        # Same expiry: build child IC as before
-                                        child_legs   = put_legs_open + [new_leg_short, new_leg_long]
+                                        # Same expiry: build child IC carrying the OPEN side + new rolled legs.
+                                        # When put side rolled: surviving open legs are calls; when call side rolled: puts.
+                                        open_side_legs = call_legs_open if roll_opt_type == 'put' else put_legs_open
+                                        child_legs   = open_side_legs + [new_leg_short, new_leg_long]
                                         child_credit = sum(
                                             l['premium'] if l['type'].startswith('short_') else -l['premium']
                                             for l in child_legs
@@ -1350,7 +1374,15 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
     # 2. Build NEW trades from the 'Open' transactions in this file
     for (trade_date, ticker), legs in opens_by_date_ticker.items():
         # PRIORITIZE: Exactly 3 legs on the same day = Custom/Ratio Spread (e.g. SMR)
-        if len(legs) == 3:
+        # But skip this shortcut if the 3 legs form a butterfly (1 short qty=2k + 2 longs qty=k)
+        _3leg_shorts = [l for l in legs if l['action'] == 'Sell to Open']
+        _3leg_longs  = [l for l in legs if l['action'] == 'Buy to Open']
+        _is_butterfly = (len(legs) == 3 and len(_3leg_shorts) == 1 and len(_3leg_longs) == 2
+                         and _3leg_shorts[0]['qty'] == _3leg_longs[0]['qty'] + _3leg_longs[1]['qty'])
+        # Multi-expiry legs must fall through to per-expiration grouping so each
+        # expiry is detected independently (e.g. SPV + CSP on different expirations).
+        _is_multi_exp = (len(legs) == 3 and len({l['exp_str'] for l in legs}) > 1)
+        if len(legs) == 3 and not _is_butterfly and not _is_multi_exp:
             total_credit = 0.0
             api_legs = []
             all_strikes = []
@@ -1521,13 +1553,34 @@ def build_trades(transactions: List[Dict], conn: Optional[sqlite3.Connection] = 
         roll_chain = build_0dte_roll_chain(txns, ticker, date_str)
         trades.extend(roll_chain)
 
+    # Pre-filter: remove duplicate individual trades already in import_log BEFORE IC
+    # merging.  When the JSON date range overlaps a prior import, a previously-imported
+    # SCV/SPV can re-appear as "new" batch opens.  If we don't strip it here,
+    # merge_verticals_to_ic will incorrectly pair it with a genuinely new counterpart
+    # and create a false IC.  is_update trades (orphan closes) always pass through.
+    if conn:
+        _pre_fps = get_existing_fingerprints(conn)
+        trades = [t for t in trades
+                  if t.get('is_update') or t.get('id') or get_trade_fingerprint(t) not in _pre_fps]
+
     # Merge SPV + SCV pairs into Iron Condors (cross-date detection)
     # Handles ICs where the put side and call side were opened on different dates
     trades = merge_verticals_to_ic(trades)
 
+    # Collect IDs being closed in this batch so upgrade_verticals_to_ic won't offer
+    # a just-closed DB vertical as a merge candidate (its exit_date hasn't been
+    # written to the DB yet when the query runs).
+    _closing_ids = {t['id'] for t in trades if t.get('is_update') and t.get('exitTime')}
+
     # DB-aware IC promotion: pair new SPV/SCV in this batch with an existing open
     # SCV/SPV already in the DB (incremental narrow-window imports use this path)
-    trades = upgrade_verticals_to_ic(trades, conn)
+    trades = upgrade_verticals_to_ic(trades, conn, closing_ids=_closing_ids)
+
+    # Leg-level dedup: remove any new standalone SCV/SPV whose legs are already fully
+    # contained in an existing open DB trade (e.g. the call side of a rolled IC that
+    # re-appears as a new SCV when the parent IC is already closed).
+    if conn:
+        trades = remove_subset_leg_trades(trades, conn)
 
     # DB-aware CSP/CC→Vertical promotion: if a new long_put/long_call in this batch
     # matches an open CSP/CC in the DB (same ticker, expiry, qty), the user legged into
@@ -1554,6 +1607,9 @@ def merge_verticals_to_ic(trades: List[Dict]) -> List[Dict]:
     spv_indices = defaultdict(list)  # key -> list of indices
     scv_indices = defaultdict(list)
     for i, t in enumerate(trades):
+        # is_update trades are DB close/roll records — never merge them into an IC
+        if t.get('is_update'):
+            continue
         # Normalize expiration to YYYY-MM-DD for robust matching
         exp_normalized = t['expirationDate'][:10]
         key = (t['ticker'], exp_normalized)
@@ -1658,7 +1714,53 @@ def merge_verticals_to_ic(trades: List[Dict]) -> List[Dict]:
     return result
 
 
-def upgrade_verticals_to_ic(trades: List[Dict], conn: Optional[sqlite3.Connection]) -> List[Dict]:
+def remove_subset_leg_trades(trades: List[Dict], conn: sqlite3.Connection) -> List[Dict]:
+    """
+    Remove new standalone trades whose legs are already fully contained in an
+    existing open DB trade.  Handles the case where a roll child (e.g. GLD IC
+    with call legs 450/459) is already in the DB, but re-running the same JSON
+    re-parses those call-side opens as a new SCV because the parent IC is already
+    closed and no longer triggers the orphan-close / roll-consume path.
+
+    Only checks non-update trades whose spreadType is a simple vertical (SCV/SPV).
+    """
+    conn.row_factory = sqlite3.Row
+    open_rows = conn.execute(
+        "SELECT ticker, expiration_date, legs_json FROM trades WHERE exit_date IS NULL"
+    ).fetchall()
+
+    # Build a set of (ticker, exp_YYYY-MM-DD, type, strike) from all open DB trades
+    open_leg_keys: set = set()
+    for row in open_rows:
+        for leg in json.loads(row['legs_json'] or '[]'):
+            exp = leg.get('expirationDate', row['expiration_date'])[:10]
+            open_leg_keys.add((row['ticker'], exp, leg['type'], leg['strike']))
+
+    result = []
+    for t in trades:
+        if t.get('is_update') or t.get('id'):
+            result.append(t)
+            continue
+        if t.get('spreadType') not in ('short_call_vertical', 'short_put_vertical'):
+            result.append(t)
+            continue
+        legs = t.get('legs', [])
+        exp_norm = t['expirationDate'][:10]
+        # If every leg of this new trade is already in an open DB trade, it's a duplicate
+        all_covered = all(
+            (t['ticker'], leg.get('expirationDate', exp_norm)[:10], leg['type'], leg['strike'])
+            in open_leg_keys
+            for leg in legs
+        )
+        if all_covered:
+            print(f"  Leg-dedup: skipping {t['ticker']} {t['spreadType']} "
+                  f"{exp_norm} — legs already in an open DB trade")
+        else:
+            result.append(t)
+    return result
+
+
+def upgrade_verticals_to_ic(trades: List[Dict], conn: Optional[sqlite3.Connection], closing_ids: set = None) -> List[Dict]:
     """
     DB-aware IC promotion: if a new SPV/SCV in this batch matches an open standalone
     SCV/SPV already in the DB (same ticker, expiry, qty), upgrade the DB record to
@@ -1685,6 +1787,11 @@ def upgrade_verticals_to_ic(trades: List[Dict], conn: Optional[sqlite3.Connectio
     for row in db_rows:
         t = dict(row)
         t['legs'] = json.loads(t.get('legs_json', '[]'))
+        # Skip DB verticals that are being closed in the current batch — their
+        # exit_date hasn't been written yet so exit_date IS NULL still matches above,
+        # but merging them here would create a false IC.
+        if closing_ids and t['id'] in closing_ids:
+            continue
         # Skip DB verticals with any closePremium set — partially closed, do not merge
         if any(l.get('closePremium') is not None for l in t['legs']):
             continue
@@ -2236,18 +2343,29 @@ def detect_rolls(trades: List[Dict]) -> None:
     """
     # Get closed trades with 'closed' exit reason (not expired)
     # Skip 0DTE chain trades — their exitReason is set directly by build_0dte_roll_chain
+    # Skip orphan-close updates — their exitReason was determined by the orphan match logic
     closed_trades = [t for t in trades if t.get('exitReason') == 'closed'
-                     and not t.get('_is_0dte_chain')]
+                     and not t.get('_is_0dte_chain')
+                     and not t.get('is_update')]
 
     for closed in closed_trades:
         close_date = closed.get('exitTime', '')[:10]  # YYYY-MM-DD
         ticker = closed['ticker']
+
+        # 0DTE trades (expiration == trade date) are never rolls — skip them
+        exp_date = closed.get('expirationDate', '')[:10]
+        trade_date = closed['tradeDate'][:10]
+        if exp_date and exp_date == trade_date:
+            continue
 
         # Find a trade that was opened on the close date (potential roll target)
         for candidate in trades:
             if candidate is closed:
                 continue
             if candidate['ticker'] != ticker:
+                continue
+            # Candidate must be an open trade (not also closed same day)
+            if 'exitTime' in candidate:
                 continue
 
             open_date = candidate['tradeDate'][:10]
@@ -2325,10 +2443,11 @@ def compute_pnl_and_debit(trade: Dict) -> Tuple[Optional[float], Optional[float]
     close_credit = 0.0
     for l in legs:
         cp = l.get('closePremium', 0) or 0
+        leg_qty = l.get('quantity', 1) or 1  # per-leg qty (e.g. 2 for butterfly center)
         if l['type'].startswith('short_'):
-            close_credit -= cp   # paid to close short
+            close_credit -= cp * leg_qty   # paid to close short
         else:
-            close_credit += cp   # received closing long
+            close_credit += cp * leg_qty   # received closing long
 
     # debit_paid is the net cost to close (positive means we paid)
     debit_paid = -close_credit  # if we received more than paid, debit is negative
@@ -2551,6 +2670,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         ("legs_json",                 "ALTER TABLE trades ADD COLUMN legs_json TEXT NOT NULL DEFAULT '[]'"),
         ("tags",                      "ALTER TABLE trades ADD COLUMN tags TEXT NOT NULL DEFAULT ''"),
         ("notes",                     "ALTER TABLE trades ADD COLUMN notes TEXT"),
+        ("hv20_at_entry",             "ALTER TABLE trades ADD COLUMN hv20_at_entry REAL"),
     ]
     for col_name, sql in migrations:
         if col_name not in existing:
@@ -2726,7 +2846,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         playbook_id, rolled_from_id,
                         is_earnings_play, is_tested,
                         trade_grade, grade_notes,
-                        legs_json, tags, notes, sector
+                        legs_json, tags, notes, sector, hv20_at_entry
                     ) VALUES (
                         ?,?,?,
                         ?,?,?,?,
@@ -2741,7 +2861,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         ?,?,
                         ?,?,
                         ?,?,
-                        ?,?,?,?
+                        ?,?,?,?,?
                     )""",
                     (
                         trade['ticker'],                                            # ticker
@@ -2788,6 +2908,7 @@ def insert_trades(conn: sqlite3.Connection, trades: List[Dict],
                         '',                                                         # tags
                         None,                                                       # notes
                         trade.get('sector', ''),                                    # sector
+                        trade.get('hv20AtEntry'),                                   # hv20_at_entry
                     )
                 )
                 conn.commit()
@@ -2849,7 +2970,7 @@ def link_roll_chains(conn: sqlite3.Connection, trades: List[Dict],
                 continue
             if candidate['ticker'] != ticker:
                 continue
-            if candidate['tradeDate'][:10] == close_date:
+            if candidate['tradeDate'][:10] == close_date and 'exitTime' not in candidate:
                 new_db_id = id_map[j]
                 # Guard: skip if candidate already has a parent linked (prevents double-link)
                 existing_parent = conn.execute(
@@ -3098,6 +3219,13 @@ def main():
         # Incremental: skip trades already in DB
         existing_fps = get_existing_fingerprints(conn)
         final_trades = filter_new_trades(trades, existing_fps)
+
+    # Exclude specific tickers from this import
+    EXCLUDE_TICKERS = {'PLTR'}
+    excluded = [t for t in final_trades if t['ticker'] in EXCLUDE_TICKERS]
+    final_trades = [t for t in final_trades if t['ticker'] not in EXCLUDE_TICKERS]
+    if excluded:
+        print(f"  Excluded {len(excluded)} trade(s) for: {', '.join(EXCLUDE_TICKERS)}")
 
     if not final_trades:
         print("No new trades to import.")
